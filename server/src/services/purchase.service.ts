@@ -114,6 +114,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
           stockAfter,
           notes: purchase.notes ?? undefined,
           clientOpId: randomUUID(),
+          purchaseId: purchase.id,
         },
       });
 
@@ -159,6 +160,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
           isIncome: false,
           shift: currentShift,
           clientOpId: randomUUID(),
+          purchaseId: purchase.id,
         },
       });
     } else if (purchase.bankAccountId) {
@@ -184,6 +186,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
           bankAccountAlias: purchase.bankAccountAlias || bankAcc?.alias,
           shift: currentShift,
           clientOpId: randomUUID(),
+          purchaseId: purchase.id,
         },
       });
     }
@@ -213,17 +216,38 @@ export async function regularizePurchase(
       ? `${purchase.notes || ''} [Regularizado: ${input.notes.trim()}]`.trim()
       : purchase.notes;
 
-    return tx.purchase.update({
+    const formalInvoice = input.invoiceNumber.trim();
+    const trace = purchase.provisionalNoteNumber
+      ? ` [antes ${purchase.provisionalNoteNumber}]`
+      : '';
+
+    const updated = await tx.purchase.update({
       where: { id: purchase.id },
       data: {
         documentStatus: 'regularizado',
-        invoiceNumber: input.invoiceNumber.trim(),
+        invoiceNumber: formalInvoice,
         supplierRuc: input.supplierRuc.trim(),
         regularizedAt: `${date} ${time}`,
         regularizedBy: input.operator ?? 'Sistema',
         notes: notes || null,
       },
     });
+
+    // Propaga el folio formal hacia Kardex y libro de caja (con huella del vale provisional).
+    await tx.kardexMovement.updateMany({
+      where: { purchaseId: purchase.id },
+      data: {
+        referenceDoc: `Compra Factura #${formalInvoice} (${purchase.supplierName})${trace}`,
+      },
+    });
+    await tx.transaction.updateMany({
+      where: { purchaseId: purchase.id, type: 'Pago Proveedor' },
+      data: {
+        description: `Compra Factura #${formalInvoice} - ${purchase.supplierName}${trace}`,
+      },
+    });
+
+    return updated;
   }).then((p) => plain(p));
 }
 

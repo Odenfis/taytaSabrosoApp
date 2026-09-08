@@ -256,16 +256,19 @@ model Transaction {
   ticketNumber          String?  @map("numero_ticket") @db.NVarChar(30)
   clientOpId            String   @unique @map("id_operacion_cliente") @db.NVarChar(36)
   isDeleted             Boolean  @map("esta_eliminado") @default(false)
+  purchaseId            String?  @map("compra_id") @db.NVarChar(36)
 
   company          Company?             @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   order            Order?               @relation(fields: [orderId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   bankAccount      BankAccount?         @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   paymentMethodRef CustomPaymentMethod? @relation(fields: [customPaymentMethodId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  purchase         Purchase?            @relation(fields: [purchaseId], references: [id], onUpdate: NoAction, onDelete: NoAction)
 
   @@index([companyId])
   @@index([timestamp])
   @@index([orderId])
   @@index([bankAccountId])
+  @@index([purchaseId])
   @@map("transacciones")
 }
 
@@ -470,6 +473,8 @@ model Purchase {
   company     Company?       @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   bankAccount BankAccount?   @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   items       PurchaseItem[]
+  kardexMovements KardexMovement[]
+  transactions    Transaction[]
 
   @@index([companyId])
   @@index([bankAccountId])
@@ -511,13 +516,16 @@ model KardexMovement {
   stockAfter   Decimal  @map("stock_despues") @db.Decimal(12, 4)
   notes        String?  @map("notas") @db.NVarChar(300)
   clientOpId   String   @unique @map("id_operacion_cliente") @db.NVarChar(36)
+  purchaseId   String?  @map("compra_id") @db.NVarChar(36)
 
-  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
-  insumo  Insumo? @relation(fields: [insumoId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  company  Company  @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  insumo   Insumo?  @relation(fields: [insumoId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  purchase Purchase? @relation(fields: [purchaseId], references: [id], onUpdate: NoAction, onDelete: NoAction)
 
   @@index([companyId])
   @@index([insumoId, timestamp])
   @@index([type])
+  @@index([purchaseId])
   @@map("movimientos_kardex")
 }
 

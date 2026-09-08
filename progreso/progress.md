@@ -1,7 +1,9 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-09-07` (fixes E3: auto-liberar mesa en BD + sincronización de estado de mesa).
+> Bitácora de avance del proyecto. `2026-09-08` (revisión de Compras E3: fix quantity string + propagación
+> del folio formal a Kardex/Caja al regularizar vales — migración `0003`).
 > **Punto de retome: Fase E4 — replay automático de la cola offline (`ts_pending_queue_v2`) al reconectar.**
+> **Pendiente corto (ver `progreso/planactual.md`)**: compra a crédito y error visible (tests opcionales).
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
 
@@ -697,6 +699,59 @@ rehacer el front después:
      queda `ocupada` en BD con su pedido correcto.
 4. **Verificación**: `npx tsc --noEmit` = **0 errores** (raíz y `server/`) · `npm run build` = 56 módulos OK.
 
+**Sesión 2026-09-08 — revisión de Compras E3: fix "Guardar Compra y Afectar Kardex no hace nada"**
+1. **Síntoma (reportado por el usuario en la UI, modal "Registrar Compra Formal con Factura")**: al hacer clic en
+   "Guardar Compra y Afectar Kardex" no pasaba nada (modal abierto, sin toast). En F12 → Console se vio
+   `Uncaught TypeError: (stockBefore + item.quantity).toFixed is not a function` en `POSContext.tsx:2000`;
+   en Network **no salía ningún POST** a `/operations/purchases`.
+2. **Causa raíz**: el input de cantidad `/ costo unitario` del modal guardaba el **string** de `e.target.value`
+   (`handleItemChange` solo hacía `parseFloat` para el `totalCost`). Entonces en `addPurchase` el cálculo del
+   kardex hacía `stockBefore + item.quantity` → `18.5 + "3"` = `"18.53"` (concatenación) → `.toFixed` sobre un
+   string → TypeError. La excepción cortaba `addPurchase` **antes** del `attemptMutation` y del toast.
+3. **Bug latente descubierto**: aunque se arreglara el crash, `quantity`/`unitCost` viajaban como **string** en el
+   body (`z.number()` de la ruta → 400) y la línea 2039 tenía el mismo patrón (`ins.currentStock + quantity`).
+   También comprometía el contrato de la cola `ts_pending_queue_v2` para el replay de E4.
+4. **Fixes aplicados (verificado: `tsc --noEmit` = 0 errores raíz+server · `npm run build` = 56 módulos OK):**
+   - `src/components/PurchasesScreen.tsx` → `handleItemChange`: coercer a número `quantity` (`+value || 0`) y
+     `unitCost` al guardar en estado (causa raíz de la UI).
+   - `src/context/POSContext.tsx` → `addPurchase`: normalizar `items` (`Number(...)`) al construir
+     `completedPurchase` → corrige las líneas 2000/2039 y garantiza que `queuePayload` (cola) y el body del
+     `POST /purchases` lleven **números** (exigencia Zod de la ruta y contrato del replay E4).
+   - `handleSavePurchase`: los 2 retornos silenciosos de validación ahora emiten **notification** visible
+     ("Faltan datos del proveedor" / "Falta seleccionar insumos"), para que ningún fallo de validación quede invisible.
+5. **Pendiente de la revisión de Compras (plan A+B+C)**: correr en la UI los 6 tests del flujo de compras
+   (factura/caja, vale provisional, regularización, banco, crédito, error visible) y verificar en BD.
+   `regularizePurchase` **sin `clientOpId`** sigue pendiente para el replay idempotente de E4.
+
+**Sesión 2026-09-08 — fix "regularizar vale no propagaba el folio formal a Kardex/Caja" (migración `0003`)**
+1. **Síntoma (reportado por el usuario)**: al regularizar un vale provisional, `compras` quedaba `regularizado` con
+   la factura, pero `movimientos_kardex.referenceDoc` y `transacciones.descripcion` seguían mostrando
+   `#PENDIENTE FACTURA`.
+2. **Diagnóstico**: las filas de Kardex y del libro de caja se crean como **snapshots** (referencia al momento de
+   la entrada de mercancía) y **no existía ningún vínculo** Kardex/Transacción → Compra: `KardexMovement` solo tenía
+   `insumoId` y `Transaction` solo `orderId`; `regularizePurchase` solo actualizaba la cabecera `compras`.
+   La expectativa del usuario es correcta: al formalizar el comprobante, la referencia SUNAT debe reflejarse en
+   Kardex y Caja (guardando el vale como huella).
+3. **Fix aplicado (schema + servicios + frontend), todo verificado:**
+   - **Migración `0003_purchase_reference`** (sin BOM): columna nullable **`compra_id`** en `movimientos_kardex`
+     y `transacciones` + FK `fk_<tabla>_compras` (NoAction/NoAction) + índices `ix_<tabla>_compra_id`.
+   - **`purchase.service.ts`**: `createPurchase` ahora escribe `purchaseId` en cada movimiento kardex y en la
+     transacción "Pago Proveedor" (caja y banco). `regularizePurchase` (dentro del mismo `$transaction`)
+     propaga el folio formal: kardex → `Compra Factura #F00-… (<Proveedor>) [antes <VALE>]` y transacción
+     → `Compra Factura #F00-… - <Proveedor> [antes <VALE>]` vía `updateMany` por `purchaseId`.
+   - **`POSContext.regularizePurchase`**: tras el POST exitoso, `refreshKardex()` + `refreshTransactions()`
+     para que la UI muestre la referencia nueva sin recargar.
+   - **Verificación**: `prisma validate` OK · migración aplicada (columnas presentes) · `tsc --noEmit` = 0
+     (raíz+server) · `npm run build` OK · **E2E API PASS**: vale provisional (kardex/tx con `#PENDIENTE FACTURA`
+     y `compra_id` seteado) → `POST /regularize` → compra `regularizado` + kardex/tx con `#F00-TEST888 …
+     [antes VALE-TEST01]`. Seed canónico restaurado después de la prueba.
+4. **Nota**: filas históricas sin `compra_id` (vales creados antes de `0003`) no se actualizarían al regularizar
+   → en demo basta el re-seed; en producción un backfill puntual SQL por coincidencia de referencia.
+5. **Confirmación del usuario (2026-09-08)**: probado en la UI — "Quedó todo bien". Vale provisional →
+   regularización → Kardex y Transacciones cambian al folio formal con `[antes VALE-XXX]` sin recargar.
+   Quedan como **tests opcionales** (anotados en `progreso/planactual.md`): compra a crédito y error visible
+   (409 al re-regularizar).
+
 **Notas / pendientes de E**
 - Fuera de alcance E3: mutaciones de catálogos (mesas/productos/insumos/bancos/métodos/impresoras/recetas)
   siguen **locales** (mock); `addNewTable`, CRUD bancos, `saveRecipe`, `addInsumo`, impresoras = locales —
@@ -775,7 +830,9 @@ rehacer el front después:
   (`POST /kardex/adjustments`) y arqueo de turnos (`POST /shifts/switch`). Fallos de red → cola local
   `ts_pending_queue_v2` (replay = E4).
 - ❌ **Catálogos (mutaciones) y otros CRUD siguen en mock**: mesas nuevas, bancos, métodos de pago,
-  insumos/recetas, impresoras y `regularizePurchase` aún no tocan la API (fase posterior a E3).
+  insumos/recetas e impresoras aún no tocan la API (fase posterior a E3). `regularizePurchase` **SÍ** está
+  conectado a `POST /purchases/:id/regularize` y desde 2026-09-08 propaga el folio formal a
+  Kardex/Caja (migración `0003`, kardex/tx con `[antes <VALE>]`).
 
 **Barrera para "usar el sistema de verdad" (operar sin internet)**
 - E3 ya encola operaciones localmente ante fallas; falta **E4 (replay automático de la cola)** y luego la

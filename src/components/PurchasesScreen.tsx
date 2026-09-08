@@ -13,6 +13,7 @@ export const PurchasesScreen: React.FC = () => {
     addPurchase,
     regularizePurchase,
     currentUser,
+    addNotification,
   } = usePOS();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -109,6 +110,12 @@ export const PurchasesScreen: React.FC = () => {
         }
       }
 
+      if (field === 'quantity') {
+        item.quantity = +value || 0;
+      } else if (field === 'unitCost') {
+        item.unitCost = +value || 0;
+      }
+
       if (field === 'quantity' || field === 'unitCost' || field === 'insumoId') {
         const qty = parseFloat(item.quantity as any) || 0;
         const cost = parseFloat(item.unitCost as any) || 0;
@@ -134,10 +141,24 @@ export const PurchasesScreen: React.FC = () => {
 
   const handleSavePurchase = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!supplierName || items.length === 0) return;
+    if (!supplierName || items.length === 0) {
+      addNotification(
+        'Faltan datos del proveedor',
+        'Ingresa el nombre del proveedor para registrar la compra.',
+        'warning'
+      );
+      return;
+    }
 
     const validItems = items.filter((it) => it.insumoId && it.quantity > 0);
-    if (validItems.length === 0) return;
+    if (validItems.length === 0) {
+      addNotification(
+        'Falta seleccionar insumos',
+        'Selecciona al menos un insumo con cantidad mayor a 0 para ingresar al Kardex.',
+        'warning'
+      );
+      return;
+    }
 
     const generatedDocNum = isProvisionalDoc
       ? `VALE-${Math.floor(100 + Math.random() * 900)}`

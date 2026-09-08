@@ -1989,6 +1989,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...newPurchaseData,
       id: purchaseId,
       time: timeStr,
+      items: newPurchaseData.items.map((i) => ({
+        ...i,
+        quantity: Number(i.quantity) || 0,
+        unitCost: Number(i.unitCost) || 0,
+        totalCost: Number(i.totalCost) || 0,
+      })),
     };
 
     setPurchases((prev) => [completedPurchase, ...prev]);
@@ -2203,6 +2209,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPurchases((prev) =>
           prev.map((p) => (p.id === serverPurchase.id ? serverPurchase : p))
         );
+        void refreshKardex();
+        void refreshTransactions();
       },
     });
   };
