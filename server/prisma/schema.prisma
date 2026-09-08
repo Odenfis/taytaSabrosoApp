@@ -1,0 +1,587 @@
+// Tayta & Sabroso POS - SQL Server (Azure) Schema
+// Multi-empresa en una sola base de datos (multi-tenancy por fila: companyId).
+//
+// Convenciones:
+//  - IDs: UUID (nvarchar(36)) generados client-side para soportar operación offline.
+//  - companyId NULL en tablas compartidas = recurso de tipo 'ambas' (holding).
+//  - clientOpId UNIQUE = clave de idempotencia del motor de sync (reintentos seguros).
+//  - version + updatedAt en catálogos = last-write-wins con detección de conflicto.
+//  - isDeleted = soft delete para propagar bajas a terminales offline.
+//  - Dinero Decimal(12,2); Stock/costos unitarios Decimal(12,4).
+//  - La UI demo conserva campos display (date/time strings); se añaden columnas *Utc para ordenar/reportar.
+//  - SQL Server (mssql) no soporta enums en Prisma => Strings tipados + validación en servicios.
+//  - Referential actions: NoAction rompe los múltiples paths de cascade (ciclos del modelo).
+//  - Capa física en español: @@map/@map snake_case; los identificadores TS y el JSON de la API
+//    quedan en inglés (contrato con frontend intacto).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+// ============================ TENANCY ============================
+
+model Company {
+  id          String @id @db.NVarChar(36)
+  name        String @map("nombre") @db.NVarChar(200)
+  tradeName   String @map("nombre_comercial") @db.NVarChar(120)
+  ruc         String @unique @db.NVarChar(20)
+  specialty   String @map("especialidad") @db.NVarChar(200)
+  themeColor  String @map("color_tema") @db.NVarChar(20)
+  accentColor String @map("color_acento") @db.NVarChar(20)
+  badgeText   String @map("texto_insignia") @db.NVarChar(80)
+  address     String @map("direccion") @db.NVarChar(200)
+
+  tables          Table[]
+  products        Product[]
+  orders          Order[]
+  transactions    Transaction[]
+  bankAccounts    BankAccount[]
+  paymentMethods  CustomPaymentMethod[]
+  shiftRecords    ShiftRecord[]
+  companyShift    CompanyShift?
+  printers        Printer[]
+  insumos         Insumo[]
+  recipes         Recipe[]
+  purchases       Purchase[]
+  kardexMovements KardexMovement[]
+  devices         Device[]
+  users           User[]
+  clientOps       ClientOp[]
+  numbering       NumberingSequence[]
+
+  @@map("empresas")
+}
+
+// Terminal fisica que genera operaciones (para atribucion en el motor de sync).
+model Device {
+  id           String   @id @db.NVarChar(36)
+  companyId    String?  @map("empresa_id") @db.NVarChar(36) // null = terminal compartida del holding
+  name         String   @map("nombre") @db.NVarChar(100)
+  terminalCode String   @unique @map("codigo_terminal") @db.NVarChar(30)
+  lastSeenAt   DateTime @map("ultima_vista_en") @default(now()) @db.DateTime2
+  isActive     Boolean  @map("esta_activo") @default(true)
+
+  company   Company?   @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  sessions  Session[]
+  clientOps ClientOp[]
+
+  @@index([companyId])
+  @@map("dispositivos")
+}
+
+// Secuencias por empresa para numerar folios (tickets de orden) sin colision entre terminales.
+model NumberingSequence {
+  companyId  String   @map("empresa_id") @db.NVarChar(36)
+  entity     String   @map("entidad") @db.NVarChar(50)
+  lastNumber Int      @map("ultimo_numero") @default(0)
+  updatedAt  DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+
+  @@id([companyId, entity])
+  @@map("secuencias_numeracion")
+}
+
+// ============================ AUTH ============================
+
+model User {
+  id                String   @id @db.NVarChar(36)
+  companyId         String?  @map("empresa_id") @db.NVarChar(36) // null = usuario holding ('ambas')
+  name              String   @map("nombre") @db.NVarChar(120)
+  pinHash           String   @map("hash_pin") @db.NVarChar(200)
+  passwordHash      String?  @map("hash_contrasena") @db.NVarChar(200)
+  role              String   @map("rol") @default("Cajero") @db.NVarChar(20) // Cajero | Mesero | Administrador | Jefe de Cocina
+  terminal          String   @db.NVarChar(100)
+  avatarUrl         String?  @map("url_avatar") @db.NVarChar(1000)
+  assignedCompanyId String?  @map("empresa_asignada_id") @db.NVarChar(36) // null = 'ambas'
+  isActive          Boolean  @map("esta_activo") @default(true)
+  isDeleted         Boolean  @map("esta_eliminado") @default(false)
+  version           Int      @default(1)
+  createdAt         DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt         DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company  Company?  @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  sessions Session[]
+
+  @@index([companyId])
+  @@map("usuarios")
+}
+
+model Session {
+  id        String   @id @db.NVarChar(36)
+  userId    String   @map("usuario_id") @db.NVarChar(36)
+  deviceId  String   @map("dispositivo_id") @db.NVarChar(36)
+  tokenHash String   @unique @map("hash_token") @db.NVarChar(200)
+  expiresAt DateTime @map("expira_en") @db.DateTime2
+  createdAt DateTime @map("creado_en") @default(now()) @db.DateTime2
+
+  user   User   @relation(fields: [userId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@map("sesiones")
+}
+
+// ============================ OPERACION (MESAS / PEDIDOS) ============================
+
+model Table {
+  id             String   @id @db.NVarChar(36)
+  companyId      String   @map("empresa_id") @db.NVarChar(36)
+  number         String   @map("numero") @db.NVarChar(20)
+  capacity       Int      @map("capacidad")
+  zone           String   @map("zona") @db.NVarChar(30) // Salón Principal | Terraza | Barra | Zona Brasas
+  status         String   @map("estado") @default("libre") @db.NVarChar(20) // libre | ocupada | por_cobrar
+  occupiedSince  String?  @map("ocupada_desde") @db.NVarChar(30)
+  minutesElapsed Int?     @map("minutos_transcurridos")
+  currentOrderId String?  @map("pedido_actual_id") @db.NVarChar(36) // sin FK (auto-referencia circular: order.tableId -> tables.id)
+  waiter         String?  @map("mesero") @db.NVarChar(100)
+  notes          String?  @map("notas") @db.NVarChar(500)
+  isDeleted      Boolean  @map("esta_eliminado") @default(false)
+  version        Int      @default(1)
+  createdAt      DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt      DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  orders  Order[]
+
+  @@index([companyId, status])
+  @@index([companyId, zone])
+  @@map("mesas")
+}
+
+model Product {
+  id          String   @id @db.NVarChar(36)
+  companyId   String   @map("empresa_id") @db.NVarChar(36)
+  name        String   @map("nombre") @db.NVarChar(150)
+  description String   @map("descripcion") @db.NVarChar(500)
+  price       Decimal  @map("precio") @db.Decimal(12, 2)
+  category    String   @map("categoria") @db.NVarChar(20) // platos | entradas | bebidas | postres | brasas
+  image       String   @map("imagen") @db.NVarChar(1000)
+  available   Boolean  @map("disponible") @default(true)
+  hasRecipe   Boolean  @map("tiene_receta") @default(false)
+  isDeleted   Boolean  @map("esta_eliminado") @default(false)
+  version     Int      @default(1)
+  createdAt   DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt   DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company    Company     @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  orderItems OrderItem[]
+  recipes    Recipe[]
+
+  @@index([companyId, category])
+  @@index([companyId, available])
+  @@map("productos")
+}
+
+model Order {
+  id             String    @id @db.NVarChar(36)
+  companyId      String    @map("empresa_id") @db.NVarChar(36)
+  ticketNumber   String    @map("numero_ticket") @db.NVarChar(30)
+  tableId        String?   @map("mesa_id") @db.NVarChar(36)
+  tableNumber    String?   @map("numero_mesa") @db.NVarChar(20)
+  zone           String    @map("zona") @db.NVarChar(30) // Salón Principal | Terraza | Barra | Zona Brasas
+  waiter         String    @map("mesero") @db.NVarChar(100)
+  createdAt      String    @map("creado_en") @db.NVarChar(30) // display demo (ej. "12:00 PM")
+  createdUtc     DateTime  @map("creado_utc") @default(now()) @db.DateTime2
+  subtotal       Decimal   @db.Decimal(12, 2)
+  igv            Decimal   @db.Decimal(12, 2)
+  total          Decimal   @db.Decimal(12, 2)
+  status         String    @map("estado") @default("abierto") @db.NVarChar(20) // abierto | en_cocina | por_cobrar | cobrado
+  paymentMethod  String?   @map("metodo_pago") @db.NVarChar(100)
+  amountReceived Decimal?  @map("monto_recibido") @db.Decimal(12, 2)
+  change         Decimal?  @map("vuelto") @db.Decimal(12, 2)
+  closedAt       String?   @map("cerrado_en") @db.NVarChar(30)
+  closedUtc      DateTime? @map("cerrado_utc") @db.DateTime2
+  clientOpId     String    @unique @map("id_operacion_cliente") @db.NVarChar(36)
+  isDeleted      Boolean   @map("esta_eliminado") @default(false)
+  version        Int       @default(1)
+  updatedAt      DateTime  @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company      Company       @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  table        Table?        @relation(fields: [tableId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  items        OrderItem[]
+  transactions Transaction[]
+
+  @@index([companyId, status])
+  @@index([tableId])
+  @@index([createdUtc])
+  @@index([ticketNumber])
+  @@map("pedidos")
+}
+
+model OrderItem {
+  id        String  @id @db.NVarChar(36)
+  orderId   String  @map("pedido_id") @db.NVarChar(36)
+  productId String? @map("producto_id") @db.NVarChar(36)
+  name      String  @map("nombre") @db.NVarChar(150)
+  price     Decimal @map("precio") @db.Decimal(12, 2)
+  quantity  Decimal @map("cantidad") @db.Decimal(12, 2)
+  notes     String? @map("notas") @db.NVarChar(500)
+  status    String  @map("estado") @default("agregado") @db.NVarChar(20) // agregado | en_cocina | servido
+  addedAt   String  @map("agregado_en") @db.NVarChar(30)
+
+  order   Order    @relation(fields: [orderId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([orderId])
+  @@map("detalle_pedidos")
+}
+
+// ============================ LIBRO DE CAJA ============================
+
+model Transaction {
+  id                    String   @id @db.NVarChar(36)
+  companyId             String?  @map("empresa_id") @db.NVarChar(36) // null = compartida (legacy)
+  time                  String   @map("hora") @db.NVarChar(30)
+  date                  String   @map("fecha") @db.NVarChar(30)
+  timestamp             DateTime @map("marca_tiempo") @db.DateTime2
+  type                  String   @map("tipo") @db.NVarChar(50) // Venta (Mesa) | Venta (Barra) | Pago Proveedor | Caja Chica | Retiro de Caja | Ingreso Extra | Ajuste de Saldo
+  description           String   @map("descripcion") @db.NVarChar(300)
+  amount                Decimal  @map("monto") @db.Decimal(12, 2)
+  isIncome              Boolean  @map("es_ingreso") @default(true)
+  paymentMethod         String?  @map("metodo_pago") @db.NVarChar(100) // guarda nombre (puede ser metodo personalizado)
+  customPaymentMethodId String?  @map("metodo_pago_personalizado_id") @db.NVarChar(36)
+  bankAccountId         String?  @map("cuenta_bancaria_id") @db.NVarChar(36)
+  bankAccountAlias      String?  @map("alias_cuenta_bancaria") @db.NVarChar(200)
+  shift                 String?  @map("turno") @db.NVarChar(10) // Día | Noche
+  referenceNumber       String?  @map("numero_referencia") @db.NVarChar(100)
+  tableNumber           String?  @map("numero_mesa") @db.NVarChar(20)
+  orderId               String?  @map("pedido_id") @db.NVarChar(36)
+  ticketNumber          String?  @map("numero_ticket") @db.NVarChar(30)
+  clientOpId            String   @unique @map("id_operacion_cliente") @db.NVarChar(36)
+  isDeleted             Boolean  @map("esta_eliminado") @default(false)
+
+  company          Company?             @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  order            Order?               @relation(fields: [orderId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  bankAccount      BankAccount?         @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  paymentMethodRef CustomPaymentMethod? @relation(fields: [customPaymentMethodId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([companyId])
+  @@index([timestamp])
+  @@index([orderId])
+  @@index([bankAccountId])
+  @@map("transacciones")
+}
+
+// ============================ FINANZAS ============================
+
+model BankAccount {
+  id             String   @id @db.NVarChar(36)
+  companyId      String   @map("empresa_id") @db.NVarChar(36)
+  bankName       String   @map("nombre_banco") @db.NVarChar(80)
+  accountNumber  String   @map("numero_cuenta") @db.NVarChar(50)
+  cci            String?  @db.NVarChar(60)
+  accountType    String   @map("tipo_cuenta") @db.NVarChar(20) // Corriente | Ahorros
+  currency       String   @map("moneda") @default("PEN") @db.NVarChar(5) // PEN | USD
+  holderName     String   @map("nombre_titular") @db.NVarChar(150)
+  alias          String   @db.NVarChar(200)
+  currentBalance Decimal  @map("saldo_actual") @db.Decimal(12, 2)
+  isActive       Boolean  @map("esta_activo") @default(true)
+  notes          String?  @map("notas") @db.NVarChar(500)
+  isDeleted      Boolean  @map("esta_eliminado") @default(false)
+  version        Int      @default(1)
+  createdAt      DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt      DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company        Company               @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  paymentMethods CustomPaymentMethod[]
+  transactions   Transaction[]
+  purchases      Purchase[]
+
+  @@index([companyId])
+  @@map("cuentas_bancarias")
+}
+
+model CustomPaymentMethod {
+  id                      String   @id @db.NVarChar(36)
+  companyId               String?  @map("empresa_id") @db.NVarChar(36) // null = 'ambas'
+  name                    String   @map("nombre") @db.NVarChar(150)
+  category                String   @map("categoria") @db.NVarChar(40) // Efectivo | Billetera Digital | Tarjeta / POS | Transferencia Bancaria | Crédito
+  bankAccountId           String?  @map("cuenta_bancaria_id") @db.NVarChar(36)
+  bankAccountAlias        String?  @map("alias_cuenta_bancaria") @db.NVarChar(200)
+  commissionPct           Decimal? @map("porcentaje_comision") @db.Decimal(5, 2)
+  requiresReferenceNumber Boolean  @map("requiere_numero_referencia") @default(false)
+  icon                    String   @map("icono") @db.NVarChar(50)
+  isActive                Boolean  @map("esta_activo") @default(true)
+  isDeleted               Boolean  @map("esta_eliminado") @default(false)
+  version                 Int      @default(1)
+  createdAt               DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt               DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company      Company?      @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  bankAccount  BankAccount?  @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  transactions Transaction[]
+
+  @@index([companyId])
+  @@index([bankAccountId])
+  @@map("metodos_pago")
+}
+
+model ShiftRecord {
+  id                 String    @id @db.NVarChar(36)
+  companyId          String    @map("empresa_id") @db.NVarChar(36)
+  shift              String    @map("turno") @db.NVarChar(10) // Día | Noche
+  openedAt           String    @map("abierto_en") @db.NVarChar(30)
+  openedUtc          DateTime  @map("abierto_utc") @default(now()) @db.DateTime2
+  closedAt           String?   @map("cerrado_en") @db.NVarChar(30)
+  closedUtc          DateTime? @map("cerrado_utc") @db.DateTime2
+  openedBy           String    @map("abierto_por") @db.NVarChar(100)
+  closedBy           String?   @map("cerrado_por") @db.NVarChar(100)
+  initialCash        Decimal   @map("caja_inicial") @db.Decimal(12, 2)
+  finalCashReported  Decimal?  @map("caja_final_reportada") @db.Decimal(12, 2)
+  systemCashExpected Decimal?  @map("caja_esperada_sistema") @db.Decimal(12, 2)
+  cashDifference     Decimal?  @map("diferencia_caja") @db.Decimal(12, 2)
+  totalSales         Decimal   @map("total_ventas") @default(0) @db.Decimal(12, 2)
+  totalExpenses      Decimal   @map("total_gastos") @default(0) @db.Decimal(12, 2)
+  cardSales          Decimal   @map("ventas_tarjeta") @default(0) @db.Decimal(12, 2)
+  digitalWalletSales Decimal   @map("ventas_billetera_digital") @default(0) @db.Decimal(12, 2)
+  bankTransferSales  Decimal   @map("ventas_transferencia") @default(0) @db.Decimal(12, 2)
+  status             String    @map("estado") @default("cerrado") @db.NVarChar(20) // abierto | cerrado
+  notes              String?   @map("notas") @db.NVarChar(500)
+
+  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([companyId, shift])
+  @@index([closedUtc])
+  @@map("registros_turno")
+}
+
+// Estado del turno vigente por empresa (Día/Noche).
+model CompanyShift {
+  companyId    String   @id @map("empresa_id") @db.NVarChar(36)
+  currentShift String   @map("turno_actual") @default("Día") @db.NVarChar(10) // Día | Noche
+  openedAt     String   @map("abierto_en") @db.NVarChar(30)
+  openedUtc    DateTime @map("abierto_utc") @default(now()) @db.DateTime2
+  openedBy     String   @map("abierto_por") @db.NVarChar(100)
+  initialCash  Decimal  @map("caja_inicial") @default(350) @db.Decimal(12, 2)
+  updatedAt    DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+
+  @@map("turnos_empresa")
+}
+
+// ============================ INVENTARIO (INSUMOS / RECETAS / COMPRAS / KARDEX) ============================
+
+model Insumo {
+  id               String    @id @db.NVarChar(36)
+  companyId        String?   @map("empresa_id") @db.NVarChar(36) // null = 'ambas'
+  code             String    @unique @map("codigo") @db.NVarChar(20)
+  name             String    @map("nombre") @db.NVarChar(150)
+  category         String    @map("categoria") @db.NVarChar(80) // Carnes & Aves | Pescados & Mariscos | Verduras & Frutas | Abarrotes & Especias | Bebidas & Licores | Lácteos & Huevos
+  unit             String    @map("unidad") @db.NVarChar(10) // kg | g | L | ml | un | bot
+  currentStock     Decimal   @map("stock_actual") @db.Decimal(12, 4)
+  minStock         Decimal   @map("stock_minimo") @db.Decimal(12, 4)
+  costPerUnit      Decimal   @map("costo_por_unidad") @db.Decimal(12, 4)
+  lastPurchaseDate String?   @map("fecha_ultima_compra") @db.NVarChar(30)
+  lastPurchaseUtc  DateTime? @map("ultima_compra_utc") @db.DateTime2
+  isDeleted        Boolean   @map("esta_eliminado") @default(false)
+  version          Int       @default(1)
+  createdAt        DateTime  @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt        DateTime  @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company           Company?           @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  recipeIngredients RecipeIngredient[]
+  purchaseItems     PurchaseItem[]
+  kardexMovements   KardexMovement[]
+
+  @@index([companyId])
+  @@index([category])
+  @@map("insumos")
+}
+
+model Recipe {
+  id                     String   @id @db.NVarChar(36)
+  companyId              String   @map("empresa_id") @db.NVarChar(36)
+  productId              String?  @map("producto_id") @db.NVarChar(36)
+  productName            String   @map("nombre_producto") @db.NVarChar(150)
+  category               String   @map("categoria") @db.NVarChar(20) // platos | entradas | bebidas | postres | brasas
+  portions               Int      @map("porciones") @default(1)
+  salePrice              Decimal  @map("precio_venta") @db.Decimal(12, 2)
+  totalCost              Decimal  @map("costo_total") @db.Decimal(12, 2)
+  theoreticalFoodCostPct Decimal  @map("porcentaje_costo_teorico") @db.Decimal(5, 2)
+  preparationNotes       String?  @map("notas_preparacion") @db.NVarChar(1000)
+  isDeleted              Boolean  @map("esta_eliminado") @default(false)
+  version                Int      @default(1)
+  createdAt              DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt              DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company     Company            @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  product     Product?           @relation(fields: [productId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  ingredients RecipeIngredient[]
+
+  @@index([companyId])
+  @@index([productId])
+  @@map("recetas")
+}
+
+model RecipeIngredient {
+  id           String  @id @db.NVarChar(36)
+  recipeId     String  @map("receta_id") @db.NVarChar(36)
+  insumoId     String? @map("insumo_id") @db.NVarChar(36)
+  insumoName   String  @map("nombre_insumo") @db.NVarChar(150)
+  quantity     Decimal @map("cantidad") @db.Decimal(12, 4)
+  unit         String  @map("unidad") @db.NVarChar(10)
+  costPerUnit  Decimal @map("costo_por_unidad") @db.Decimal(12, 4)
+  subtotalCost Decimal @map("costo_subtotal") @db.Decimal(12, 2)
+
+  recipe Recipe  @relation(fields: [recipeId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+  insumo Insumo? @relation(fields: [insumoId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([recipeId])
+  @@map("ingredientes_receta")
+}
+
+model Purchase {
+  id                    String   @id @db.NVarChar(36)
+  companyId             String   @map("empresa_id") @db.NVarChar(36)
+  category              String   @map("categoria") @db.NVarChar(40) // insumos | productos_reventa | gastos_operativos
+  documentStatus        String   @map("estado_documento") @default("provisional") @db.NVarChar(20) // provisional | regularizado
+  provisionalNoteNumber String?  @map("numero_papeleta_provisional") @db.NVarChar(60)
+  invoiceNumber         String   @map("numero_factura") @db.NVarChar(60)
+  supplierName          String   @map("nombre_proveedor") @db.NVarChar(200)
+  supplierRuc           String   @map("ruc_proveedor") @db.NVarChar(20)
+  date                  String   @map("fecha") @db.NVarChar(30)
+  time                  String   @map("hora") @db.NVarChar(30)
+  purchasedUtc          DateTime @map("comprada_utc") @default(now()) @db.DateTime2
+  shift                 String   @map("turno") @db.NVarChar(10) // Día | Noche
+  subtotal              Decimal  @db.Decimal(12, 2)
+  igv                   Decimal  @db.Decimal(12, 2)
+  total                 Decimal  @db.Decimal(12, 2)
+  paymentStatus         String   @map("estado_pago") @db.NVarChar(50) // Pagado (Caja) | Transferencia Bancaria | Crédito 15 días | Billetera Digital
+  paidFromCash          Boolean  @map("pagado_desde_caja") @default(false)
+  bankAccountId         String?  @map("cuenta_bancaria_id") @db.NVarChar(36)
+  bankAccountAlias      String?  @map("alias_cuenta_bancaria") @db.NVarChar(200)
+  notes                 String?  @map("notas") @db.NVarChar(500)
+  regularizedAt         String?  @map("regularizado_en") @db.NVarChar(30)
+  regularizedBy         String?  @map("regularizado_por") @db.NVarChar(100)
+  clientOpId            String   @unique @map("id_operacion_cliente") @db.NVarChar(36)
+  isDeleted             Boolean  @map("esta_eliminado") @default(false)
+  version               Int      @default(1)
+  createdAt             DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt             DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company     Company?       @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  bankAccount BankAccount?   @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  items       PurchaseItem[]
+
+  @@index([companyId])
+  @@index([bankAccountId])
+  @@map("compras")
+}
+
+model PurchaseItem {
+  id         String  @id @db.NVarChar(36)
+  purchaseId String  @map("compra_id") @db.NVarChar(36)
+  insumoId   String? @map("insumo_id") @db.NVarChar(36)
+  insumoName String  @map("nombre_insumo") @db.NVarChar(150)
+  quantity   Decimal @map("cantidad") @db.Decimal(12, 4)
+  unit       String  @map("unidad") @db.NVarChar(10)
+  unitCost   Decimal @map("costo_unitario") @db.Decimal(12, 4)
+  totalCost  Decimal @map("costo_total") @db.Decimal(12, 2)
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+  insumo   Insumo?  @relation(fields: [insumoId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([purchaseId])
+  @@map("detalle_compras")
+}
+
+model KardexMovement {
+  id           String   @id @db.NVarChar(36)
+  companyId    String   @map("empresa_id") @db.NVarChar(36)
+  timestamp    DateTime @map("marca_tiempo") @db.DateTime2
+  date         String   @map("fecha") @db.NVarChar(30)
+  time         String   @map("hora") @db.NVarChar(30)
+  insumoId     String?  @map("insumo_id") @db.NVarChar(36)
+  insumoName   String   @map("nombre_insumo") @db.NVarChar(150)
+  type         String   @map("tipo") @db.NVarChar(30) // ENTRADA_COMPRA | SALIDA_VENTA_POS | AJUSTE_MERMA | INVENTARIO_INICIAL
+  referenceDoc String   @map("documento_referencia") @db.NVarChar(200)
+  quantity     Decimal  @map("cantidad") @db.Decimal(12, 4)
+  unit         String   @map("unidad") @db.NVarChar(10)
+  unitCost     Decimal  @map("costo_unitario") @db.Decimal(12, 4)
+  totalCost    Decimal  @map("costo_total") @db.Decimal(12, 2)
+  stockBefore  Decimal  @map("stock_antes") @db.Decimal(12, 4)
+  stockAfter   Decimal  @map("stock_despues") @db.Decimal(12, 4)
+  notes        String?  @map("notas") @db.NVarChar(300)
+  clientOpId   String   @unique @map("id_operacion_cliente") @db.NVarChar(36)
+
+  company Company @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  insumo  Insumo? @relation(fields: [insumoId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([companyId])
+  @@index([insumoId, timestamp])
+  @@index([type])
+  @@map("movimientos_kardex")
+}
+
+// ============================ CONFIGURACION (IMPRESORAS) ============================
+
+model Printer {
+  id             String   @id @db.NVarChar(36)
+  companyId      String?  @map("empresa_id") @db.NVarChar(36) // null = 'ambas'
+  name           String   @map("nombre") @db.NVarChar(200)
+  role           String   @map("rol") @db.NVarChar(30) // cocina_fria | cocina_caliente | barra | caja
+  connectionType String   @map("tipo_conexion") @db.NVarChar(30) // LAN_TCP | USB | BLUETOOTH | BROWSER_PRINT
+  ipAddress      String?  @map("direccion_ip") @db.NVarChar(50)
+  port           Int?     @map("puerto") @default(9100)
+  paperWidth     String   @map("ancho_papel") @default("80mm") @db.NVarChar(10)
+  autoCut        Boolean  @map("corte_automatico") @default(true)
+  beepOnPrint    Boolean  @map("pitido_al_imprimir") @default(false)
+  status         String   @map("estado") @default("online") @db.NVarChar(20) // online | offline
+  isEnabled      Boolean  @map("esta_habilitado") @default(true)
+  isDeleted      Boolean  @map("esta_eliminado") @default(false)
+  version        Int      @default(1)
+  createdAt      DateTime @map("creado_en") @default(now()) @db.DateTime2
+  updatedAt      DateTime @map("actualizado_en") @updatedAt @db.DateTime2
+
+  company    Company?          @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  categories PrinterCategory[]
+
+  @@index([companyId])
+  @@map("impresoras")
+}
+
+model PrinterCategory {
+  id        String @id @db.NVarChar(36)
+  printerId String @map("impresora_id") @db.NVarChar(36)
+  category  String @map("categoria") @db.NVarChar(20) // platos | entradas | bebidas | postres | brasas
+  idx       Int    @map("orden") @default(0)
+
+  printer Printer @relation(fields: [printerId], references: [id], onUpdate: NoAction, onDelete: Cascade)
+
+  @@unique([printerId, category])
+  @@map("categorias_impresora")
+}
+
+// ============================ MOTOR DE SYNC (OFFLINE-FIRST) ============================
+
+// Cola de operaciones idempotentes: cada mutacion del terminal viaja como envelope
+// con clientOpId y se aplica en una transaccion unica del servidor.
+model ClientOp {
+  id           String    @id @db.NVarChar(36)
+  deviceId     String    @map("dispositivo_id") @db.NVarChar(36)
+  companyId    String?   @map("empresa_id") @db.NVarChar(36)
+  entity       String    @map("entidad") @db.NVarChar(50)
+  operation    String    @map("operacion") @db.NVarChar(100)
+  payload      String    @map("carga") @db.NVarChar(Max)
+  clientOpId   String    @unique @map("id_operacion_cliente") @db.NVarChar(36)
+  status       String    @map("estado") @default("PENDING") @db.NVarChar(30) // PENDING | IN_FLIGHT | APPLIED | FAILED_RETRYABLE | FAILED_TERMINAL
+  attemptCount Int       @map("numero_intentos") @default(0)
+  lastError    String?   @map("ultimo_error") @db.NVarChar(500)
+  createdAt    DateTime  @map("creado_en") @default(now()) @db.DateTime2
+  processedAt  DateTime? @map("procesado_en") @db.DateTime2
+
+  device  Device   @relation(fields: [deviceId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  company Company? @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+
+  @@index([deviceId, status])
+  @@index([createdAt])
+  @@map("operaciones_cliente")
+}

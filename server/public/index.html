@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="es" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tayta &amp; Sabroso API</title>
+    <style>
+      :root {
+        --bg: #121212;
+        --panel: #1c1c1c;
+        --panel-2: #242424;
+        --text: #e5e2e1;
+        --muted: #9a9796;
+        --accent: #ffb597;
+        --accent-2: #ebc246;
+        --ok: #34d399;
+        --err: #f87171;
+        --border: #2e2e2e;
+        --mono: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        min-height: 100vh;
+        padding: 32px 16px 48px;
+      }
+      .wrap { max-width: 980px; margin: 0 auto; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+      .logo { display: flex; align-items: center; gap: 12px; }
+      .logo-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+      .logo h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
+      .logo .sub { color: var(--muted); font-size: 13px; font-weight: 500; }
+      .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+      .badge {
+        font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+        border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+        display: inline-flex; align-items: center; gap: 6px;
+      }
+      .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .badge.ok .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+      .badge.err .dot { background: var(--err); box-shadow: 0 0 8px var(--err); box-shadow: none; }
+      .card {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+        padding: 20px; margin-bottom: 20px;
+      }
+      .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+      .card h2 .tag { color: var(--accent); }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+      label { display: block; font-size: 12px; color: var(--muted); font-weight: 600; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+      input {
+        width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: var(--mono);
+      }
+      input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+      .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .btn {
+        width: 100%; margin-top: 14px; padding: 11px; border: none; border-radius: 8px;
+        font-size: 14px; font-weight: 700; cursor: pointer; color: #1a1008;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      }
+      .btn:hover { filter: brightness(1.06); }
+      .btn:active { transform: translateY(1px); }
+      .result { margin-top: 14px; }
+      .result .row { font-size: 13px; color: var(--muted); margin-bottom: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .result .row strong { color: var(--text); font-weight: 600; }
+      pre {
+        background: #0d0d0d; border: 1px solid var(--border); border-radius: 8px;
+        padding: 12px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+        white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto;
+        color: #c9f7e0;
+      }
+      .token-box { display: flex; gap: 8px; align-items: stretch; }
+      .token-box pre { flex: 1; }
+      .copy-btn {
+        background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+        border-radius: 8px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 600;
+      }
+      .copy-btn:hover { color: var(--text); border-color: var(--muted); }
+      .msg-err { color: var(--err); font-size: 13px; font-weight: 600; }
+      .msg-ok { color: var(--ok); font-size: 13px; font-weight: 600; }
+      .endpoint {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        padding: 9px 10px; border-radius: 8px; background: var(--panel-2); margin-bottom: 6px; font-size: 13px;
+      }
+      .endpoint .path { font-family: var(--mono); }
+      .endpoint .method { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 5px; }
+      .m-get { background: #0f3d3a; color: #5eead4; }
+      .m-post { background: #4a3200; color: #fcd34d; }
+      .m-patch { background: #312e81; color: #a5b4fc; }
+      .m-delete { background: #7f1d1d; color: #fca5a5; }
+      .e-copy {
+        background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px;
+        font-size: 11px; padding: 4px 8px; cursor: pointer;
+      }
+      .e-copy:hover { color: var(--text); }
+      .empty { color: var(--muted); font-size: 13px; }
+      footer { margin-top: 12px; color: var(--muted); font-size: 12px; text-align: center; }
+      footer code { font-family: var(--mono); color: var(--text); }
+      .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: sp 0.8s linear infinite; }
+      @keyframes sp { to { transform: rotate(360deg); } }
+      .hide { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="logo">
+          <div class="logo-dot"></div>
+          <div>
+            <h1>Tayta &amp; Sabroso API</h1>
+            <div class="sub">Backend Express &middot; SQL Server &middot; multi-empresa</div>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge" id="health-badge"><span class="dot"></span><span id="health-text">Consultando...</span></span>
+          <span class="badge" id="time-badge">--:--:--</span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <div>
+          <div class="card">
+            <h2><span class="tag">01</span> Estado del servicio</h2>
+            <div id="health-rows"></div>
+          </div>
+
+          <div class="card">
+            <h2><span class="tag">02</span> Probar login</h2>
+            <form id="login-form" autocomplete="off">
+              <div class="row-2">
+                <div>
+                  <label for="pin">PIN</label>
+                  <input id="pin" value="1004" inputmode="numeric" />
+                </div>
+                <div>
+                  <label for="deviceCode">Device Code</label>
+                  <input id="deviceCode" value="TERM-CENTRAL-01" />
+                </div>
+              </div>
+              <label for="terminalName">Terminal</label>
+              <input id="terminalName" value="Terminal Central 01" />
+              <button class="btn" type="submit" id="login-btn">Iniciar sesión</button>
+            </form>
+            <div class="result hide" id="login-result"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2><span class="tag">03</span> Endpoints</h2>
+          <div id="endpoints"></div>
+        </div>
+      </div>
+
+      <footer>
+        Landing de desarrollo / operaciones. Credenciales demo: PIN <code>1004</code> · device
+        <code>TERM-CENTRAL-01</code>. Docs interactivas (Swagger) llegan en la Fase C.
+      </footer>
+    </div>
+
+    <script>
+      const ENDPOINTS = [
+        { group: 'Auth', items: [
+          { method: 'POST', path: '/api/auth/login' },
+          { method: 'GET', path: '/api/auth/me' },
+          { method: 'POST', path: '/api/auth/logout' },
+        ]},
+        { group: 'Catálogos', items: [
+          { method: 'GET', path: '/api/catalogs/companies' },
+          { method: 'GET', path: '/api/catalogs/tables' },
+          { method: 'GET', path: '/api/catalogs/products' },
+          { method: 'GET', path: '/api/catalogs/insumos' },
+          { method: 'GET', path: '/api/catalogs/recipes' },
+          { method: 'GET', path: '/api/catalogs/bank-accounts' },
+          { method: 'GET', path: '/api/catalogs/payment-methods' },
+          { method: 'GET', path: '/api/catalogs/printers' },
+        ]},
+        { group: 'Operaciones', items: [
+          { method: 'GET', path: '/api/operations/orders/active' },
+          { method: 'POST', path: '/api/operations/orders/open' },
+          { method: 'POST', path: '/api/operations/orders/quick-bar' },
+          { method: 'POST', path: '/api/operations/tables/:id/pay' },
+          { method: 'GET', path: '/api/operations/purchases' },
+          { method: 'POST', path: '/api/operations/purchases' },
+          { method: 'GET', path: '/api/operations/kardex' },
+          { method: 'POST', path: '/api/operations/kardex/adjustments' },
+          { method: 'GET', path: '/api/operations/shifts/records' },
+          { method: 'POST', path: '/api/operations/shifts/switch' },
+          { method: 'GET', path: '/api/operations/transactions' },
+        ]},
+        { group: 'Reportes', items: [
+          { method: 'GET', path: '/api/reports/ratios' },
+          { method: 'GET', path: '/api/reports/summary' },
+        ]},
+      ];
+
+      const $ = (sel) => document.querySelector(sel);
+      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const methodClass = (m) => ({ GET: 'm-get', POST: 'm-post', PATCH: 'm-patch', DELETE: 'm-delete' })[m] || 'm-get';
+
+      async function loadHealth() {
+        try {
+          const r = await fetch('/health');
+          const d = await r.json();
+          const badge = $('#health-badge');
+          $('#health-text').textContent = d.ok ? 'API en línea' : 'API con problema';
+          badge.classList.add('ok');
+          $('#time-badge').textContent = new Date(d.time).toLocaleTimeString('es-PE');
+          $('#health-rows').innerHTML = `
+            <div class="row"><span>status</span> <strong>${d.ok ? 'ok' : 'fail'}</strong></div>
+            <div class="row"><span>service</span> <strong>${esc(d.service)}</strong></div>
+            <div class="row"><span>time</span> <strong>${esc(d.time)}</strong></div>
+          `;
+        } catch (e) {
+          const badge = $('#health-badge');
+          badge.classList.add('err');
+          $('#health-text').textContent = 'API no responde';
+          $('#health-rows').innerHTML = `<div class="row msg-err">No se pudo conectar: ${esc(e.message)}</div>`;
+        }
+      }
+
+      function renderEndpoints() {
+        const wrapEl = $('#endpoints');
+        wrapEl.innerHTML = ENDPOINTS.map((g) => `
+          <h2 style="margin-top:16px" class="tag">${esc(g.group)}</h2>
+          ${g.items.map((it, i) => `
+            <div class="endpoint">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0">
+                <span class="method ${methodClass(it.method)}">${it.method}</span>
+                <span class="path" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.path)}</span>
+              </div>
+              <button class="e-copy" data-path="${esc(it.path + '')}" data-group="${esc(g.group)}">copiar</button>
+            </div>
+          `).join('')}
+        `).join('');
+        wrapEl.querySelectorAll('.e-copy').forEach((b) =>
+          b.addEventListener('click', () => {
+            navigator.clipboard.writeText(b.dataset.path);
+            b.textContent = 'copiado';
+            setTimeout(() => (b.textContent = 'copiar'), 1200);
+          })
+        );
+      }
+
+      async function doLogin(e) {
+        e.preventDefault();
+        const btn = $('#login-btn');
+        const out = $('#login-result');
+        btn.disabled = true;
+        btn.textContent = 'Iniciando...';
+        out.classList.remove('hide');
+        out.innerHTML = '<span class="spin"></span> Consultando API...';
+        try {
+          const r = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pin: $('#pin').value.trim(),
+              deviceCode: $('#deviceCode').value.trim(),
+              terminalName: $('#terminalName').value.trim(),
+            }),
+          });
+          const d = await r.json();
+          if (!r.ok) {
+            const msg = d?.error?.message || 'Error desconocido';
+            const issues = d?.error?.issues || [];
+            out.innerHTML = `<div class="msg-err">${esc(msg)}</div>${
+              issues.map((i) => `<div class="row msg-err" style="margin-top:6px">${esc(i.field)}: ${esc(i.message)}</div>`).join('')
+            }`;
+            return;
+          }
+          out.innerHTML = `
+            <div class="msg-ok">Sesión iniciada como ${esc(d.user.name)} (${esc(d.user.role)})</div>
+            <div style="margin-top:10px" class="row"><span>token</span> <strong>expira ${esc(d.expiresAt)}</strong></div>
+            <div class="token-box" style="margin-top:6px">
+              <pre>${esc(d.token)}</pre>
+              <button class="copy-btn" id="copy-token">copiar</button>
+            </div>
+            <div style="margin-top:10px" class="row"><span>empresas</span> <strong>${d.companies.map((c) => c.tradeName).join(', ')}</strong></div>
+            <div class="row"><span>turnos</span> <strong>${d.companyShifts.map((s) => s.currentShift).join(', ')}</strong></div>
+            <div style="margin-top:10px"><pre>${esc(JSON.stringify({ user: d.user, device: d.device }, null, 2))}</pre></div>
+          `;
+          $('#copy-token').addEventListener('click', function () {
+            navigator.clipboard.writeText(d.token);
+            this.textContent = 'copiado';
+            setTimeout(() => (this.textContent = 'copiar'), 1200);
+          });
+        } catch (err) {
+          out.innerHTML = `<div class="msg-err">Error de conexión: ${esc(err.message)}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Iniciar sesión';
+        }
+      }
+
+      $('#login-form').addEventListener('submit', doLogin);
+      renderEndpoints();
+      loadHealth();
+    </script>
+  </body>
+</html>

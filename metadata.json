@@ -1,0 +1,6 @@
+{
+  "name": "Tayta & Sabroso POS",
+  "description": "Sistema multiempresa de punto de venta, control de recetas, compras, kardex e indicadores de control de gastos para El Tayta y El Sabroso.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
