@@ -1,0 +1,498 @@
+// ============================================================
+// Tayta & Sabroso POS — Modelado físico de la Base de Datos
+// Generado desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Convenciones:
+//  - Multi-empresa por fila: empresa_id NULL = recurso compartido ('ambas'/holding).
+//  - id_operacion_cliente UNIQUE = clave de idempotencia del motor de sync (offline-first).
+//  - Sin enums (SQL Server): estados/tipos como nvarchar validados en servicios.
+//  - delete: cascade solo en composiciones puras; el resto es NO ACTION.
+//    (dbdiagram.io no renderiza acciones ON DELETE: se marca con // cascade)
+//  - mesas.pedido_actual_id NO tiene FK (referencia circular documentada en el schema).
+// ============================================================
+
+// Prisma model: Company
+Table empresas {
+  id nvarchar(36) [pk]
+  nombre nvarchar(200) [not null]
+  nombre_comercial nvarchar(120) [not null]
+  ruc nvarchar(20) [unique, not null]
+  especialidad nvarchar(200) [not null]
+  color_tema nvarchar(20) [not null]
+  color_acento nvarchar(20) [not null]
+  texto_insignia nvarchar(80) [not null]
+  direccion nvarchar(200) [not null]
+}
+
+// Prisma model: Device
+Table dispositivos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(100) [not null]
+  codigo_terminal nvarchar(30) [unique, not null]
+  ultima_vista_en datetime [not null, default: `now()`]
+  esta_activo boolean [not null, default: true]
+
+  indexes {
+    (empresa_id) [name: 'ix_dispositivos_empresa_id']
+  }
+}
+
+// Prisma model: NumberingSequence
+Table secuencias_numeracion {
+  empresa_id nvarchar(36) [pk, ref: > empresas.id] // delete: cascade
+  entidad nvarchar(50) [pk]
+  ultimo_numero int [not null, default: 0]
+  actualizado_en datetime [not null]
+}
+
+// Prisma model: User
+Table usuarios {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(120) [not null]
+  hash_pin nvarchar(200) [not null]
+  hash_contrasena nvarchar(200)
+  rol nvarchar(20) [not null, default: 'Cajero']
+  terminal nvarchar(100) [not null]
+  url_avatar nvarchar(1000)
+  empresa_asignada_id nvarchar(36)
+  esta_activo boolean [not null, default: true]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_usuarios_empresa_id']
+  }
+}
+
+// Prisma model: Session
+Table sesiones {
+  id nvarchar(36) [pk]
+  usuario_id nvarchar(36) [not null, ref: > usuarios.id] // delete: cascade
+  dispositivo_id nvarchar(36) [not null, ref: > dispositivos.id]
+  hash_token nvarchar(200) [unique, not null]
+  expira_en datetime [not null]
+  creado_en datetime [not null, default: `now()`]
+
+  indexes {
+    (usuario_id) [name: 'ix_sesiones_usuario_id']
+    (dispositivo_id) [name: 'ix_sesiones_dispositivo_id']
+  }
+}
+
+// Prisma model: Table
+Table mesas {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  numero nvarchar(20) [not null]
+  capacidad int [not null]
+  zona nvarchar(30) [not null]
+  estado nvarchar(20) [not null, default: 'libre']
+  ocupada_desde nvarchar(30)
+  minutos_transcurridos int
+  pedido_actual_id nvarchar(36)
+  mesero nvarchar(100)
+  notas nvarchar(500)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, estado) [name: 'ix_mesas_empresa_id_estado']
+    (empresa_id, zona) [name: 'ix_mesas_empresa_id_zona']
+  }
+}
+
+// Prisma model: Product
+Table productos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  nombre nvarchar(150) [not null]
+  descripcion nvarchar(500) [not null]
+  precio decimal(12,2) [not null]
+  categoria nvarchar(20) [not null]
+  imagen nvarchar(1000) [not null]
+  disponible boolean [not null, default: true]
+  tiene_receta boolean [not null, default: false]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, categoria) [name: 'ix_productos_empresa_id_categoria']
+    (empresa_id, disponible) [name: 'ix_productos_empresa_id_disponible']
+  }
+}
+
+// Prisma model: Order
+Table pedidos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  numero_ticket nvarchar(30) [not null]
+  mesa_id nvarchar(36) [ref: >? mesas.id]
+  numero_mesa nvarchar(20)
+  zona nvarchar(30) [not null]
+  mesero nvarchar(100) [not null]
+  creado_en nvarchar(30) [not null]
+  creado_utc datetime [not null, default: `now()`]
+  subtotal decimal(12,2) [not null]
+  igv decimal(12,2) [not null]
+  total decimal(12,2) [not null]
+  estado nvarchar(20) [not null, default: 'abierto']
+  metodo_pago nvarchar(100)
+  monto_recibido decimal(12,2)
+  vuelto decimal(12,2)
+  cerrado_en nvarchar(30)
+  cerrado_utc datetime
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, estado) [name: 'ix_pedidos_empresa_id_estado']
+    (mesa_id) [name: 'ix_pedidos_mesa_id']
+    (creado_utc) [name: 'ix_pedidos_creado_utc']
+    (numero_ticket) [name: 'ix_pedidos_numero_ticket']
+  }
+}
+
+// Prisma model: OrderItem
+Table detalle_pedidos {
+  id nvarchar(36) [pk]
+  pedido_id nvarchar(36) [not null, ref: > pedidos.id] // delete: cascade
+  producto_id nvarchar(36) [ref: >? productos.id]
+  nombre nvarchar(150) [not null]
+  precio decimal(12,2) [not null]
+  cantidad decimal(12,2) [not null]
+  notas nvarchar(500)
+  estado nvarchar(20) [not null, default: 'agregado']
+  agregado_en nvarchar(30) [not null]
+
+  indexes {
+    (pedido_id) [name: 'ix_detalle_pedidos_pedido_id']
+  }
+}
+
+// Prisma model: Transaction
+Table transacciones {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  hora nvarchar(30) [not null]
+  fecha nvarchar(30) [not null]
+  marca_tiempo datetime [not null]
+  tipo nvarchar(50) [not null]
+  descripcion nvarchar(300) [not null]
+  monto decimal(12,2) [not null]
+  es_ingreso boolean [not null, default: true]
+  metodo_pago nvarchar(100)
+  metodo_pago_personalizado_id nvarchar(36) [ref: >? metodos_pago.id]
+  cuenta_bancaria_id nvarchar(36) [ref: >? cuentas_bancarias.id]
+  alias_cuenta_bancaria nvarchar(200)
+  turno nvarchar(10)
+  numero_referencia nvarchar(100)
+  numero_mesa nvarchar(20)
+  pedido_id nvarchar(36) [ref: >? pedidos.id]
+  numero_ticket nvarchar(30)
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  esta_eliminado boolean [not null, default: false]
+  compra_id nvarchar(36) [ref: >? compras.id]
+
+  indexes {
+    (empresa_id) [name: 'ix_transacciones_empresa_id']
+    (marca_tiempo) [name: 'ix_transacciones_marca_tiempo']
+    (pedido_id) [name: 'ix_transacciones_pedido_id']
+    (cuenta_bancaria_id) [name: 'ix_transacciones_cuenta_bancaria_id']
+    (compra_id) [name: 'ix_transacciones_compra_id']
+  }
+}
+
+// Prisma model: BankAccount
+Table cuentas_bancarias {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  nombre_banco nvarchar(80) [not null]
+  numero_cuenta nvarchar(50) [not null]
+  cci nvarchar(60)
+  tipo_cuenta nvarchar(20) [not null]
+  moneda nvarchar(5) [not null, default: 'PEN']
+  nombre_titular nvarchar(150) [not null]
+  alias nvarchar(200) [not null]
+  saldo_actual decimal(12,2) [not null]
+  esta_activo boolean [not null, default: true]
+  notas nvarchar(500)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_cuentas_bancarias_empresa_id']
+  }
+}
+
+// Prisma model: CustomPaymentMethod
+Table metodos_pago {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(150) [not null]
+  categoria nvarchar(40) [not null]
+  cuenta_bancaria_id nvarchar(36) [ref: >? cuentas_bancarias.id]
+  alias_cuenta_bancaria nvarchar(200)
+  porcentaje_comision decimal(5,2)
+  requiere_numero_referencia boolean [not null, default: false]
+  icono nvarchar(50) [not null]
+  esta_activo boolean [not null, default: true]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_metodos_pago_empresa_id']
+    (cuenta_bancaria_id) [name: 'ix_metodos_pago_cuenta_bancaria_id']
+  }
+}
+
+// Prisma model: ShiftRecord
+Table registros_turno {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  turno nvarchar(10) [not null]
+  abierto_en nvarchar(30) [not null]
+  abierto_utc datetime [not null, default: `now()`]
+  cerrado_en nvarchar(30)
+  cerrado_utc datetime
+  abierto_por nvarchar(100) [not null]
+  cerrado_por nvarchar(100)
+  caja_inicial decimal(12,2) [not null]
+  caja_final_reportada decimal(12,2)
+  caja_esperada_sistema decimal(12,2)
+  diferencia_caja decimal(12,2)
+  total_ventas decimal(12,2) [not null, default: 0]
+  total_gastos decimal(12,2) [not null, default: 0]
+  ventas_tarjeta decimal(12,2) [not null, default: 0]
+  ventas_billetera_digital decimal(12,2) [not null, default: 0]
+  ventas_transferencia decimal(12,2) [not null, default: 0]
+  estado nvarchar(20) [not null, default: 'cerrado']
+  notas nvarchar(500)
+
+  indexes {
+    (empresa_id, turno) [name: 'ix_registros_turno_empresa_id_turno']
+    (cerrado_utc) [name: 'ix_registros_turno_cerrado_utc']
+  }
+}
+
+// Prisma model: CompanyShift
+Table turnos_empresa {
+  empresa_id nvarchar(36) [pk, ref: > empresas.id] // delete: cascade
+  turno_actual nvarchar(10) [not null, default: 'Día']
+  abierto_en nvarchar(30) [not null]
+  abierto_utc datetime [not null, default: `now()`]
+  abierto_por nvarchar(100) [not null]
+  caja_inicial decimal(12,2) [not null, default: 350]
+  actualizado_en datetime [not null]
+}
+
+// Prisma model: Insumo
+Table insumos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  codigo nvarchar(20) [unique, not null]
+  nombre nvarchar(150) [not null]
+  categoria nvarchar(80) [not null]
+  unidad nvarchar(10) [not null]
+  stock_actual decimal(12,4) [not null]
+  stock_minimo decimal(12,4) [not null]
+  costo_por_unidad decimal(12,4) [not null]
+  fecha_ultima_compra nvarchar(30)
+  ultima_compra_utc datetime
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_insumos_empresa_id']
+    (categoria) [name: 'ix_insumos_categoria']
+  }
+}
+
+// Prisma model: Recipe
+Table recetas {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  producto_id nvarchar(36) [ref: >? productos.id]
+  nombre_producto nvarchar(150) [not null]
+  categoria nvarchar(20) [not null]
+  porciones int [not null, default: 1]
+  precio_venta decimal(12,2) [not null]
+  costo_total decimal(12,2) [not null]
+  porcentaje_costo_teorico decimal(5,2) [not null]
+  notas_preparacion nvarchar(1000)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_recetas_empresa_id']
+    (producto_id) [name: 'ix_recetas_producto_id']
+  }
+}
+
+// Prisma model: RecipeIngredient
+Table ingredientes_receta {
+  id nvarchar(36) [pk]
+  receta_id nvarchar(36) [not null, ref: > recetas.id] // delete: cascade
+  insumo_id nvarchar(36) [ref: >? insumos.id]
+  nombre_insumo nvarchar(150) [not null]
+  cantidad decimal(12,4) [not null]
+  unidad nvarchar(10) [not null]
+  costo_por_unidad decimal(12,4) [not null]
+  costo_subtotal decimal(12,2) [not null]
+
+  indexes {
+    (receta_id) [name: 'ix_ingredientes_receta_receta_id']
+  }
+}
+
+// Prisma model: Purchase
+Table compras {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  categoria nvarchar(40) [not null]
+  estado_documento nvarchar(20) [not null, default: 'provisional']
+  numero_papeleta_provisional nvarchar(60)
+  numero_factura nvarchar(60) [not null]
+  nombre_proveedor nvarchar(200) [not null]
+  ruc_proveedor nvarchar(20) [not null]
+  fecha nvarchar(30) [not null]
+  hora nvarchar(30) [not null]
+  comprada_utc datetime [not null, default: `now()`]
+  turno nvarchar(10) [not null]
+  subtotal decimal(12,2) [not null]
+  igv decimal(12,2) [not null]
+  total decimal(12,2) [not null]
+  estado_pago nvarchar(50) [not null]
+  pagado_desde_caja boolean [not null, default: false]
+  cuenta_bancaria_id nvarchar(36) [ref: >? cuentas_bancarias.id]
+  alias_cuenta_bancaria nvarchar(200)
+  notas nvarchar(500)
+  regularizado_en nvarchar(30)
+  regularizado_por nvarchar(100)
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_compras_empresa_id']
+    (cuenta_bancaria_id) [name: 'ix_compras_cuenta_bancaria_id']
+  }
+}
+
+// Prisma model: PurchaseItem
+Table detalle_compras {
+  id nvarchar(36) [pk]
+  compra_id nvarchar(36) [not null, ref: > compras.id] // delete: cascade
+  insumo_id nvarchar(36) [ref: >? insumos.id]
+  nombre_insumo nvarchar(150) [not null]
+  cantidad decimal(12,4) [not null]
+  unidad nvarchar(10) [not null]
+  costo_unitario decimal(12,4) [not null]
+  costo_total decimal(12,2) [not null]
+
+  indexes {
+    (compra_id) [name: 'ix_detalle_compras_compra_id']
+  }
+}
+
+// Prisma model: KardexMovement
+Table movimientos_kardex {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  marca_tiempo datetime [not null]
+  fecha nvarchar(30) [not null]
+  hora nvarchar(30) [not null]
+  insumo_id nvarchar(36) [ref: >? insumos.id]
+  nombre_insumo nvarchar(150) [not null]
+  tipo nvarchar(30) [not null]
+  documento_referencia nvarchar(200) [not null]
+  cantidad decimal(12,4) [not null]
+  unidad nvarchar(10) [not null]
+  costo_unitario decimal(12,4) [not null]
+  costo_total decimal(12,2) [not null]
+  stock_antes decimal(12,4) [not null]
+  stock_despues decimal(12,4) [not null]
+  notas nvarchar(300)
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  compra_id nvarchar(36) [ref: >? compras.id]
+
+  indexes {
+    (empresa_id) [name: 'ix_movimientos_kardex_empresa_id']
+    (insumo_id, marca_tiempo) [name: 'ix_movimientos_kardex_insumo_id_marca_tiempo']
+    (tipo) [name: 'ix_movimientos_kardex_tipo']
+    (compra_id) [name: 'ix_movimientos_kardex_compra_id']
+  }
+}
+
+// Prisma model: Printer
+Table impresoras {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(200) [not null]
+  rol nvarchar(30) [not null]
+  tipo_conexion nvarchar(30) [not null]
+  direccion_ip nvarchar(50)
+  puerto int [default: 9100]
+  ancho_papel nvarchar(10) [not null, default: '80mm']
+  corte_automatico boolean [not null, default: true]
+  pitido_al_imprimir boolean [not null, default: false]
+  estado nvarchar(20) [not null, default: 'online']
+  esta_habilitado boolean [not null, default: true]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_impresoras_empresa_id']
+  }
+}
+
+// Prisma model: PrinterCategory
+Table categorias_impresora {
+  id nvarchar(36) [pk]
+  impresora_id nvarchar(36) [unique, not null, ref: > impresoras.id] // delete: cascade
+  categoria nvarchar(20) [unique, not null]
+  orden int [not null, default: 0]
+}
+
+// Prisma model: ClientOp
+Table operaciones_cliente {
+  id nvarchar(36) [pk]
+  dispositivo_id nvarchar(36) [not null, ref: > dispositivos.id]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  entidad nvarchar(50) [not null]
+  operacion nvarchar(100) [not null]
+  carga nvarchar(MAX) [not null]
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  estado nvarchar(30) [not null, default: 'PENDING']
+  numero_intentos int [not null, default: 0]
+  ultimo_error nvarchar(500)
+  creado_en datetime [not null, default: `now()`]
+  procesado_en datetime
+
+  indexes {
+    (dispositivo_id, estado) [name: 'ix_operaciones_cliente_dispositivo_id_estado']
+    (creado_en) [name: 'ix_operaciones_cliente_creado_en']
+  }
+}
