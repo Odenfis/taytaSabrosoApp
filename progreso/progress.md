@@ -920,6 +920,20 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   logout no revoca efectivamente el JWT hasta su expiración (12h). Endurecer en Fase F
   (chequear sesión en el middleware + `JWT_SECRET` real + `CORS_ORIGIN` restringido).
 
+### Seed vacío para pruebas desde cero (✔ realizado 2026-10-12)
+
+> El usuario pidió base realmente vacía (el seed demo trae 3 órdenes + 5 mesas ocupadas
+> que confundían el inicio de pruebas).
+
+- **Nuevo `server/prisma/seed-empty.ts`**: corre tras el seed canónico; vacía solo
+  operaciones (`orderItem/order/purchaseItem/purchase/kardexMovement/transaction/
+  shiftRecord/session/clientOp`), libera las 13 mesas y resetea `numberingSequence` a 0.
+  No toca catálogos, stocks, saldos, turnos ni usuarios. Volver al demo:
+  `npx tsx prisma/seed.ts`.
+- **Verificación**: `verify-sync.ts` 0 órdenes/compras/tx/kardex/turnos + cero duplicados;
+  API `orders/active` 0 en ambas empresas, tx/kardex 0, 13/13 mesas libres; saldos y
+  stocks de apertura intactos; `tsc` server 0.
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)
