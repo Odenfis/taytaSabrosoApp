@@ -1,0 +1,102 @@
+// ============================================================
+// Tayta & Sabroso POS — Inventario (Kardex / Insumos / Recetas)
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: insumos, recetas, ingredientes_receta, movimientos_kardex
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: Insumo
+Table insumos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  codigo nvarchar(20) [unique, not null]
+  nombre nvarchar(150) [not null]
+  categoria nvarchar(80) [not null]
+  unidad nvarchar(10) [not null]
+  stock_actual decimal(12,4) [not null]
+  stock_minimo decimal(12,4) [not null]
+  costo_por_unidad decimal(12,4) [not null]
+  fecha_ultima_compra nvarchar(30)
+  ultima_compra_utc datetime
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_insumos_empresa_id']
+    (categoria) [name: 'ix_insumos_categoria']
+  }
+}
+
+// Prisma model: Recipe
+Table recetas {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  producto_id nvarchar(36) [ref: >? productos.id]
+  nombre_producto nvarchar(150) [not null]
+  categoria nvarchar(20) [not null]
+  porciones int [not null, default: 1]
+  precio_venta decimal(12,2) [not null]
+  costo_total decimal(12,2) [not null]
+  porcentaje_costo_teorico decimal(5,2) [not null]
+  notas_preparacion nvarchar(1000)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_recetas_empresa_id']
+    (producto_id) [name: 'ix_recetas_producto_id']
+  }
+}
+
+// Prisma model: RecipeIngredient
+Table ingredientes_receta {
+  id nvarchar(36) [pk]
+  receta_id nvarchar(36) [not null, ref: > recetas.id] // delete: cascade
+  insumo_id nvarchar(36) [ref: >? insumos.id]
+  nombre_insumo nvarchar(150) [not null]
+  cantidad decimal(12,4) [not null]
+  unidad nvarchar(10) [not null]
+  costo_por_unidad decimal(12,4) [not null]
+  costo_subtotal decimal(12,2) [not null]
+
+  indexes {
+    (receta_id) [name: 'ix_ingredientes_receta_receta_id']
+  }
+}
+
+// Prisma model: KardexMovement
+Table movimientos_kardex {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  marca_tiempo datetime [not null]
+  fecha nvarchar(30) [not null]
+  hora nvarchar(30) [not null]
+  insumo_id nvarchar(36) [ref: >? insumos.id]
+  nombre_insumo nvarchar(150) [not null]
+  tipo nvarchar(30) [not null]
+  documento_referencia nvarchar(200) [not null]
+  cantidad decimal(12,4) [not null]
+  unidad nvarchar(10) [not null]
+  costo_unitario decimal(12,4) [not null]
+  costo_total decimal(12,2) [not null]
+  stock_antes decimal(12,4) [not null]
+  stock_despues decimal(12,4) [not null]
+  notas nvarchar(300)
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  compra_id nvarchar(36) [ref: >? compras.id]
+
+  indexes {
+    (empresa_id) [name: 'ix_movimientos_kardex_empresa_id']
+    (insumo_id, marca_tiempo) [name: 'ix_movimientos_kardex_insumo_id_marca_tiempo']
+    (tipo) [name: 'ix_movimientos_kardex_tipo']
+    (compra_id) [name: 'ix_movimientos_kardex_compra_id']
+  }
+}

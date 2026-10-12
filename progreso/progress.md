@@ -1,9 +1,10 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-09-08` (revisión de Compras E3: fix quantity string + propagación
-> del folio formal a Kardex/Caja al regularizar vales — migración `0003`).
-> **Punto de retome: Fase E4 — replay automático de la cola offline (`ts_pending_queue_v2`) al reconectar.**
-> **Pendiente corto (ver `progreso/planactual.md`)**: compra a crédito y error visible (tests opcionales).
+> Bitácora de avance del proyecto. `2026-09-18` (Fase E4: replay automático de la cola offline
+> `ts_pending_queue_v2` al reconectar; idempotencia endurecida en `regularizePurchase` + `sendToKitchen`;
+> **E4-b**: preservación de órdenes/mesas temporales ante recarga con cola pendiente).
+> **Punto de retome: ejecución del smoke E2E del ciclo offline y Fase C (ledger `ClientOp`).**
+> **Pendiente corto (ver `progreso/planactual.md`)**: smoke E2E offline + compra a crédito y error visible (tests opcionales).
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
 
@@ -17,7 +18,7 @@
 | **B** | ✅ Completada | API Express + JWT + servicios de negocio (órdenes, compras, kardex, turnos, analítica) |
 | **C** | 🔲 Pendiente | **Motor de sync offline** (endpoint `client_ops`, idempotencia, queue por terminal) |
 | **D** | 🔲 Pendiente | **Socket.io** en tiempo real (empujar órdenes a cocina/barra, mesas en vivo) |
-| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ (auth + API client)** · **E2 ✅ (catálogos)** · **E3 ✅ (operaciones + clientOpId)** · **E4 cola offline (Pendiente)** |
+| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ (auth + API client)** · **E2 ✅ (catálogos)** · **E3 ✅ (operaciones + clientOpId)** · **E4 ✅ (replay cola offline)** · **E5 ⏭ (mutaciones de catálogos a API)** |
 | **F** | 🔲 Pendiente | Azure: SQL Server en la nube + deploy del backend (secretos reales) |
 
 > Hasta **2026-09-05** no hay commits de git (el repo no es git todavía). Todo el código
@@ -762,6 +763,97 @@ rehacer el front después:
 - **E4 (cola offline)** = replay real de la cola al reconectar; **Fase C** = ledger `ClientOp` deductivo.
 - Aún sin commits de git (repo sigue sin `git init`).
 
+### E4 — Replay automático de la cola offline (✔ realizado 2026-09-18)
+
+> Alcance aprobado por el usuario: **solo E4** (sin deploy ni Fase C/D/F); endurecer idempotencia en
+> `regularizePurchase` + `sendToKitchen`; replay automático al arrancar. Objetivo: dejar el modo offline
+> operativo de extremo a extremo (encolar → reconectar → aplicar en BD una sola vez).
+
+**Decisión clave tomada en sesión:** los **ítems** de una orden temporal **NO se encolan** en E4. En su
+lugar, el payload de `openOrder`/`quickOrder` guarda `tmpOrderId` (y `tmpTableId` para la barra); al
+replay, el dispatcher crea la orden real, **refluye los ítems desde el estado local** (`orders[tmpOrderId]`)
+hacia el server y migra la orden/mesa a los ids reales. Esto evita doble deducción de Kardex y
+duplicados de ítems con payloads no idempotentes.
+
+**Semántica del dispatcher** (`src/lib/replayQueue.ts`, `replayCall(op, payload)`):
+- `ok` → quitar de la cola.
+- `already` (409 `ALREADY_REGULARIZED`/`ALREADY_PAID`) → quitar en silencio (la op ya se aplicó).
+- `gone` (404 en ops que no son create, p.ej. la orden se liberó) → quitar (no aplicar).
+- `business` (otros 4xx) → quitar + aviso.
+- `retry` (401 / red caída status 0 / 5xx) → **conservar y detener** el loop; `network=true` = solo
+  cuando es una caída real de red (status 0) para no marcar "Sin Internet" por un 5xx del server.
+- Mapa `op → {method, path, body}` para las 14 ops: `openOrder`, `quickOrder`, `addItem`,
+  `updateItemQuantity`, `updateItemNotes`, `removeItem`, `sendToKitchen`, `markForBilling`, `payOrder`,
+  `manualTransaction`, `createPurchase`, `regularizePurchase`, `switchShift`, `kardexAdjustment`.
+
+**Backend (compila ✔ con `npm run build`)**
+- `order.service.ts` — `sendToKitchen(orderId, input?: {clientOpId?})`: dedup por
+  `kardexMovement.findFirst({where:{clientOpId}})` → si ya existía devuelve `{order, kardexMovements:0,
+  replayed:true}` sin deducir stock dos veces; los movimientos usan `input?.clientOpId ?? randomUUID()`.
+- `purchase.service.ts` — `regularizePurchase` acepta `clientOpId?: string` (SE MANTIENE el 409
+  `ALREADY_REGULARIZED`: el dispatcher lo traduce a `already` y lo aplica una sola vez).
+- `operations.routes.ts` — zod `clientOpId?` en `POST /orders/:id/send-to-kitchen` y `POST /purchases/:id/regularize`.
+
+**Frontend (`src/context/POSContext.tsx` + `src/lib/replayQueue.ts`)**
+- `replayOfflineQueue()`: loop FIFO con mapping `tmpToOrder`/`tmpToTable`, `deadTmpOrder`/`deadTmpTable`
+  (mesa de barra/orden temporal abandonada al vaciarla → NO se crea orden fantasma, se dropea la apertura),
+  `flushTmpItems()` (re-POST de ítems + GET refrescado) y `migrateTmpOrder()` (reemplaza `order-tmp-*`
+  por la real en `orders`/`tables`/`selectedTableId`, limpia refs). `try/catch/finally` con
+  `isReplayingRef` como mutex; al terminar dispara `loadOperations` + refreshes (kardex/insumos/transacciones/
+  bancos/turnos) y notifica el resumen (sincronizada / omitidas / en cola).
+- Guards cambiados a `(!id.startsWith('order-tmp-') || offlineState.isSimulatedOffline)`: ahora se encolan
+  offline `sendToKitchen`, `proceedToPayment` y `completePayment` (pago) de órdenes temporales (antes el pago
+  de una orden tmp offline se perdía). `payOrder` payload ahora incluye `tableId` + `tmpTableId` cuando aplica.
+- Triggers del replay: `toggleSimulatedOffline` al volver online; `syncOfflineQueue` (botón "Forzar
+  Sincronización", con info si está simulado); listeners `window.online/offline` (actualizan
+  `isOnline` y reintentan al reconectar); efecto en montaje con sesión restaurada o tras login (cola no vacía).
+- El guard de "modo offline simulado" vive en los **disparadores** y no dentro de `replayOfflineQueue` para
+  que el toggle a online funcione aunque el estado React aún no se haya aplicado.
+
+**Gap menor conocido (aceptado para esta v1):** si la red cae exactamente entre el `openOrder` del replay y
+el flush de ítems, la orden real quedó creada sin ítems y el reintento re-crearía una segunda orden; el
+`try/catch` evita el fallo sin manejar, marca `stuck` y no borra la cola. No se cerró con idempotencia
+total en `openOrder` para no añadir complejidad en esta iteración.
+
+**Verificación (todo ✔)**
+- `npx tsc --noEmit` (raíz) = **0 errores** · `npm run build` (raíz y `server/`) = sin errores (solo el
+  warning preexistente de chunk >500 kB).
+- Smoke E2E sugerido para el cliente (ver `planactual.md`): ciclo offline completo → reconectar → `sqlcmd`
+  para confirmar una sola aplicación en BD y cola vacía.
+
+### E4-b — Preservación de órdenes/mesas temporales ante recarga con cola pendiente (✔ realizado 2026-09-18)
+
+**Síntoma:** al recargar la página (F5) con la red ya recuperada y cola pendiente de sync, el auto-replay
+creado en E4 veía la apertura de mesa offline como "abandonada" y la descartaba → el cobro se perdía.
+
+**Causa raíz:** `loadOperations` (`setOrders`, reemplazo total por la verdad del server) y `loadCatalogs`
+(`setTables`, idem) destruían del estado React las órdenes `order-tmp-*` y las mesas `t-express-*` que la
+cola aún referenciaba. Al arrancar el replay, `orders[tmpOrderId]` ya no existía → `deadTmpOrder` dropeaba
+la apertura sin crear la orden real.
+
+**Fix aplicado**
+- `src/lib/offlineQueue.ts` → **`getPendingTmpIds()`**: escanea `ts_pending_queue_v2` y devuelve los ids
+  `order-tmp-*` / `t-express-*` presentes en los payloads (defensivo ante valores no string).
+- `loadOperations` → al aplicar la verdad del server conserva del estado previo las órdenes tmp referenciadas.
+- `loadCatalogs` (tables) → conserva las mesas `t-express-*` referenciadas y, para mesas reales cuyo
+  `currentOrderId` local pertenece a la cola, re-aplica `ocupada` / `currentOrderId` / `waiter` sobre la
+  versión del server (cubre el caso openOrder con mesa real + orden tmp).
+- Limpieza menor: eliminado `didAutoReplayRef` (quedó como escritura sin lectura tras simplificar el trigger).
+- El merge solo preserva lo que la cola referencia; entidades temporales huérfanas se descartan
+  (semántica de mesa liberada). Tras el replay exitoso los ids cambian a reales y salen del merge.
+
+**Script de verificación en BD (se conserva): `server/scripts/verify-sync.ts`**
+- Ventana configurable (por defecto últimas 3h): lista órdenes, transacciones, compras, kardex, turnos
+  cerrados, saldos de cuentas bancarias y stock de insumos, + **check de duplicados por `clientOpId`**.
+- Uso: `npx tsx scripts/verify-sync.ts` (dentro de `server/`); conecta con el `.env` local (BD `TaytaSabroso`).
+- Pensado para el smoke E2E: cruzar "una sola aplicación" de cada op encolada contra lo reportado en la UI.
+
+**Verificación (todo ✔)**
+- `npx tsc --noEmit` (raíz) = **0 errores** · `npm run build` (raíz y `server/`) = sin errores.
+- `verify-sync.ts` corrido contra BD local: conecta OK, ventana limpia, cero duplicados.
+- **Estado del smoke E2E:** pendiente de ejecutar por el usuario (2 fases en `planactual.md`: toggle y
+  reload — la Fase II valida explícitamente este fix).
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)
@@ -802,6 +894,7 @@ rehacer el front después:
 | `server/src/routes/*.routes.ts` | Endpoints (Zod) |
 | `server/src/app.ts` | Factory Express |
 | `server/src/index.ts` | Bootstrap |
+| `server/scripts/verify-sync.ts` | Verificación de sync en BD (ventana 3h; órdenes/tx/compras/kardex/turnos/cuentas/insumos + check duplicados `clientOpId`) — smoke E4 |
 | `server/.env` | Conexión local SQL Server |
 | `server/.env.example` | Plantillas Azure SQL para producción |
 | `src/` (raíz) | Front demo React — NO tocar (fase E) |
@@ -835,6 +928,8 @@ rehacer el front después:
   Kardex/Caja (migración `0003`, kardex/tx con `[antes <VALE>]`).
 
 **Barrera para "usar el sistema de verdad" (operar sin internet)**
-- E3 ya encola operaciones localmente ante fallas; falta **E4 (replay automático de la cola)** y luego la
-  Fase C (sync completo) para offline-first robusto en 5+ terminales.
+- **E4 (replay de la cola) ✅** (2026-09-18): el POS encola ante fallas, reconecta y drena
+  `ts_pending_queue_v2` con idempotencia por `clientOpId` (replay automático al reconectar, al arrancar con
+  sesión o con el botón "Forzar Sincronización"). Falta **Fase C** (ledger `ClientOp` deductivo para
+  conflictos multi-terminal) y la Fase D (Socket.io) para offline-first robusto en 5+ terminales.
 - Aún no hay commits de git; considerar `git init` para no perder avance.

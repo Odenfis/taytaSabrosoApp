@@ -1,0 +1,106 @@
+// ============================================================
+// Tayta & Sabroso POS — Ventas (Órdenes / Mesas / Productos)
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: mesas, productos, pedidos, detalle_pedidos
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: Table
+Table mesas {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  numero nvarchar(20) [not null]
+  capacidad int [not null]
+  zona nvarchar(30) [not null]
+  estado nvarchar(20) [not null, default: 'libre']
+  ocupada_desde nvarchar(30)
+  minutos_transcurridos int
+  pedido_actual_id nvarchar(36)
+  mesero nvarchar(100)
+  notas nvarchar(500)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, estado) [name: 'ix_mesas_empresa_id_estado']
+    (empresa_id, zona) [name: 'ix_mesas_empresa_id_zona']
+  }
+}
+
+// Prisma model: Product
+Table productos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  nombre nvarchar(150) [not null]
+  descripcion nvarchar(500) [not null]
+  precio decimal(12,2) [not null]
+  categoria nvarchar(20) [not null]
+  imagen nvarchar(1000) [not null]
+  disponible boolean [not null, default: true]
+  tiene_receta boolean [not null, default: false]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, categoria) [name: 'ix_productos_empresa_id_categoria']
+    (empresa_id, disponible) [name: 'ix_productos_empresa_id_disponible']
+  }
+}
+
+// Prisma model: Order
+Table pedidos {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  numero_ticket nvarchar(30) [not null]
+  mesa_id nvarchar(36) [ref: >? mesas.id]
+  numero_mesa nvarchar(20)
+  zona nvarchar(30) [not null]
+  mesero nvarchar(100) [not null]
+  creado_en nvarchar(30) [not null]
+  creado_utc datetime [not null, default: `now()`]
+  subtotal decimal(12,2) [not null]
+  igv decimal(12,2) [not null]
+  total decimal(12,2) [not null]
+  estado nvarchar(20) [not null, default: 'abierto']
+  metodo_pago nvarchar(100)
+  monto_recibido decimal(12,2)
+  vuelto decimal(12,2)
+  cerrado_en nvarchar(30)
+  cerrado_utc datetime
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id, estado) [name: 'ix_pedidos_empresa_id_estado']
+    (mesa_id) [name: 'ix_pedidos_mesa_id']
+    (creado_utc) [name: 'ix_pedidos_creado_utc']
+    (numero_ticket) [name: 'ix_pedidos_numero_ticket']
+  }
+}
+
+// Prisma model: OrderItem
+Table detalle_pedidos {
+  id nvarchar(36) [pk]
+  pedido_id nvarchar(36) [not null, ref: > pedidos.id] // delete: cascade
+  producto_id nvarchar(36) [ref: >? productos.id]
+  nombre nvarchar(150) [not null]
+  precio decimal(12,2) [not null]
+  cantidad decimal(12,2) [not null]
+  notas nvarchar(500)
+  estado nvarchar(20) [not null, default: 'agregado']
+  agregado_en nvarchar(30) [not null]
+
+  indexes {
+    (pedido_id) [name: 'ix_detalle_pedidos_pedido_id']
+  }
+}

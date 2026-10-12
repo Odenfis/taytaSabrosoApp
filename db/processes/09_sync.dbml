@@ -1,0 +1,31 @@
+// ============================================================
+// Tayta & Sabroso POS — Motor de Sync Offline (ClientOp)
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: operaciones_cliente
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: ClientOp
+Table operaciones_cliente {
+  id nvarchar(36) [pk]
+  dispositivo_id nvarchar(36) [not null, ref: > dispositivos.id]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  entidad nvarchar(50) [not null]
+  operacion nvarchar(100) [not null]
+  carga nvarchar(MAX) [not null]
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  estado nvarchar(30) [not null, default: 'PENDING']
+  numero_intentos int [not null, default: 0]
+  ultimo_error nvarchar(500)
+  creado_en datetime [not null, default: `now()`]
+  procesado_en datetime
+
+  indexes {
+    (dispositivo_id, estado) [name: 'ix_operaciones_cliente_dispositivo_id_estado']
+    (creado_en) [name: 'ix_operaciones_cliente_creado_en']
+  }
+}

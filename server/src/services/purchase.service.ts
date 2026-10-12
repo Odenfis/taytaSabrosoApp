@@ -202,7 +202,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
 // Pasar un vale provisional a documento formal (regularizar).
 export async function regularizePurchase(
   purchaseId: string,
-  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string }
+  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string }
 ) {
   return prisma.$transaction(async (tx) => {
     const purchase = await tx.purchase.findFirst({ where: { id: purchaseId, isDeleted: false } });

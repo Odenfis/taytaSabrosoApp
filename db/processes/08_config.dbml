@@ -1,0 +1,42 @@
+// ============================================================
+// Tayta & Sabroso POS — Configuración (Impresoras)
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: impresoras, categorias_impresora
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: Printer
+Table impresoras {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(200) [not null]
+  rol nvarchar(30) [not null]
+  tipo_conexion nvarchar(30) [not null]
+  direccion_ip nvarchar(50)
+  puerto int [default: 9100]
+  ancho_papel nvarchar(10) [not null, default: '80mm']
+  corte_automatico boolean [not null, default: true]
+  pitido_al_imprimir boolean [not null, default: false]
+  estado nvarchar(20) [not null, default: 'online']
+  esta_habilitado boolean [not null, default: true]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_impresoras_empresa_id']
+  }
+}
+
+// Prisma model: PrinterCategory
+Table categorias_impresora {
+  id nvarchar(36) [pk]
+  impresora_id nvarchar(36) [unique, not null, ref: > impresoras.id] // delete: cascade
+  categoria nvarchar(20) [unique, not null]
+  orden int [not null, default: 0]
+}

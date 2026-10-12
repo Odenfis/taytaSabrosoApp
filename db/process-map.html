@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tayta &amp; Sabroso — Mapa de Procesos</title>
+<style>
+  :root{
+    --bg:#121212; --panel:#1c1c1c; --panel2:#232323; --line:#2b2b2b;
+    --text:#e9e4dc; --muted:#8b93a1;
+    --accent:#ffb597; --accent2:#ebc246; --ok:#34d399; --warn:#f87171;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{background:var(--bg); color:var(--text); font:14px/1.5 "Inter",system-ui,-apple-system,"Segoe UI",sans-serif; padding:28px 20px 60px}
+  .wrap{max-width:1180px; margin:0 auto}
+
+  /* Header */
+  header.top{display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; justify-content:space-between; margin-bottom:18px}
+  h1{font-size:22px; letter-spacing:.3px}
+  h1 .dot{color:var(--accent)}
+  .subtitle{color:var(--muted); font-size:13px}
+  .meta-badges{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+  .badge{background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:3px 12px; font-size:12px; color:var(--muted)}
+  .badge b{color:var(--text); font-weight:600}
+  .tools{display:flex; gap:8px}
+  button.btn{background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font-size:12.5px; cursor:pointer; transition:.15s}
+  button.btn:hover{border-color:var(--accent); color:var(--accent)}
+  input.search{background:var(--panel); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:6px 12px; font-size:13px; min-width:220px; outline:none}
+  input.search:focus{border-color:var(--accent)}
+
+  /* SVG */
+  .map-box{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px; margin-bottom:26px; overflow-x:auto}
+  .map-svg{width:100%; min-width:820px; max-width:1180px; height:auto; display:block}
+  .svg-box{cursor:pointer; transition:opacity .15s}
+  .svg-box:hover rect{filter:drop-shadow(0 0 8px rgba(255,255,255,.15))}
+  .svg-box.muted,.svg-edge{opacity:.18; transition:opacity .15s}
+  .svg-edge.on{opacity:1; stroke-width:2.4; filter:drop-shadow(0 0 4px rgba(255,255,255,.25))}
+  .svg-edge.tenancy{stroke:#5b6474; stroke-width:1; stroke-dasharray:5 4}
+  .svg-edge.cross{stroke:#93b0c9; stroke-width:1.3; fill:none}
+  .svg-box text{pointer-events:none}
+
+  /* Cards */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px}
+  .pcard{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:12px; transition:opacity .15s}
+  .pcard.hidden{display:none}
+  .phead{display:flex; gap:12px; align-items:flex-start}
+  .pnum{font:700 20px var(--mono); color:var(--c); border:1px solid var(--c); border-radius:8px; min-width:38px; height:34px; display:flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--c) 8%, transparent)}
+  .ptitle h2{font-size:15px; font-weight:600; letter-spacing:.2px}
+  .pstats{display:block; color:var(--muted); font-size:11.5px; margin-top:2px}
+
+  /* Tables */
+  .tables{display:flex; flex-direction:column; gap:8px}
+  details.tbl{background:var(--panel2); border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  details.tbl summary{cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 12px}
+  details.tbl summary::-webkit-details-marker{display:none}
+  details.tbl summary::after{content:'▸'; color:var(--muted); transition:transform .15s}
+  details.tbl[open] summary::after{transform:rotate(90deg)}
+  .tname{color:var(--accent); font-size:13px}
+  .tmeta{color:var(--muted); font-size:11px; white-space:nowrap}
+  .cols{display:flex; flex-direction:column; border-top:1px solid var(--line); padding:6px 0}
+  .col{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:3px 12px; border-bottom:1px dotted #2a2a2a}
+  .col:last-child{border-bottom:none}
+  .col code{color:#d6e2f0; font:12px var(--mono); min-width:120px}
+  .col .type{color:#7d8696; font:11px var(--mono)}
+  .chip{font:10px var(--mono); padding:1px 6px; border-radius:999px; border:1px solid var(--line)}
+  .chip.pk{color:#ebc246; border-color:#6b5b1a}
+  .chip.uk{color:#34d399; border-color:#1f6b4f}
+  .chip.nn{color:#8b93a1}
+  .chip.df{color:#ffab76; border-color:#6b4a2b}
+  .fk{font:10px var(--mono); color:#ff9fb0; border:1px solid #5e3140; background:#2a1f24; padding:1px 6px; border-radius:999px}
+  .fk.cross{color:#a8b4ff; border-color:#35406b; background:#1f2540}
+  .relnote{display:flex; gap:8px; flex-wrap:wrap; padding:5px 12px 8px; font-size:10.5px}
+  .relint{color:#5f6b7a}
+  .relx{color:#a8b4ff}
+
+  /* Leyenda y footer */
+  .legend{display:flex; flex-wrap:wrap; gap:14px; margin-bottom:26px; color:var(--muted); font-size:12px}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .sw{width:12px; height:12px; border-radius:3px}
+  footer{margin-top:34px; color:#5f6b7a; font-size:11.5px; border-top:1px solid var(--line); padding-top:14px; font-family:var(--mono)}
+
+  @media (max-width:640px){
+    .grid{grid-template-columns:1fr}
+    .tools{width:100%}
+    input.search{flex:1}
+  }
+  @media print{
+    body{background:#fff; color:#111}
+    button.btn,input.search{display:none}
+    .pcard,.map-box{background:#fff; border:1px solid #ccc; break-inside:avoid}
+    .col code,.tname{color:#004}
+    .chip.pk{color:#8a6d00}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <h1>Tayta &amp; Sabroso <span class="dot">·</span> Mapa de Procesos</h1>
+      <div class="subtitle">Modelo físico de datos organizado por procesos de negocio — generado desde <span class="mono">server/prisma/schema.prisma</span></div>
+      <div class="meta-badges">
+        <span class="badge"><b>23</b> tablas</span>
+        <span class="badge"><b>298</b> campos</span>
+        <span class="badge"><b>37</b> relaciones</span>
+        <span class="badge"><b>9</b> procesos</span>
+        <span class="badge">2026-09-10</span>
+      </div>
+    </div>
+    <div class="tools">
+      <input class="search" type="search" placeholder="Buscar proceso o tabla…" aria-label="Buscar">
+      <button class="btn" data-act="expand">Expandir todo</button>
+      <button class="btn" data-act="collapse">Colapsar</button>
+      <button class="btn" data-act="print" title="Imprimir o guardar como PDF">Imprimir / PDF</button>
+    </div>
+  </header>
+
+  <div class="map-box">
+<svg viewBox="0 0 980 555" role="img" aria-label="Mapa de procesos" class="map-svg">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L8,4.5 L0,9 z" fill="#93b0c9"/>
+    </marker>
+  </defs>
+  <!-- edges desde/hacia Tenancy (multi-empresa) -->
+    <path class="svg-edge tenancy" data-link="01_tenancy,02_auth" d="M 415.48387096774195 70 L 179.51612903225805 165" marker-end="url(#arrow)"><title>dispositivos.empresa_id → empresas.id · usuarios.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,03_ventas" d="M 455.16129032258067 70 L 344.83870967741933 165" marker-end="url(#arrow)"><title>mesas.empresa_id → empresas.id · productos.empresa_id → empresas.id · pedidos.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,04_caja" d="M 472.5806451612903 70 L 327.4193548387097 320" marker-end="url(#arrow)"><title>transacciones.empresa_id → empresas.id · cuentas_bancarias.empresa_id → empresas.id · metodos_pago.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,07_turnos" d="M 491.61290322580646 70 L 513.3870967741935 475" marker-end="url(#arrow)"><title>registros_turno.empresa_id → empresas.id · turnos_empresa.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,06_inventario" d="M 478.38709677419354 70 L 321.61290322580646 475" marker-end="url(#arrow)"><title>insumos.empresa_id → empresas.id · recetas.empresa_id → empresas.id · movimientos_kardex.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,05_compras" d="M 492.4193548387097 70 L 512.5806451612904 320" marker-end="url(#arrow)"><title>compras.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,08_config" d="M 494.83870967741933 70 L 510.16129032258067 165" marker-end="url(#arrow)"><title>impresoras.empresa_id → empresas.id</title></path>
+    <path class="svg-edge tenancy" data-link="01_tenancy,09_sync" d="M 534.516129032258 70 L 675.483870967742 165" marker-end="url(#arrow)"><title>operaciones_cliente.empresa_id → empresas.id</title></path>
+  <!-- edges cross-proceso -->
+    <path class="svg-edge cross" data-link="04_caja,03_ventas" d="M 310 320 Q 330 272.5 310 225" marker-end="url(#arrow)"><title>transacciones.pedido_id → pedidos.id</title></path>
+    <path class="svg-edge cross" data-link="04_caja,05_compras" d="M 385 350 Q 412.5 370 440 350" marker-end="url(#arrow)"><title>transacciones.compra_id → compras.id</title></path>
+    <path class="svg-edge cross" data-link="06_inventario,03_ventas" d="M 310 475 Q 330 350 310 225" marker-end="url(#arrow)"><title>recetas.producto_id → productos.id</title></path>
+    <path class="svg-edge cross" data-link="05_compras,04_caja" d="M 440 350 Q 412.5 330 385 350" marker-end="url(#arrow)"><title>compras.cuenta_bancaria_id → cuentas_bancarias.id</title></path>
+    <path class="svg-edge cross" data-link="05_compras,06_inventario" d="M 475.3225806451613 380 Q 400.43783450256507 411.5468133743603 349.6774193548387 475" marker-end="url(#arrow)"><title>detalle_compras.insumo_id → insumos.id</title></path>
+    <path class="svg-edge cross" data-link="06_inventario,05_compras" d="M 349.6774193548387 475 Q 424.56216549743493 443.4531866256397 475.3225806451613 380" marker-end="url(#arrow)"><title>movimientos_kardex.compra_id → compras.id</title></path>
+    <path class="svg-edge cross" data-link="09_sync,02_auth" d="M 645 195 Q 412.5 175 180 195" marker-end="url(#arrow)"><title>operaciones_cliente.dispositivo_id → dispositivos.id</title></path>
+  <!-- cajas de proceso -->
+    <g class="svg-box" data-key="01_tenancy" tabindex="0">
+      <rect x="415" y="10" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#7c9fff" stroke-width="1.5"/>
+      <text x="490" y="36" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Tenancy</text>
+      <text x="490" y="54" text-anchor="middle" fill="#8b93a1" font-size="10">2 tablas</text>
+    </g>
+    <g class="svg-box" data-key="02_auth" tabindex="0">
+      <rect x="30" y="165" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#ffab76" stroke-width="1.5"/>
+      <text x="105" y="191" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Auth &amp; Usuarios</text>
+      <text x="105" y="209" text-anchor="middle" fill="#8b93a1" font-size="10">3 tablas</text>
+    </g>
+    <g class="svg-box" data-key="03_ventas" tabindex="0">
+      <rect x="235" y="165" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#34d399" stroke-width="1.5"/>
+      <text x="310" y="191" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Ventas</text>
+      <text x="310" y="209" text-anchor="middle" fill="#8b93a1" font-size="10">4 tablas</text>
+    </g>
+    <g class="svg-box" data-key="08_config" tabindex="0">
+      <rect x="440" y="165" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#f472b6" stroke-width="1.5"/>
+      <text x="515" y="191" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Config</text>
+      <text x="515" y="209" text-anchor="middle" fill="#8b93a1" font-size="10">2 tablas</text>
+    </g>
+    <g class="svg-box" data-key="09_sync" tabindex="0">
+      <rect x="645" y="165" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="720" y="191" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Sync Offline</text>
+      <text x="720" y="209" text-anchor="middle" fill="#8b93a1" font-size="10">1 tablas</text>
+    </g>
+    <g class="svg-box" data-key="04_caja" tabindex="0">
+      <rect x="235" y="320" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#ebc246" stroke-width="1.5"/>
+      <text x="310" y="346" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Caja</text>
+      <text x="310" y="364" text-anchor="middle" fill="#8b93a1" font-size="10">3 tablas</text>
+    </g>
+    <g class="svg-box" data-key="05_compras" tabindex="0">
+      <rect x="440" y="320" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#f87171" stroke-width="1.5"/>
+      <text x="515" y="346" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Compras</text>
+      <text x="515" y="364" text-anchor="middle" fill="#8b93a1" font-size="10">2 tablas</text>
+    </g>
+    <g class="svg-box" data-key="06_inventario" tabindex="0">
+      <rect x="235" y="475" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="310" y="501" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Inventario</text>
+      <text x="310" y="519" text-anchor="middle" fill="#8b93a1" font-size="10">4 tablas</text>
+    </g>
+    <g class="svg-box" data-key="07_turnos" tabindex="0">
+      <rect x="440" y="475" width="150" height="60" rx="10" fill="rgba(18,18,18,0.9)" stroke="#22d3ee" stroke-width="1.5"/>
+      <text x="515" y="501" text-anchor="middle" fill="#e9e4dc" font-size="13" font-weight="700">Turnos</text>
+      <text x="515" y="519" text-anchor="middle" fill="#8b93a1" font-size="10">2 tablas</text>
+    </g>
+</svg>
+    <div class="legend" style="padding:6px 4px 2px">
+      <span><span class="sw" style="background:#5b6474"></span> Multi-empresa (empresa_id → empresas)</span>
+      <span><span class="sw" style="background:#93b0c9"></span> FK entre procesos</span>
+      <span>Pase el cursor sobre un proceso para ver sus conexiones</span>
+    </div>
+  </div>
+
+  <section class="grid">
+  <article class="pcard" data-key="01_tenancy" data-search="tenancy / multi-empresa empresas secuencias_numeracion company numberingsequence">
+    <header class="phead">
+      <span class="pnum" style="--c:#7c9fff">01</span>
+      <div class="ptitle">
+        <h2>Tenancy / Multi-empresa</h2>
+        <span class="pstats">2 tablas · 13 campos · 2 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">empresas</span>
+        <span class="tmeta">9 campos · 0 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>nombre_comercial</code><span class="type">nvarchar(120)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>ruc</code><span class="type">nvarchar(20)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>especialidad</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>color_tema</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>color_acento</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>texto_insignia</code><span class="type">nvarchar(80)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>direccion</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">secuencias_numeracion</span>
+        <span class="tmeta">4 campos · 0 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span><span class="fk ">→ empresas</span></div>
+        <div class="col"><code>entidad</code><span class="type">nvarchar(50)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>ultimo_numero</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade sí)</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="02_auth" data-search="autenticación / usuarios usuarios sesiones dispositivos user session device">
+    <header class="phead">
+      <span class="pnum" style="--c:#ffab76">02</span>
+      <div class="ptitle">
+        <h2>Autenticación / Usuarios</h2>
+        <span class="pstats">3 tablas · 26 campos · 3 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">usuarios</span>
+        <span class="tmeta">14 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(120)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>hash_pin</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>hash_contrasena</code><span class="type">nvarchar(200)</span></div>
+        <div class="col"><code>rol</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:Cajero</span></div>
+        <div class="col"><code>terminal</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>url_avatar</code><span class="type">nvarchar(1000)</span></div>
+        <div class="col"><code>empresa_asignada_id</code><span class="type">nvarchar(36)</span></div>
+        <div class="col"><code>esta_activo</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">sesiones</span>
+        <span class="tmeta">6 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>usuario_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk ">→ usuarios</span></div>
+        <div class="col"><code>dispositivo_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk ">→ dispositivos</span></div>
+        <div class="col"><code>hash_token</code><span class="type">nvarchar(200)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>expira_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">2 relación interna (cascade sí)</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">dispositivos</span>
+        <span class="tmeta">6 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>codigo_terminal</code><span class="type">nvarchar(30)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>ultima_vista_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>esta_activo</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="03_ventas" data-search="ventas (órdenes / mesas) mesas productos pedidos detalle_pedidos table product order orderitem">
+    <header class="phead">
+      <span class="pnum" style="--c:#34d399">03</span>
+      <div class="ptitle">
+        <h2>Ventas (Órdenes / Mesas)</h2>
+        <span class="pstats">4 tablas · 59 campos · 4 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">mesas</span>
+        <span class="tmeta">15 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>numero</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>capacidad</code><span class="type">int</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>zona</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:libre</span></div>
+        <div class="col"><code>ocupada_desde</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>minutos_transcurridos</code><span class="type">int</span></div>
+        <div class="col"><code>pedido_actual_id</code><span class="type">nvarchar(36)</span></div>
+        <div class="col"><code>mesero</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(500)</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">productos</span>
+        <span class="tmeta">13 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>descripcion</code><span class="type">nvarchar(500)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>precio</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>imagen</code><span class="type">nvarchar(1000)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>disponible</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>tiene_receta</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">pedidos</span>
+        <span class="tmeta">22 campos · 4 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>numero_ticket</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>mesa_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ mesas</span></div>
+        <div class="col"><code>numero_mesa</code><span class="type">nvarchar(20)</span></div>
+        <div class="col"><code>zona</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>mesero</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>creado_en</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>creado_utc</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>subtotal</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>igv</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>total</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:abierto</span></div>
+        <div class="col"><code>metodo_pago</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>monto_recibido</code><span class="type">decimal(12,2)</span></div>
+        <div class="col"><code>vuelto</code><span class="type">decimal(12,2)</span></div>
+        <div class="col"><code>cerrado_en</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>cerrado_utc</code><span class="type">datetime</span></div>
+        <div class="col"><code>id_operacion_cliente</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade no)</span>
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">detalle_pedidos</span>
+        <span class="tmeta">9 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>pedido_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk ">→ pedidos</span></div>
+        <div class="col"><code>producto_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ productos</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>precio</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cantidad</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(500)</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:agregado</span></div>
+        <div class="col"><code>agregado_en</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">2 relación interna (cascade sí)</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="04_caja" data-search="caja / finanzas transacciones cuentas_bancarias metodos_pago transaction bankaccount custompaymentmethod">
+    <header class="phead">
+      <span class="pnum" style="--c:#ebc246">04</span>
+      <div class="ptitle">
+        <h2>Caja / Finanzas</h2>
+        <span class="pstats">3 tablas · 51 campos · 3 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">transacciones</span>
+        <span class="tmeta">21 campos · 5 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>hora</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>fecha</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>marca_tiempo</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>tipo</code><span class="type">nvarchar(50)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>descripcion</code><span class="type">nvarchar(300)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>monto</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>es_ingreso</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>metodo_pago</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>metodo_pago_personalizado_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ metodos_pago</span></div>
+        <div class="col"><code>cuenta_bancaria_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ cuentas_bancarias</span></div>
+        <div class="col"><code>alias_cuenta_bancaria</code><span class="type">nvarchar(200)</span></div>
+        <div class="col"><code>turno</code><span class="type">nvarchar(10)</span></div>
+        <div class="col"><code>numero_referencia</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>numero_mesa</code><span class="type">nvarchar(20)</span></div>
+        <div class="col"><code>pedido_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ pedidos</span></div>
+        <div class="col"><code>numero_ticket</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>id_operacion_cliente</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>compra_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ compras</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">2 relación interna (cascade no)</span>
+        <span class="relx">3 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">cuentas_bancarias</span>
+        <span class="tmeta">16 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre_banco</code><span class="type">nvarchar(80)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>numero_cuenta</code><span class="type">nvarchar(50)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cci</code><span class="type">nvarchar(60)</span></div>
+        <div class="col"><code>tipo_cuenta</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>moneda</code><span class="type">nvarchar(5)</span><span class="chip nn">NN</span><span class="chip df">def:PEN</span></div>
+        <div class="col"><code>nombre_titular</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>alias</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>saldo_actual</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>esta_activo</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(500)</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">metodos_pago</span>
+        <span class="tmeta">14 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(40)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cuenta_bancaria_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ cuentas_bancarias</span></div>
+        <div class="col"><code>alias_cuenta_bancaria</code><span class="type">nvarchar(200)</span></div>
+        <div class="col"><code>porcentaje_comision</code><span class="type">decimal(5,2)</span></div>
+        <div class="col"><code>requiere_numero_referencia</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>icono</code><span class="type">nvarchar(50)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>esta_activo</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade no)</span>
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="05_compras" data-search="compras compras detalle_compras purchase purchaseitem">
+    <header class="phead">
+      <span class="pnum" style="--c:#f87171">05</span>
+      <div class="ptitle">
+        <h2>Compras</h2>
+        <span class="pstats">2 tablas · 35 campos · 2 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">compras</span>
+        <span class="tmeta">27 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(40)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>estado_documento</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:provisional</span></div>
+        <div class="col"><code>numero_papeleta_provisional</code><span class="type">nvarchar(60)</span></div>
+        <div class="col"><code>numero_factura</code><span class="type">nvarchar(60)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>nombre_proveedor</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>ruc_proveedor</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>fecha</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>hora</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>comprada_utc</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>turno</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>subtotal</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>igv</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>total</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>estado_pago</code><span class="type">nvarchar(50)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>pagado_desde_caja</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>cuenta_bancaria_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ cuentas_bancarias</span></div>
+        <div class="col"><code>alias_cuenta_bancaria</code><span class="type">nvarchar(200)</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(500)</span></div>
+        <div class="col"><code>regularizado_en</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>regularizado_por</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>id_operacion_cliente</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">2 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">detalle_compras</span>
+        <span class="tmeta">8 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>compra_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk ">→ compras</span></div>
+        <div class="col"><code>insumo_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ insumos</span></div>
+        <div class="col"><code>nombre_insumo</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cantidad</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>unidad</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_unitario</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_total</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade sí)</span>
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="06_inventario" data-search="inventario (kardex / recetas) insumos recetas ingredientes_receta movimientos_kardex insumo recipe recipeingredient kardexmovement">
+    <header class="phead">
+      <span class="pnum" style="--c:#a78bfa">06</span>
+      <div class="ptitle">
+        <h2>Inventario (Kardex / Recetas)</h2>
+        <span class="pstats">4 tablas · 55 campos · 4 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">insumos</span>
+        <span class="tmeta">15 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>codigo</code><span class="type">nvarchar(20)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(80)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>unidad</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>stock_actual</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>stock_minimo</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_por_unidad</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>fecha_ultima_compra</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>ultima_compra_utc</code><span class="type">datetime</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">recetas</span>
+        <span class="tmeta">14 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>producto_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ productos</span></div>
+        <div class="col"><code>nombre_producto</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>porciones</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>precio_venta</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_total</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>porcentaje_costo_teorico</code><span class="type">decimal(5,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>notas_preparacion</code><span class="type">nvarchar(1000)</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">2 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">ingredientes_receta</span>
+        <span class="tmeta">8 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>receta_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk ">→ recetas</span></div>
+        <div class="col"><code>insumo_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ insumos</span></div>
+        <div class="col"><code>nombre_insumo</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cantidad</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>unidad</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_por_unidad</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_subtotal</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">2 relación interna (cascade sí)</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">movimientos_kardex</span>
+        <span class="tmeta">18 campos · 4 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>marca_tiempo</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>fecha</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>hora</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>insumo_id</code><span class="type">nvarchar(36)</span><span class="fk ">→ insumos</span></div>
+        <div class="col"><code>nombre_insumo</code><span class="type">nvarchar(150)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>tipo</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>documento_referencia</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cantidad</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>unidad</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_unitario</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>costo_total</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>stock_antes</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>stock_despues</code><span class="type">decimal(12,4)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(300)</span></div>
+        <div class="col"><code>id_operacion_cliente</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>compra_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ compras</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade no)</span>
+        <span class="relx">2 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="07_turnos" data-search="turnos / arqueo registros_turno turnos_empresa shiftrecord companyshift">
+    <header class="phead">
+      <span class="pnum" style="--c:#22d3ee">07</span>
+      <div class="ptitle">
+        <h2>Turnos / Arqueo</h2>
+        <span class="pstats">2 tablas · 27 campos · 2 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">registros_turno</span>
+        <span class="tmeta">20 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>turno</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>abierto_en</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>abierto_utc</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>cerrado_en</code><span class="type">nvarchar(30)</span></div>
+        <div class="col"><code>cerrado_utc</code><span class="type">datetime</span></div>
+        <div class="col"><code>abierto_por</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>cerrado_por</code><span class="type">nvarchar(100)</span></div>
+        <div class="col"><code>caja_inicial</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>caja_final_reportada</code><span class="type">decimal(12,2)</span></div>
+        <div class="col"><code>caja_esperada_sistema</code><span class="type">decimal(12,2)</span></div>
+        <div class="col"><code>diferencia_caja</code><span class="type">decimal(12,2)</span></div>
+        <div class="col"><code>total_ventas</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>total_gastos</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>ventas_tarjeta</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>ventas_billetera_digital</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>ventas_transferencia</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:cerrado</span></div>
+        <div class="col"><code>notas</code><span class="type">nvarchar(500)</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">turnos_empresa</span>
+        <span class="tmeta">7 campos · 0 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>turno_actual</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span><span class="chip df">def:Día</span></div>
+        <div class="col"><code>abierto_en</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>abierto_utc</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>abierto_por</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>caja_inicial</code><span class="type">decimal(12,2)</span><span class="chip nn">NN</span><span class="chip df">def:350</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="08_config" data-search="configuración (impresoras) impresoras categorias_impresora printer printercategory">
+    <header class="phead">
+      <span class="pnum" style="--c:#f472b6">08</span>
+      <div class="ptitle">
+        <h2>Configuración (Impresoras)</h2>
+        <span class="pstats">2 tablas · 20 campos · 2 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">impresoras</span>
+        <span class="tmeta">16 campos · 1 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>nombre</code><span class="type">nvarchar(200)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>rol</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>tipo_conexion</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>direccion_ip</code><span class="type">nvarchar(50)</span></div>
+        <div class="col"><code>puerto</code><span class="type">int</span><span class="chip df">def:9100</span></div>
+        <div class="col"><code>ancho_papel</code><span class="type">nvarchar(10)</span><span class="chip nn">NN</span><span class="chip df">def:80mm</span></div>
+        <div class="col"><code>corte_automatico</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>pitido_al_imprimir</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(20)</span><span class="chip nn">NN</span><span class="chip df">def:online</span></div>
+        <div class="col"><code>esta_habilitado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:true</span></div>
+        <div class="col"><code>esta_eliminado</code><span class="type">boolean</span><span class="chip nn">NN</span><span class="chip df">def:false</span></div>
+        <div class="col"><code>version</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:1</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>actualizado_en</code><span class="type">datetime</span><span class="chip nn">NN</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">1 FK a otro proceso</span>
+      </div>
+    </details>
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">categorias_impresora</span>
+        <span class="tmeta">4 campos · 0 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>impresora_id</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span><span class="fk ">→ impresoras</span></div>
+        <div class="col"><code>categoria</code><span class="type">nvarchar(20)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>orden</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relint">1 relación interna (cascade sí)</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  <article class="pcard" data-key="09_sync" data-search="motor de sync offline operaciones_cliente clientop">
+    <header class="phead">
+      <span class="pnum" style="--c:#94a3b8">09</span>
+      <div class="ptitle">
+        <h2>Motor de Sync Offline</h2>
+        <span class="pstats">1 tablas · 12 campos · 1 modelos Prisma</span>
+      </div>
+    </header>
+    <div class="tables">
+    <details class="tbl">
+      <summary>
+        <span class="tname mono">operaciones_cliente</span>
+        <span class="tmeta">12 campos · 2 índices</span>
+      </summary>
+      <div class="cols">
+        <div class="col"><code>id</code><span class="type">nvarchar(36)</span><span class="chip pk">PK</span></div>
+        <div class="col"><code>dispositivo_id</code><span class="type">nvarchar(36)</span><span class="chip nn">NN</span><span class="fk cross">→ dispositivos</span></div>
+        <div class="col"><code>empresa_id</code><span class="type">nvarchar(36)</span><span class="fk cross">→ empresas</span></div>
+        <div class="col"><code>entidad</code><span class="type">nvarchar(50)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>operacion</code><span class="type">nvarchar(100)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>carga</code><span class="type">nvarchar(MAX)</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>id_operacion_cliente</code><span class="type">nvarchar(36)</span><span class="chip uk">UK</span><span class="chip nn">NN</span></div>
+        <div class="col"><code>estado</code><span class="type">nvarchar(30)</span><span class="chip nn">NN</span><span class="chip df">def:PENDING</span></div>
+        <div class="col"><code>numero_intentos</code><span class="type">int</span><span class="chip nn">NN</span><span class="chip df">def:0</span></div>
+        <div class="col"><code>ultimo_error</code><span class="type">nvarchar(500)</span></div>
+        <div class="col"><code>creado_en</code><span class="type">datetime</span><span class="chip nn">NN</span><span class="chip df">def:now()</span></div>
+        <div class="col"><code>procesado_en</code><span class="type">datetime</span></div>
+      </div>
+      <div class="relnote">
+        <span class="relx">2 FK a otro proceso</span>
+      </div>
+    </details>
+    </div>
+  </article>
+  </section>
+
+  <footer>
+    Generado: 2026-09-10 · Fuente: server/prisma/schema.prisma · Regenerar: node db/gen-process-map.mjs<br>
+    Tipos: NVARCHAR sin enums (validación en servicios) · clienteOpId UNIQUE = idempotencia offline · esta_eliminado = soft delete · version = conflicto last-write-wins
+  </footer>
+
+</div>
+<script>
+  // Búsqueda
+  const search = document.querySelector('.search');
+  search.addEventListener('input', function () {
+    const q = this.value.trim().toLowerCase();
+    document.querySelectorAll('.pcard').forEach(card => {
+      card.classList.toggle('hidden', q.length > 0 && !card.dataset.search.includes(q));
+    });
+  });
+
+  // Expandir / colapsar / imprimir
+  document.querySelectorAll('button.btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      if (act === 'expand') document.querySelectorAll('details.tbl').forEach(d => (d.open = true));
+      if (act === 'collapse') document.querySelectorAll('details.tbl').forEach(d => (d.open = false));
+      if (act === 'print') window.print();
+    });
+  });
+
+  // Hover en el SVG
+  const boxes = document.querySelectorAll('.svg-box');
+  function setActive(key) {
+    boxes.forEach(el => el.classList.toggle('muted', !!key && el.dataset.key !== key));
+    document.querySelectorAll('.svg-edge').forEach(el => {
+      const link = el.dataset.link.split(',');
+      const on = !!key && link.includes(key);
+      el.classList.toggle('on', on);
+      el.classList.toggle('off', !on);
+    });
+  }
+  boxes.forEach(box => {
+    const key = box.dataset.key;
+    box.addEventListener('mouseenter', () => setActive(key));
+    box.addEventListener('mouseleave', () => setActive(null));
+    box.addEventListener('focus', () => setActive(key));
+    box.addEventListener('blur', () => setActive(null));
+  });
+</script>
+</body>
+</html>

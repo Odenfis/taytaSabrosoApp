@@ -1,0 +1,31 @@
+// ============================================================
+// Tayta & Sabroso POS — Tenancy / Multi-empresa
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: empresas, secuencias_numeracion
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: Company
+Table empresas {
+  id nvarchar(36) [pk]
+  nombre nvarchar(200) [not null]
+  nombre_comercial nvarchar(120) [not null]
+  ruc nvarchar(20) [unique, not null]
+  especialidad nvarchar(200) [not null]
+  color_tema nvarchar(20) [not null]
+  color_acento nvarchar(20) [not null]
+  texto_insignia nvarchar(80) [not null]
+  direccion nvarchar(200) [not null]
+}
+
+// Prisma model: NumberingSequence
+Table secuencias_numeracion {
+  empresa_id nvarchar(36) [pk, ref: > empresas.id] // delete: cascade
+  entidad nvarchar(50) [pk]
+  ultimo_numero int [not null, default: 0]
+  actualizado_en datetime [not null]
+}

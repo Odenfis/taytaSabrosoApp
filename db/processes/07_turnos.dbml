@@ -1,0 +1,50 @@
+// ============================================================
+// Tayta & Sabroso POS — Turnos / Arqueo de Caja
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: registros_turno, turnos_empresa
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: ShiftRecord
+Table registros_turno {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  turno nvarchar(10) [not null]
+  abierto_en nvarchar(30) [not null]
+  abierto_utc datetime [not null, default: `now()`]
+  cerrado_en nvarchar(30)
+  cerrado_utc datetime
+  abierto_por nvarchar(100) [not null]
+  cerrado_por nvarchar(100)
+  caja_inicial decimal(12,2) [not null]
+  caja_final_reportada decimal(12,2)
+  caja_esperada_sistema decimal(12,2)
+  diferencia_caja decimal(12,2)
+  total_ventas decimal(12,2) [not null, default: 0]
+  total_gastos decimal(12,2) [not null, default: 0]
+  ventas_tarjeta decimal(12,2) [not null, default: 0]
+  ventas_billetera_digital decimal(12,2) [not null, default: 0]
+  ventas_transferencia decimal(12,2) [not null, default: 0]
+  estado nvarchar(20) [not null, default: 'cerrado']
+  notas nvarchar(500)
+
+  indexes {
+    (empresa_id, turno) [name: 'ix_registros_turno_empresa_id_turno']
+    (cerrado_utc) [name: 'ix_registros_turno_cerrado_utc']
+  }
+}
+
+// Prisma model: CompanyShift
+Table turnos_empresa {
+  empresa_id nvarchar(36) [pk, ref: > empresas.id] // delete: cascade
+  turno_actual nvarchar(10) [not null, default: 'Día']
+  abierto_en nvarchar(30) [not null]
+  abierto_utc datetime [not null, default: `now()`]
+  abierto_por nvarchar(100) [not null]
+  caja_inicial decimal(12,2) [not null, default: 350]
+  actualizado_en datetime [not null]
+}

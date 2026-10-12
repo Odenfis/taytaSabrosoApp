@@ -123,7 +123,8 @@ router.delete('/orders/:id/items/:itemId', async (req, res, next) => {
 router.post('/orders/:id/send-to-kitchen', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await sendToKitchen(id));
+    const body = z.object({ clientOpId: z.string().optional() }).parse(req.body ?? {});
+    res.json(await sendToKitchen(id, body));
   } catch (err) {
     next(err);
   }
@@ -213,6 +214,7 @@ router.post('/purchases/:id/regularize', async (req, res, next) => {
         invoiceNumber: z.string().min(1),
         supplierRuc: z.string().min(1),
         notes: z.string().optional(),
+        clientOpId: z.string().optional(),
       })
       .parse(req.body);
     res.json(

@@ -45,3 +45,20 @@ export function clearQueue(): PendingOp[] {
 export function queueCount(): number {
   return loadQueue().length;
 }
+
+// Fase E4-b: ids de entidades temporales (ordenes order-tmp-* / mesas t-express-*)
+// que la cola AUN referencia. Se usan en loadOperations/loadCatalogs para no sobrescribir
+// estado local pendiente de sincronizar al recargar la app con red recuperada.
+export function getPendingTmpIds(): { orderTmpIds: Set<string>; tmpTableIds: Set<string> } {
+  const orderTmpIds = new Set<string>();
+  const tmpTableIds = new Set<string>();
+  for (const op of loadQueue()) {
+    const payload = (op.payload ?? {}) as Record<string, unknown>;
+    for (const value of Object.values(payload)) {
+      if (typeof value !== 'string') continue;
+      if (value.startsWith('order-tmp-')) orderTmpIds.add(value);
+      if (value.startsWith('t-express-')) tmpTableIds.add(value);
+    }
+  }
+  return { orderTmpIds, tmpTableIds };
+}

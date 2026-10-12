@@ -1,0 +1,90 @@
+// ============================================================
+// Tayta & Sabroso POS — Caja / Libro de Transacciones / Finanzas
+// Generado: 2026-09-10 | Desde: server/prisma/schema.prisma
+// Para importar en: https://dbdiagram.io
+//
+// Tablas: transacciones, cuentas_bancarias, metodos_pago
+//
+// Nota: referencias a tablas de otros procesos quedan como ref: inline.
+// Importar varios archivos .dbml en dbdiagram.io para resolverlas.
+// ============================================================
+
+// Prisma model: Transaction
+Table transacciones {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  hora nvarchar(30) [not null]
+  fecha nvarchar(30) [not null]
+  marca_tiempo datetime [not null]
+  tipo nvarchar(50) [not null]
+  descripcion nvarchar(300) [not null]
+  monto decimal(12,2) [not null]
+  es_ingreso boolean [not null, default: true]
+  metodo_pago nvarchar(100)
+  metodo_pago_personalizado_id nvarchar(36) [ref: >? metodos_pago.id]
+  cuenta_bancaria_id nvarchar(36) [ref: >? cuentas_bancarias.id]
+  alias_cuenta_bancaria nvarchar(200)
+  turno nvarchar(10)
+  numero_referencia nvarchar(100)
+  numero_mesa nvarchar(20)
+  pedido_id nvarchar(36) [ref: >? pedidos.id]
+  numero_ticket nvarchar(30)
+  id_operacion_cliente nvarchar(36) [unique, not null]
+  esta_eliminado boolean [not null, default: false]
+  compra_id nvarchar(36) [ref: >? compras.id]
+
+  indexes {
+    (empresa_id) [name: 'ix_transacciones_empresa_id']
+    (marca_tiempo) [name: 'ix_transacciones_marca_tiempo']
+    (pedido_id) [name: 'ix_transacciones_pedido_id']
+    (cuenta_bancaria_id) [name: 'ix_transacciones_cuenta_bancaria_id']
+    (compra_id) [name: 'ix_transacciones_compra_id']
+  }
+}
+
+// Prisma model: BankAccount
+Table cuentas_bancarias {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [not null, ref: > empresas.id]
+  nombre_banco nvarchar(80) [not null]
+  numero_cuenta nvarchar(50) [not null]
+  cci nvarchar(60)
+  tipo_cuenta nvarchar(20) [not null]
+  moneda nvarchar(5) [not null, default: 'PEN']
+  nombre_titular nvarchar(150) [not null]
+  alias nvarchar(200) [not null]
+  saldo_actual decimal(12,2) [not null]
+  esta_activo boolean [not null, default: true]
+  notas nvarchar(500)
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_cuentas_bancarias_empresa_id']
+  }
+}
+
+// Prisma model: CustomPaymentMethod
+Table metodos_pago {
+  id nvarchar(36) [pk]
+  empresa_id nvarchar(36) [ref: >? empresas.id]
+  nombre nvarchar(150) [not null]
+  categoria nvarchar(40) [not null]
+  cuenta_bancaria_id nvarchar(36) [ref: >? cuentas_bancarias.id]
+  alias_cuenta_bancaria nvarchar(200)
+  porcentaje_comision decimal(5,2)
+  requiere_numero_referencia boolean [not null, default: false]
+  icono nvarchar(50) [not null]
+  esta_activo boolean [not null, default: true]
+  esta_eliminado boolean [not null, default: false]
+  version int [not null, default: 1]
+  creado_en datetime [not null, default: `now()`]
+  actualizado_en datetime [not null]
+
+  indexes {
+    (empresa_id) [name: 'ix_metodos_pago_empresa_id']
+    (cuenta_bancaria_id) [name: 'ix_metodos_pago_cuenta_bancaria_id']
+  }
+}

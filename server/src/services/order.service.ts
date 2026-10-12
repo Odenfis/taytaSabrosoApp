@@ -422,7 +422,7 @@ export async function removeItemFromOrder(orderId: string, itemId: string) {
 
 // Motor de deducción Kardex, réplica fiel de la demo: explota la receta de cada ítem
 // y descuenta stock de insumos registrando movimientos SALIDA_VENTA_POS.
-export async function sendToKitchen(orderId: string) {
+export async function sendToKitchen(orderId: string, input?: { clientOpId?: string }) {
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
       where: { id: orderId, isDeleted: false },
@@ -430,6 +430,24 @@ export async function sendToKitchen(orderId: string) {
     });
     if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+
+    // Idempotencia (E4): si este clientOpId de despacho ya generó movimientos de kardex,
+    // el envío ya fue aplicado (replay de cola offline) → no re-descontar.
+    if (input?.clientOpId) {
+      const alreadyDispatched = await tx.kardexMovement.findFirst({
+        where: { clientOpId: input.clientOpId },
+        take: 1,
+      });
+      if (alreadyDispatched) {
+        const current = await tx.order.update({
+          where: { id: orderId },
+          data: { status: 'en_cocina' },
+          include: { items: true },
+        });
+        await tx.orderItem.updateMany({ where: { orderId }, data: { status: 'en_cocina' } });
+        return { order: current, kardexMovements: 0, replayed: true };
+      }
+    }
 
     const recipes = await tx.recipe.findMany({ where: { isDeleted: false }, include: { ingredients: true } });
     const { time, date, utc } = nowParts();
@@ -472,7 +490,7 @@ export async function sendToKitchen(orderId: string) {
           stockBefore: currentStock,
           stockAfter: round2(currentStock - qtyNeeded),
           notes: `Consumo automático según Ficha Técnica (${recipe.productName})`,
-          clientOpId: randomUUID(),
+          clientOpId: input?.clientOpId ?? randomUUID(),
         });
       }
     }

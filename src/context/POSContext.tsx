@@ -65,8 +65,15 @@ import {
 } from '../lib/operationMapper';
 import {
   enqueue as enqueueOp,
+  loadQueue,
+  removeByClientOpId,
   queueCount,
+  getPendingTmpIds,
 } from '../lib/offlineQueue';
+import {
+  replayCall,
+  ReplayDisposition,
+} from '../lib/replayQueue';
 import {
   COMPANIES,
   INITIAL_PRODUCTS,
@@ -444,7 +451,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     settle(results[0], (dtos) => {
       const items = dtos.map(mapTable);
-      setTables(items);
+      // Fase E4-b: preservar mesas temporales/ocupadas localmente si la cola aún las referencia
+      // (para que el replay al reconectar no pierda órdenes/mesas abiertas offline).
+      const { orderTmpIds, tmpTableIds } = getPendingTmpIds();
+      setTables((prev) => {
+        const merged = items.map((t) => {
+          const local = prev.find((p) => p.id === t.id);
+          if (local && local.currentOrderId && orderTmpIds.has(local.currentOrderId)) {
+            return { ...t, status: 'ocupada', currentOrderId: local.currentOrderId, waiter: local.waiter };
+          }
+          return t;
+        });
+        for (const t of prev) {
+          if (tmpTableIds.has(t.id) && !merged.some((m) => m.id === t.id)) merged.push(t);
+        }
+        return merged;
+      });
       metaUpdates.tables = extractMeta('tables', items);
     });
     settle(results[1], (dtos) => {
@@ -510,6 +532,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Ítems agregados a una orden temporal (apertura en curso) para flushear al server al resolver.
   const tmpOrderItemsRef = useRef<Record<string, OrderItem[]>>({});
+  // clientOpId de la op `openOrder`/`quickOrder` encolada por cada orden temporal
+  // (para poder retirarla de la cola si la comanda se abandona offline).
+  const tmpOrderOpRef = useRef<Record<string, string>>({});
+  // Guard de replay: evita corridas concurrentes (eventos online + toggle + montaje).
+  const isReplayingRef = useRef(false);
+  // Ref de la función de replay para usarla desde listeners estables (evento online/offline).
+  const replayRef = useRef<() => void>(() => {});
+  // Ref de loadOperations para refrescar al terminar el replay sin dependencias viejas.
+  const loadOperationsRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   // Refreshers granulares de operaciones (el server hace efectos colaterales: Kardex, libros, saldos).
   const refreshKardex = async (): Promise<void> => {
@@ -574,7 +605,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     settle(results[0], (dtos) => {
       const items = dtos.map(mapOrder);
-      setOrders(Object.fromEntries(items.map((o) => [o.id, o])));
+      const merged = Object.fromEntries(items.map((o) => [o.id, o]));
+      // Fase E4-b: no sobrescribir órdenes temporales que la cola aún referencia.
+      const { orderTmpIds } = getPendingTmpIds();
+      setOrders((prev) => {
+        const next = { ...merged };
+        for (const id of orderTmpIds) {
+          if (prev[id]) next[id] = prev[id];
+        }
+        return next;
+      });
     });
     settle(results[1], (dtos) => setPurchases(dtos.map(mapPurchase)));
     settle(results[2], (dtos) => setKardexMovements(dtos.map(mapKardexMovement)));
@@ -589,9 +629,202 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       );
     }
   };
+  loadOperationsRef.current = loadOperations;
 
   const syncPendingCount = () => {
     setOfflineState((prev) => ({ ...prev, pendingSyncCount: queueCount() }));
+  };
+
+// Replay de la cola offline (Fase E4): reenvía en orden FIFO las operaciones pendientes
+  // de ts_pending_queue_v2 al API al reconectar. Idempotente por clientOpId del lado server.
+  // NOTA: el guard de "modo offline simulado" vive en los disparadores (no aquí) para que
+  // el toggle a online funcione aunque el estado React aún no se aplicó.
+  const replayOfflineQueue = async (): Promise<void> => {
+    if (isReplayingRef.current) return;
+    const queue = loadQueue();
+    if (queue.length === 0) {
+      syncPendingCount();
+      return;
+    }
+    isReplayingRef.current = true;
+    try {
+    const tmpToOrder = new Map<string, string>();
+    const tmpToTable = new Map<string, string>();
+    const deadTmpOrder = new Set<string>();
+    const deadTmpTable = new Set<string>();
+    let synced = 0;
+    let dropped = 0;
+    let stuck = 0;
+    let stuckNetwork = false;
+
+    const flushTmpItems = async (serverOrderId: string, tmpOrderId: string): Promise<Order> => {
+      const tmpOrder = orders[tmpOrderId];
+      const refreshed = serverOrderId;
+      if (tmpOrder && tmpOrder.items.length > 0) {
+        for (const it of tmpOrder.items) {
+          await apiClient.post(`/operations/orders/${refreshed}/items`, {
+            productId: it.productId,
+            quantity: it.quantity,
+            notes: it.notes || undefined,
+          });
+        }
+      }
+      const dto = await apiClient.get<OrderDTO>(`/operations/orders/${refreshed}`);
+      return mapOrder(dto);
+    };
+
+    const migrateTmpOrder = (serverOrder: Order, tmpOrderId: string, tmpTableId?: string) => {
+      setOrders((prev) => {
+        const next = { ...prev };
+        delete next[tmpOrderId];
+        next[serverOrder.id] = serverOrder;
+        return next;
+      });
+      setTables((prev) => {
+        if (tmpTableId) {
+          const rest = prev.filter((t) => t.id !== tmpTableId);
+          const existing = rest.find((t) => t.id === serverOrder.tableId);
+          if (existing) {
+            return rest.map((t) =>
+              t.id === existing.id ? { ...t, status: 'ocupada', currentOrderId: serverOrder.id, waiter: serverOrder.waiter } : t
+            );
+          }
+          return [
+            ...rest,
+            {
+              id: serverOrder.tableId,
+              companyId: serverOrder.companyId as CompanyId,
+              number: serverOrder.tableNumber,
+              capacity: 2,
+              zone: serverOrder.zone,
+              status: 'ocupada',
+              currentOrderId: serverOrder.id,
+              waiter: serverOrder.waiter,
+            } as Table,
+          ];
+        }
+        return prev.map((t) =>
+          t.currentOrderId === tmpOrderId ? { ...t, currentOrderId: serverOrder.id } : t
+        );
+      });
+      setSelectedTableId((prevId) =>
+        prevId !== null && (prevId === tmpOrderId || prevId === tmpTableId) ? serverOrder.tableId : prevId
+      );
+      delete tmpOrderItemsRef.current[tmpOrderId];
+      delete tmpOrderOpRef.current[tmpOrderId];
+    };
+
+    for (const opItem of queue) {
+      const payload = { ...((opItem.payload ?? {}) as Record<string, unknown>) };
+      if (typeof payload.orderId === 'string' && tmpToOrder.has(payload.orderId)) {
+        payload.orderId = tmpToOrder.get(payload.orderId);
+      }
+      if (typeof payload.tableId === 'string' && tmpToTable.has(payload.tableId)) {
+        payload.tableId = tmpToTable.get(payload.tableId);
+      }
+
+      if (
+        deadTmpOrder.has(payload.orderId as string) ||
+        deadTmpTable.has(payload.tableId as string)
+      ) {
+        removeByClientOpId(opItem.clientOpId);
+        dropped += 1;
+        continue;
+      }
+
+      if (opItem.op === 'openOrder' || opItem.op === 'quickOrder') {
+        const tmpOrderId = payload.tmpOrderId as string;
+        const tmpTableId = (payload.tmpTableId as string) ?? undefined;
+        const tmpOrder = tmpOrderId ? orders[tmpOrderId] : undefined;
+        if (!tmpOrder) {
+          // La comanda temporal se abandonó offline (mesa liberada al vaciarla) → no crear orden fantasma.
+          deadTmpOrder.add(tmpOrderId);
+          if (tmpTableId) deadTmpTable.add(tmpTableId);
+          removeByClientOpId(opItem.clientOpId);
+          dropped += 1;
+          continue;
+        }
+        const result = await replayCall(opItem, payload);
+        if (result.disposition === 'retry') {
+          stuck += 1;
+          stuckNetwork = stuckNetwork || result.network === true;
+          break;
+        }
+        if (result.disposition !== 'ok') {
+          removeByClientOpId(opItem.clientOpId);
+          dropped += 1;
+          if (result.disposition === 'business' && result.message) {
+            addNotification('Replay omitido', `${opItem.op}: ${result.message}`, 'warning');
+          }
+          continue;
+        }
+        const serverOrder = mapOrder(result.data as OrderDTO);
+        tmpToOrder.set(tmpOrderId, serverOrder.id);
+        if (tmpTableId) tmpToTable.set(tmpTableId, serverOrder.tableId);
+        const reconciled = await flushTmpItems(serverOrder.id, tmpOrderId);
+        migrateTmpOrder(reconciled, tmpOrderId, tmpTableId);
+        removeByClientOpId(opItem.clientOpId);
+        synced += 1;
+        setLastSyncResult({ ok: true, ts: Date.now(), op: opItem.op });
+        continue;
+      }
+
+      const result = await replayCall(opItem, payload);
+      if (result.disposition === 'ok') {
+        removeByClientOpId(opItem.clientOpId);
+        synced += 1;
+      } else if (result.disposition === 'retry') {
+        stuck += 1;
+        stuckNetwork = stuckNetwork || result.network === true;
+        break;
+      } else if (result.disposition === 'business') {
+        removeByClientOpId(opItem.clientOpId);
+        dropped += 1;
+        addNotification('Replay omitido', `${opItem.op}: ${result.message}`, 'warning');
+      } else {
+        removeByClientOpId(opItem.clientOpId);
+        dropped += 1;
+      }
+    }
+
+    syncPendingCount();
+    const remaining = queueCount();
+    setLastSyncResult({ ok: stuck === 0, ts: Date.now(), op: 'replayQueue' });
+    if (stuck > 0) {
+      if (stuckNetwork) setOfflineState((prev) => ({ ...prev, isOnline: false }));
+      addNotification(
+        'Sincronización parcial',
+        `${synced} operaciones sincronizadas, ${remaining} en cola (se reintentará al reconectar).`,
+        'warning'
+      );
+    } else {
+      addNotification(
+        'Sincronización completada',
+        `${synced} operaciones sincronizadas${dropped > 0 ? `, ${dropped} omitidas por no aplicables` : ''}.`,
+        dropped > 0 ? 'warning' : 'success'
+      );
+    }
+
+    await loadOperationsRef.current();
+    const refreshOps = [refreshKardex(), refreshInsumos(), refreshTransactions(),
+      refreshBankAccounts(), refreshShiftRecords()];
+    await Promise.allSettled(refreshOps);
+    } catch (err) {
+      syncPendingCount();
+      setLastSyncResult({ ok: false, ts: Date.now(), op: 'replayQueue' });
+      addNotification(
+        'Sincronización interrumpida',
+        'Hubo un problema al sincronizar; las operaciones siguen en cola y se reintentarán al reconectar.',
+        'warning'
+      );
+    } finally {
+      isReplayingRef.current = false;
+    }
+  };
+
+  // Replay siempre apunta a la versión más reciente de la función (listeners estables).
+  replayRef.current = () => {
+    void replayOfflineQueue();
   };
 
   // Write-through unificado (contrato de sync mínimo, E3):
@@ -692,6 +925,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Fase E4 — detecta reconexión real y dispara el replay automático de la cola.
+  // Solo cuando el navegador reporta online Y no estamos en modo offline simulado.
+  useEffect(() => {
+    const goOnline = () => setOfflineState((prev) => ({ ...prev, isOnline: true }));
+    const goOffline = () => setOfflineState((prev) => ({ ...prev, isOnline: false }));
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currentUser && offlineState.isOnline && !offlineState.isSimulatedOffline) {
+      void replayRef.current();
+    }
+  }, [currentUser, offlineState.isOnline, offlineState.isSimulatedOffline]);
 
   // Sync to Local Storage
   useEffect(() => {
@@ -1032,11 +1284,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       addNotification(`Mesa ${table.number} Abierta`, 'Se inició una nueva comanda.', 'info');
 
       // Write-through (Fase E3): abre la orden real en el server y reconcilia ids.
+      // (tmpOrderId viaja en el payload para que el replay E4 refluya los ítems si se encoló offline.)
+      tmpOrderOpRef.current[tmpOrderId] = clientOpId;
       attemptMutation({
         clientOpId,
         entity: 'order',
         op: 'openOrder',
-        queuePayload: { tableId, waiter: newOrder.waiter, clientOpId },
+        queuePayload: { tableId, waiter: newOrder.waiter, clientOpId, tmpOrderId },
         endpointOp: async () => {
           const res = await apiClient.post<OrderDTO>('/operations/orders/open', {
             tableId,
@@ -1046,6 +1300,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           const serverOrder = mapOrder(res);
           const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
           delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
           setOrders((prev) => {
             const next = { ...prev };
             delete next[tmpOrderId];
@@ -1069,6 +1324,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         },
         rollback: () => {
           delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
           setOrders((prev) => {
             const next = { ...prev };
             delete next[tmpOrderId];
@@ -1159,11 +1415,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       addNotification(`Mesa ${newNum} Abierta`, 'Comanda rápida de Barra.', 'info');
 
       // Write-through (Fase E3): el server crea la mesa de barra y la orden.
+      // (tmpOrderId/tmpTableId viajan en el payload para el replay E4.)
+      tmpOrderOpRef.current[tmpOrderId] = clientOpId;
       attemptMutation({
         clientOpId,
         entity: 'order',
         op: 'quickOrder',
-        queuePayload: { companyId: compId, waiter: tmpOrder.waiter, clientOpId },
+        queuePayload: {
+          companyId: compId,
+          waiter: tmpOrder.waiter,
+          clientOpId,
+          tmpOrderId,
+          tmpTableId: newId,
+        },
         endpointOp: async () => {
           const res = await apiClient.post<OrderDTO>('/operations/orders/quick-bar', {
             companyId: compId,
@@ -1173,6 +1437,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           const serverOrder = mapOrder(res);
           const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
           delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
           setOrders((prev) => {
             const next = { ...prev };
             delete next[tmpOrderId];
@@ -1210,6 +1475,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         },
         rollback: () => {
           delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
           setOrders((prev) => {
             const next = { ...prev };
             delete next[tmpOrderId];
@@ -1420,6 +1686,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setCurrentScreen(prevScreen);
           },
         });
+      } else {
+        // Orden temporal abandonada offline => retirar de la cola la op de apertura encolada.
+        const openOpId = tmpOrderOpRef.current[orderId];
+        if (openOpId) {
+          removeByClientOpId(openOpId);
+          delete tmpOrderOpRef.current[orderId];
+        }
       }
       return;
     }
@@ -1540,6 +1813,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setCurrentScreen(prevScreen);
           },
         });
+      } else {
+        // Orden temporal abandonada offline => retirar de la cola la op de apertura encolada.
+        const openOpId = tmpOrderOpRef.current[orderId];
+        if (openOpId) {
+          removeByClientOpId(openOpId);
+          delete tmpOrderOpRef.current[orderId];
+        }
       }
       return;
     }
@@ -1600,16 +1880,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Write-through (Fase E3): descuenta en el server + refresca coloniales (Kardex/insumos).
     // En modo offline la deducción local queda y la op se encola.
+    // (E4: también se encola si la orden es temporal y estamos offline — el replay la re-resuelve.)
     const orderId = table.currentOrderId;
-    if (orderId && !orderId.startsWith('order-tmp-')) {
+    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
+      const clientOpId = newUuid();
       attemptMutation({
-        clientOpId: newUuid(),
+        clientOpId,
         entity: 'order',
         op: 'sendToKitchen',
-        queuePayload: { orderId },
+        queuePayload: { orderId, clientOpId },
         endpointOp: async () => {
           const res = await apiClient.post<{ order: OrderDTO; kardexMovements?: number }>(
-            `/operations/orders/${orderId}/send-to-kitchen`
+            `/operations/orders/${orderId}/send-to-kitchen`,
+            { clientOpId }
           );
           setOrders((prev) => {
             const serverOrder = mapOrder(res.order);
@@ -1665,15 +1948,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCurrentScreen('cobro');
 
     // Write-through (Fase E3): persiste el estado "por cobrar" en el server.
+    // (E4: también se encola si la orden es temporal y estamos offline.)
     const orderId = table.currentOrderId;
-    if (orderId && !orderId.startsWith('order-tmp-')) {
+    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
       const prevTableStatus = table.status;
       const prevOrderStatus = currentOrder.status;
       attemptMutation({
         clientOpId: newUuid(),
         entity: 'order',
         op: 'markForBilling',
-        queuePayload: { orderId, tableId },
+        queuePayload: { orderId, tableId, tmpTableId: orderId.startsWith('order-tmp-') ? tableId : undefined },
         endpointOp: async () => {
           const res = await apiClient.post<OrderDTO>(`/operations/tables/${tableId}/por-cobrar`);
           setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
@@ -1796,8 +2080,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
 
     // Write-through (Fase E3): registra el pago real (marca cobrado + transacción de caja).
+    // (E4: también se encola si la orden es temporal y estamos offline.)
     const orderId = table.currentOrderId;
-    if (!orderId.startsWith('order-tmp-')) {
+    if (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline) {
       const clientOpId = newUuid();
       attemptMutation({
         clientOpId,
@@ -1805,6 +2090,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         op: 'payOrder',
         queuePayload: {
           orderId,
+          tableId,
+          tmpTableId: orderId.startsWith('order-tmp-') ? tableId : undefined,
           paymentMethod: paymentMethod as string,
           amountReceived,
           customPaymentMethodId,
@@ -2444,6 +2731,10 @@ Doble Alto: PEDIDO EXPRESS #8841
     setOfflineState((prev) => {
       const nextSim = !prev.isSimulatedOffline;
       const isOnline = !nextSim;
+      // Al volver a online, dispara el replay real de la cola (Fase E4).
+      if (!nextSim) {
+        setTimeout(() => void replayOfflineQueue(), 0);
+      }
       addNotification(
         nextSim ? 'Modo Offline Activado' : 'Conexión Restablecida (Online)',
         nextSim
@@ -2461,13 +2752,17 @@ Doble Alto: PEDIDO EXPRESS #8841
   };
 
   const syncOfflineQueue = () => {
-    // Replay real de la cola = Fase E4. Por ahora actualiza marcas y contador.
-    syncPendingCount();
+    // Replay real de la cola (Fase E4). Si está simulado offline solo muestra el estado.
+    if (offlineState.isSimulatedOffline) {
+      syncPendingCount();
+      addNotification('Estado de Sincronización', `${queueCount()} operaciones en la cola local (modo offline simulado).`, 'info');
+      return;
+    }
     setOfflineState((prev) => ({
       ...prev,
       lastSyncTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }));
-    addNotification('Estado de Sincronización', `${queueCount()} operaciones pendientes en la cola local (replay automático: Fase E4).`, 'info');
+    void replayOfflineQueue();
   };
 
   // Add Kardex Adjustment / Merma
