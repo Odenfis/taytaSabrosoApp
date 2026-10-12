@@ -933,6 +933,9 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 - **Verificación**: `verify-sync.ts` 0 órdenes/compras/tx/kardex/turnos + cero duplicados;
   API `orders/active` 0 en ambas empresas, tx/kardex 0, 13/13 mesas libres; saldos y
   stocks de apertura intactos; `tsc` server 0.
+- **Reset post-pruebas (2026-10-12)**: tras las primeras pruebas del usuario (2 ventas
+  cobradas + 41 kardex), re-ejecutado `seed.ts + seed-empty.ts` → base vacía verificada
+  (0/0/0/0, cero duplicados).
 
 ### Fix cocina: UNIQUE en kardex por `clientOpId` compartido (✔ realizado 2026-10-12)
 
