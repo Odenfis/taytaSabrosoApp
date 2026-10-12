@@ -47,18 +47,47 @@ export function queueCount(): number {
 }
 
 // Fase E4-b: ids de entidades temporales (ordenes order-tmp-* / mesas t-express-*)
-// que la cola AUN referencia. Se usan en loadOperations/loadCatalogs para no sobrescribir
-// estado local pendiente de sincronizar al recargar la app con red recuperada.
-export function getPendingTmpIds(): { orderTmpIds: Set<string>; tmpTableIds: Set<string> } {
-  const orderTmpIds = new Set<string>();
-  const tmpTableIds = new Set<string>();
-  for (const op of loadQueue()) {
-    const payload = (op.payload ?? {}) as Record<string, unknown>;
-    for (const value of Object.values(payload)) {
-      if (typeof value !== 'string') continue;
-      if (value.startsWith('order-tmp-')) orderTmpIds.add(value);
-      if (value.startsWith('t-express-')) tmpTableIds.add(value);
-    }
-  }
-  return { orderTmpIds, tmpTableIds };
-}
+ // que la cola AUN referencia. Se usan en loadOperations/loadCatalogs para no sobrescribir
+ // estado local pendiente de sincronizar al recargar la app con red recuperada.
+ export function getPendingTmpIds(): { orderTmpIds: Set<string>; tmpTableIds: Set<string> } {
+   const orderTmpIds = new Set<string>();
+   const tmpTableIds = new Set<string>();
+   for (const op of loadQueue()) {
+     const payload = (op.payload ?? {}) as Record<string, unknown>;
+     for (const value of Object.values(payload)) {
+       if (typeof value !== 'string') continue;
+       if (value.startsWith('order-tmp-')) orderTmpIds.add(value);
+       if (value.startsWith('t-express-')) tmpTableIds.add(value);
+     }
+   }
+   return { orderTmpIds, tmpTableIds };
+ }
+
+ // Fase E5: ids temporales de catálogos (creados offline, aún no reconciliados con el
+ // server) que la cola referencia vía `payload.tempId`. loadCatalogs los preserva para
+ // no perder altas de catálogos al recargar con red recuperada.
+ export function getPendingCatalogTmpIds(): Set<string> {
+   const ids = new Set<string>();
+   for (const op of loadQueue()) {
+     if (op.entity !== 'catalog') continue;
+     const payload = (op.payload ?? {}) as Record<string, unknown>;
+     if (typeof payload.tempId === 'string' && payload.tempId.length > 0) {
+       ids.add(payload.tempId);
+     }
+   }
+   return ids;
+ }
+
+ // Fase E5: parchea el payload de una op encolada (p.ej. editar un catálogo temporal
+ // antes de sincronizar → el create encolado lleva los últimos valores).
+ export function updateQueuedPayload(clientOpId: string, patch: Record<string, unknown>): boolean {
+   const queue = loadQueue();
+   const idx = queue.findIndex((q) => q.clientOpId === clientOpId);
+   if (idx === -1) return false;
+   queue[idx] = {
+     ...queue[idx],
+     payload: { ...(queue[idx].payload as Record<string, unknown>), ...patch },
+   };
+   saveQueue(queue);
+   return true;
+ }

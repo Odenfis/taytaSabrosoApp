@@ -69,6 +69,8 @@ import {
   removeByClientOpId,
   queueCount,
   getPendingTmpIds,
+  getPendingCatalogTmpIds,
+  updateQueuedPayload,
 } from '../lib/offlineQueue';
 import {
   replayCall,
@@ -440,6 +442,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const metaUpdates: CatalogSyncMeta = {};
     let failedCount = 0;
+    // Fase E5: altas de catálogos creadas offline y aún no reconciliadas sobreviven
+    // a la recarga de catálogos (igual que E4-b con órdenes/mesas temporales).
+    const catalogTmpIds = getPendingCatalogTmpIds();
+    const withTemps = <T extends { id: string }>(items: T[], prev: T[]): T[] => {
+      if (catalogTmpIds.size === 0) return items;
+      const temps = prev.filter((p) => catalogTmpIds.has(p.id));
+      return temps.length > 0 ? [...items, ...temps] : items;
+    };
 
     const settle = <T,>(r: PromiseSettledResult<T>, onOk: (value: T) => void) => {
       if (r.status === 'fulfilled') {
@@ -465,6 +475,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         for (const t of prev) {
           if (tmpTableIds.has(t.id) && !merged.some((m) => m.id === t.id)) merged.push(t);
         }
+        // Fase E5: mesas creadas en catálogos offline (t-custom-*) también sobreviven.
+        for (const t of prev) {
+          if (catalogTmpIds.has(t.id) && !merged.some((m) => m.id === t.id)) merged.push(t);
+        }
         return merged;
       });
       metaUpdates.tables = extractMeta('tables', items);
@@ -476,27 +490,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
     settle(results[2], (dtos) => {
       const items = dtos.map(mapInsumo);
-      setInsumos(items);
+      setInsumos((prev) => withTemps(items, prev));
       metaUpdates.insumos = extractMeta('insumos', items);
     });
     settle(results[3], (dtos) => {
       const items = dtos.map(mapRecipe);
-      setRecipes(items);
+      setRecipes((prev) => withTemps(items, prev));
       metaUpdates.recipes = extractMeta('recipes', items);
     });
     settle(results[4], (dtos) => {
       const items = dtos.map(mapBankAccount);
-      setBankAccounts(items);
+      setBankAccounts((prev) => withTemps(items, prev));
       metaUpdates.bankAccounts = extractMeta('bankAccounts', items);
     });
     settle(results[5], (dtos) => {
       const items = dtos.map(mapPaymentMethod);
-      setPaymentMethods(items);
+      setPaymentMethods((prev) => withTemps(items, prev));
       metaUpdates.paymentMethods = extractMeta('paymentMethods', items);
     });
     settle(results[6], (dtos) => {
       const items = dtos.map(mapPrinter);
-      setPrinters(items);
+      setPrinters((prev) => withTemps(items, prev));
       metaUpdates.printers = extractMeta('printers', items);
     });
 
@@ -535,6 +549,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // clientOpId de la op `openOrder`/`quickOrder` encolada por cada orden temporal
   // (para poder retirarla de la cola si la comanda se abandona offline).
   const tmpOrderOpRef = useRef<Record<string, string>>({});
+  // Fase E5: clientOpId de la op `create*` encolada por cada catálogo temporal
+  // (para parchear el payload si se edita antes de sincronizar, o retirarlo si se borra).
+  const tmpCatalogOpRef = useRef<Record<string, string>>({});
   // Guard de replay: evita corridas concurrentes (eventos online + toggle + montaje).
   const isReplayingRef = useRef(false);
   // Ref de la función de replay para usarla desde listeners estables (evento online/offline).
@@ -714,6 +731,56 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       delete tmpOrderOpRef.current[tmpOrderId];
     };
 
+    // Fase E5: reconcilia un alta de catálogo aplicada en el replay (reemplaza el id
+    // temporal por el id real del server). Para recetas conserva ingredientes locales
+    // si el PATCH del server no los devuelve (updateRecipe no incluye `ingredients`).
+    const reconcileCatalogCreate = (op: string, tempId: string | undefined, data: unknown) => {
+      if (!tempId) return;
+      delete tmpCatalogOpRef.current[tempId];
+      if (op === 'createTable' || op === 'quickOrder') {
+        const server = mapTable(data as TableDTO);
+        setTables((prev) => {
+          const next = prev.filter((t) => t.id !== tempId);
+          return next.some((t) => t.id === server.id) ? next : [...next, server];
+        });
+      } else if (op === 'createBankAccount') {
+        const server = mapBankAccount(data as BankAccountDTO);
+        setBankAccounts((prev) => {
+          const next = prev.filter((a) => a.id !== tempId);
+          return next.some((a) => a.id === server.id) ? next : [...next, server];
+        });
+      } else if (op === 'createPaymentMethod') {
+        const server = mapPaymentMethod(data as CustomPaymentMethodDTO);
+        setPaymentMethods((prev) => {
+          const next = prev.filter((p) => p.id !== tempId);
+          return next.some((p) => p.id === server.id) ? next : [...next, server];
+        });
+      } else if (op === 'createPrinter') {
+        const server = mapPrinter(data as PrinterDTO);
+        setPrinters((prev) => {
+          const next = prev.filter((p) => p.id !== tempId);
+          return next.some((p) => p.id === server.id) ? next : [...next, server];
+        });
+      } else if (op === 'createRecipe' || op === 'saveRecipe') {
+        const server = mapRecipe(data as RecipeDTO);
+        setRecipes((prev) => {
+          const local = prev.find((r) => r.id === tempId);
+          const full: Recipe =
+            server.ingredients.length === 0 && local && local.ingredients.length > 0
+              ? { ...server, ingredients: local.ingredients }
+              : server;
+          const next = prev.filter((r) => r.id !== tempId);
+          return next.some((r) => r.id === full.id) ? next : [full, ...next];
+        });
+      } else if (op === 'createInsumo') {
+        const server = mapInsumo(data as InsumoDTO);
+        setInsumos((prev) => {
+          const next = prev.filter((i) => i.id !== tempId);
+          return next.some((i) => i.id === server.id) ? next : [...next, server];
+        });
+      }
+    };
+
     for (const opItem of queue) {
       const payload = { ...((opItem.payload ?? {}) as Record<string, unknown>) };
       if (typeof payload.orderId === 'string' && tmpToOrder.has(payload.orderId)) {
@@ -771,6 +838,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const result = await replayCall(opItem, payload);
       if (result.disposition === 'ok') {
+        if (opItem.entity === 'catalog') {
+          reconcileCatalogCreate(opItem.op, payload.tempId as string | undefined, result.data);
+        }
         removeByClientOpId(opItem.clientOpId);
         synced += 1;
       } else if (result.disposition === 'retry') {
@@ -809,6 +879,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const refreshOps = [refreshKardex(), refreshInsumos(), refreshTransactions(),
       refreshBankAccounts(), refreshShiftRecords()];
     await Promise.allSettled(refreshOps);
+    // Fase E5: si todo sincronizó, converge catálogos con la verdad del server
+    // (los reconciliados ya llevan id real; esto actualiza version/updatedAt/meta).
+    if (stuck === 0) {
+      await loadCatalogs();
+    }
     } catch (err) {
       syncPendingCount();
       setLastSyncResult({ ok: false, ts: Date.now(), op: 'replayQueue' });
@@ -1500,10 +1575,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     if (!currentOrder) {
-      orderId = `order-${table.id}-${Date.now()}`;
+      // Gap #4 fix: nunca fabricar `order-<table>-...` (404 garantizado en el
+      // server). Se crea `order-tmp-*` y se dispara el openOrder real con flush,
+      // igual que selectAndOpenTable. El guard serverIssued de abajo queda para
+      // órdenes ya reconciliadas.
+      const tmpOrderId = `order-tmp-${Date.now()}`;
+      const tmpClientOpId = newUuid();
       const ticketNumber = `${Math.floor(10000 + Math.random() * 90000)}`;
-      currentOrder = {
-        id: orderId,
+      const baseOrder: Order = {
+        id: tmpOrderId,
         companyId: table.companyId,
         ticketNumber,
         tableId: table.id,
@@ -1517,6 +1597,95 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         total: 0,
         status: 'abierto',
       };
+      const firstItem: OrderItem = {
+        id: `item-${Date.now()}-${Math.random()}`,
+        productId: product.id,
+        name: product.name,
+        price: product.price,
+        quantity: 1,
+        notes: notes || undefined,
+        status: 'agregado',
+        addedAt: timeStr,
+      };
+      const createdOrder = recalculateOrder({ ...baseOrder, items: [firstItem] });
+      orderId = tmpOrderId;
+      currentOrder = createdOrder;
+      setOrders((prev) => ({ ...prev, [tmpOrderId]: createdOrder }));
+      setTables((prev) =>
+        prev.map((t) =>
+          t.id === tableId
+            ? {
+                ...t,
+                status: t.status === 'libre' ? 'ocupada' : t.status,
+                currentOrderId: tmpOrderId,
+                occupiedSince: t.occupiedSince || timeStr,
+              }
+            : t
+        )
+      );
+      tmpOrderItemsRef.current[tmpOrderId] = createdOrder.items;
+      tmpOrderOpRef.current[tmpOrderId] = tmpClientOpId;
+      attemptMutation({
+        clientOpId: tmpClientOpId,
+        entity: 'order',
+        op: 'openOrder',
+        queuePayload: { tableId, waiter: createdOrder.waiter, clientOpId: tmpClientOpId, tmpOrderId },
+        endpointOp: async () => {
+          const res = await apiClient.post<OrderDTO>('/operations/orders/open', {
+            tableId,
+            waiter: createdOrder.waiter,
+            clientOpId: tmpClientOpId,
+          });
+          const serverOrder = mapOrder(res);
+          const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
+          delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
+          setOrders((prev) => {
+            const next = { ...prev };
+            delete next[tmpOrderId];
+            next[serverOrder.id] = serverOrder;
+            return next;
+          });
+          setTables((prev) =>
+            prev.map((t) => (t.id === tableId ? { ...t, currentOrderId: serverOrder.id } : t))
+          );
+          if (pendingItems.length > 0) {
+            for (const it of pendingItems) {
+              await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
+                productId: it.productId,
+                quantity: it.quantity,
+                notes: it.notes || undefined,
+              });
+            }
+            const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
+            setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
+          }
+        },
+        rollback: () => {
+          delete tmpOrderItemsRef.current[tmpOrderId];
+          delete tmpOrderOpRef.current[tmpOrderId];
+          setOrders((prev) => {
+            const next = { ...prev };
+            delete next[tmpOrderId];
+            return next;
+          });
+          setTables((prev) =>
+            prev.map((t) =>
+              t.id === tableId
+                ? {
+                    ...t,
+                    status: 'libre',
+                    occupiedSince: undefined,
+                    minutesElapsed: undefined,
+                    currentOrderId: undefined,
+                    waiter: undefined,
+                  }
+                : t
+            )
+          );
+        },
+      });
+      return;
     }
 
     const existingIndex = currentOrder.items.findIndex(
@@ -1563,6 +1732,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Write-through (Fase E3): si la orden ya existe en el server, agrega el ítem real.
     // La apertura (orden temporal) hará flush de ítems al resolverse en el server.
+    // Nota gap #5: quantity:1 es el DELTA de este click (el server hace merge por
+    // producto+nota con increment). El flush de tmp (openOrder/quickOrder/replay)
+    // sí envía la cantidad acumulada por línea. No cambiar a acumulado aquí.
     const serverIssued = !!orderId && !orderId.startsWith('order-tmp-');
     if (serverIssued) {
       attemptMutation({
@@ -1863,6 +2035,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       items: updatedItems,
     };
 
+    // Snapshot para rollback (gap #2): si el server rechaza con 4xx se revierte
+    // el pase a en_cocina + la deducción local de kardex/stock.
+    const prevOrderStatus = currentOrder.status;
+    const prevItemsStatus = currentOrder.items.map((i) => ({ id: i.id, status: i.status }));
+    const prevStocks = new Map(insumos.map((i) => [i.id, i.currentStock]));
+    const prevKardexLen = kardexMovements.length;
+    const prevTableStatus = table.status;
+
     setOrders((prev) => ({ ...prev, [table.currentOrderId!]: updatedOrder }));
     setTables((prev) =>
       prev.map((t) =>
@@ -1904,6 +2084,34 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             };
           });
           await Promise.all([refreshKardex(), refreshInsumos()]);
+        },
+        rollback: () => {
+          setOrders((prev) => {
+            const target = prev[orderId];
+            if (!target) return prev;
+            return {
+              ...prev,
+              [orderId]: {
+                ...target,
+                status: prevOrderStatus,
+                items: target.items.map((it) => {
+                  const snap = prevItemsStatus.find((s) => s.id === it.id);
+                  return snap ? { ...it, status: snap.status } : it;
+                }),
+              },
+            };
+          });
+          setTables((prev) =>
+            prev.map((t) => (t.id === tableId ? { ...t, status: prevTableStatus } : t))
+          );
+          setInsumos((prev) =>
+            prev.map((ins) => {
+              const snap = prevStocks.get(ins.id);
+              return snap !== undefined ? { ...ins, currentStock: snap } : ins;
+            })
+          );
+          // Revierte la deducción optimista (los ítems nuevos se prependean).
+          setKardexMovements((prev) => prev.slice(Math.max(0, prev.length - prevKardexLen)));
         },
       });
     }
@@ -2130,6 +2338,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               )
             );
           }
+          // Gap #3 fix: rollback completo — quitar tx optimista, revertir orden a
+          // por_cobrar, cerrar recibo. La mesa vuelve a por_cobrar vinculada.
+          setTransactions((prev) => prev.filter((t) => t.id !== newTransaction.id));
+          setOrders((prev) => {
+            const target = prev[currentOrder.id];
+            if (!target) return prev;
+            return { ...prev, [currentOrder.id]: { ...target, status: 'por_cobrar' } };
+          });
+          setLastCompletedOrder(null);
+          setIsReceiptModalOpen(false);
           setTables((prev) =>
             prev.map((t) =>
               t.id === tableId
@@ -2250,12 +2468,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   };
 
-  // Add New Table
+  // Add New Table (Fase E5: write-through a POST /catalogs/tables; F5 persiste)
   const addNewTable = (number: string, capacity: number, zone: Zone) => {
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
-    const newId = `t-custom-${Date.now()}`;
+    const tempId = `t-custom-${Date.now()}`;
+    const clientOpId = newUuid();
     const newTable: Table = {
-      id: newId,
+      id: tempId,
       companyId: compId,
       number: number.trim(),
       capacity,
@@ -2263,6 +2482,35 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status: 'libre',
     };
     setTables((prev) => [...prev, newTable]);
+    tmpCatalogOpRef.current[tempId] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'createTable',
+      queuePayload: { companyId: compId, number: newTable.number, capacity, zone, tempId },
+      endpointOp: async () => {
+        const res = await apiClient.post<TableDTO>('/catalogs/tables', {
+          companyId: compId,
+          number: newTable.number,
+          capacity,
+          zone,
+        });
+        const server = mapTable(res);
+        delete tmpCatalogOpRef.current[tempId];
+        setTables((prev) => {
+          const next = prev.filter((t) => t.id !== tempId);
+          return next.some((t) => t.id === server.id) ? next : [...next, server];
+        });
+        setCatalogSyncMeta((prev) => ({
+          ...prev,
+          tables: extractMeta('tables', [...tables.filter((t) => t.id !== tempId), server]),
+        }));
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[tempId];
+        setTables((prev) => prev.filter((t) => t.id !== tempId));
+      },
+    });
     addNotification('Mesa Creada', `Mesa ${number} agregada para ${compId === 'el-tayta' ? 'El Tayta' : 'El Sabroso'}.`, 'info');
   };
 
@@ -2548,7 +2796,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       .filter((t) => !t.isIncome)
       .reduce((sum, t) => sum + t.amount, 0);
 
-    const initialCash = 350.0;
+    // Gap #6 fix: caja inicial desde el último arqueo local (el server usa su
+    // companyShift.initialCash como verdad y el refresh post-write la impone).
+    // Además se calcula bankTransferSales en vez de dejarlo en 0.
+    const lastRecord = shiftRecords.find((r) => r.companyId === companyId);
+    const initialCash = lastRecord ? lastRecord.initialCash : 350.0;
+    const bankTransferSales = compTxs
+      .filter(
+        (t) =>
+          t.isIncome &&
+          !!t.bankAccountId &&
+          t.paymentMethod !== 'Efectivo' &&
+          t.paymentMethod !== 'Tarjeta' &&
+          t.paymentMethod !== 'Billetera Digital' &&
+          t.paymentMethod !== 'Yape / Plin'
+      )
+      .reduce((sum, t) => sum + t.amount, 0);
     const systemCashExpected = +(initialCash + cashSales - totalExpenses).toFixed(2);
     const difference = +(reportedCash - systemCashExpected).toFixed(2);
 
@@ -2568,7 +2831,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       totalExpenses: +totalExpenses.toFixed(2),
       cardSales: +cardSales.toFixed(2),
       digitalWalletSales: +walletSales.toFixed(2),
-      bankTransferSales: 0,
+      bankTransferSales: +bankTransferSales.toFixed(2),
       notes: notes || `Cierre de turno ${currentShift} realizado.`,
       status: 'cerrado',
     };
@@ -2630,63 +2893,411 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  // Cuentas Bancarias CRUD
+  // Cuentas Bancarias CRUD (Fase E5: write-through a /catalogs/bank-accounts; F5 persiste)
   const addBankAccount = (acc: Omit<BankAccount, 'id'>) => {
-    const newAccount: BankAccount = {
-      ...acc,
-      id: `bank-${Date.now()}`,
-    };
+    const tempId = `bank-${Date.now()}`;
+    const clientOpId = newUuid();
+    const newAccount: BankAccount = { ...acc, id: tempId };
     setBankAccounts((prev) => [...prev, newAccount]);
+    tmpCatalogOpRef.current[tempId] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'createBankAccount',
+      queuePayload: {
+        companyId: acc.companyId,
+        bankName: acc.bankName,
+        accountNumber: acc.accountNumber,
+        cci: acc.cci,
+        accountType: acc.accountType,
+        currency: acc.currency,
+        holderName: acc.holderName,
+        alias: acc.alias,
+        currentBalance: acc.currentBalance,
+        notes: acc.notes,
+        tempId,
+      },
+      endpointOp: async () => {
+        const res = await apiClient.post<BankAccountDTO>('/catalogs/bank-accounts', {
+          companyId: acc.companyId,
+          bankName: acc.bankName,
+          accountNumber: acc.accountNumber,
+          cci: acc.cci,
+          accountType: acc.accountType,
+          currency: acc.currency,
+          holderName: acc.holderName,
+          alias: acc.alias,
+          currentBalance: acc.currentBalance,
+          notes: acc.notes,
+        });
+        const server = mapBankAccount(res);
+        delete tmpCatalogOpRef.current[tempId];
+        setBankAccounts((prev) => {
+          const next = prev.filter((a) => a.id !== tempId);
+          return next.some((a) => a.id === server.id) ? next : [...next, server];
+        });
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[tempId];
+        setBankAccounts((prev) => prev.filter((a) => a.id !== tempId));
+      },
+    });
     addNotification('Cuenta Bancaria Agregada', `${acc.bankName} - ${acc.alias} registrada.`, 'success');
   };
 
   const updateBankAccount = (id: string, updates: Partial<BankAccount>) => {
-    setBankAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updates } : a)));
+    // Edición de un alta aún no sincronizada: se parchea el create encolado.
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      setBankAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updates } : a)));
+      updateQueuedPayload(queuedOp, {
+        ...(updates.bankName !== undefined ? { bankName: updates.bankName } : {}),
+        ...(updates.accountNumber !== undefined ? { accountNumber: updates.accountNumber } : {}),
+        ...(updates.cci !== undefined ? { cci: updates.cci } : {}),
+        ...(updates.accountType !== undefined ? { accountType: updates.accountType } : {}),
+        ...(updates.currency !== undefined ? { currency: updates.currency } : {}),
+        ...(updates.holderName !== undefined ? { holderName: updates.holderName } : {}),
+        ...(updates.alias !== undefined ? { alias: updates.alias } : {}),
+        ...(updates.currentBalance !== undefined ? { currentBalance: updates.currentBalance } : {}),
+        ...(updates.notes !== undefined ? { notes: updates.notes } : {}),
+      });
+      addNotification('Cuenta Bancaria Actualizada', 'Datos de cuenta bancaria modificados.', 'info');
+      return;
+    }
+    const prev = bankAccounts.find((a) => a.id === id);
+    setBankAccounts((prevList) => prevList.map((a) => (a.id === id ? { ...a, ...updates } : a)));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'updateBankAccount',
+      queuePayload: {
+        id,
+        ...(updates.bankName !== undefined ? { bankName: updates.bankName } : {}),
+        ...(updates.accountNumber !== undefined ? { accountNumber: updates.accountNumber } : {}),
+        ...(updates.cci !== undefined ? { cci: updates.cci } : {}),
+        ...(updates.accountType !== undefined ? { accountType: updates.accountType } : {}),
+        ...(updates.currency !== undefined ? { currency: updates.currency } : {}),
+        ...(updates.holderName !== undefined ? { holderName: updates.holderName } : {}),
+        ...(updates.alias !== undefined ? { alias: updates.alias } : {}),
+        ...(updates.currentBalance !== undefined ? { currentBalance: updates.currentBalance } : {}),
+        ...(updates.isActive !== undefined ? { isActive: updates.isActive } : {}),
+        ...(updates.notes !== undefined ? { notes: updates.notes } : {}),
+      },
+      endpointOp: async () => {
+        const res = await apiClient.patch<BankAccountDTO>(`/catalogs/bank-accounts/${id}`, {
+          ...(updates.bankName !== undefined ? { bankName: updates.bankName } : {}),
+          ...(updates.accountNumber !== undefined ? { accountNumber: updates.accountNumber } : {}),
+          ...(updates.cci !== undefined ? { cci: updates.cci } : {}),
+          ...(updates.accountType !== undefined ? { accountType: updates.accountType } : {}),
+          ...(updates.currency !== undefined ? { currency: updates.currency } : {}),
+          ...(updates.holderName !== undefined ? { holderName: updates.holderName } : {}),
+          ...(updates.alias !== undefined ? { alias: updates.alias } : {}),
+          ...(updates.currentBalance !== undefined ? { currentBalance: updates.currentBalance } : {}),
+          ...(updates.isActive !== undefined ? { isActive: updates.isActive } : {}),
+          ...(updates.notes !== undefined ? { notes: updates.notes } : {}),
+        });
+        const server = mapBankAccount(res);
+        setBankAccounts((prevList) => prevList.map((a) => (a.id === id ? server : a)));
+      },
+      rollback: () => {
+        if (prev) setBankAccounts((prevList) => prevList.map((a) => (a.id === id ? prev : a)));
+      },
+    });
     addNotification('Cuenta Bancaria Actualizada', 'Datos de cuenta bancaria modificados.', 'info');
   };
 
   const deleteBankAccount = (id: string) => {
-    setBankAccounts((prev) => prev.filter((a) => a.id !== id));
+    // Borrado de un alta aún no sincronizada: se retira el create encolado.
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      delete tmpCatalogOpRef.current[id];
+      removeByClientOpId(queuedOp);
+      syncPendingCount();
+      setBankAccounts((prev) => prev.filter((a) => a.id !== id));
+      addNotification('Cuenta Eliminada', 'La cuenta bancaria fue retirada.', 'info');
+      return;
+    }
+    const prev = bankAccounts.find((a) => a.id === id);
+    setBankAccounts((prevList) => prevList.filter((a) => a.id !== id));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'deleteBankAccount',
+      queuePayload: { id },
+      endpointOp: async () => {
+        await apiClient.del(`/catalogs/bank-accounts/${id}`);
+      },
+      rollback: () => {
+        if (prev) setBankAccounts((prevList) => [...prevList, prev]);
+      },
+    });
     addNotification('Cuenta Eliminada', 'La cuenta bancaria fue retirada.', 'info');
   };
 
-  // Métodos de Pago CRUD
+  // Métodos de Pago CRUD (Fase E5: write-through a /catalogs/payment-methods; F5 persiste)
   const addPaymentMethod = (pm: Omit<CustomPaymentMethod, 'id'>) => {
-    const newPm: CustomPaymentMethod = {
-      ...pm,
-      id: `pm-${Date.now()}`,
-    };
+    const tempId = `pm-${Date.now()}`;
+    const clientOpId = newUuid();
+    const newPm: CustomPaymentMethod = { ...pm, id: tempId };
     setPaymentMethods((prev) => [...prev, newPm]);
+    tmpCatalogOpRef.current[tempId] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'createPaymentMethod',
+      queuePayload: {
+        companyId: pm.companyId === 'ambas' ? null : pm.companyId,
+        name: pm.name,
+        category: pm.category,
+        bankAccountId: pm.bankAccountId,
+        commissionPct: pm.commissionPct,
+        requiresReferenceNumber: pm.requiresReferenceNumber,
+        icon: pm.icon,
+        tempId,
+      },
+      endpointOp: async () => {
+        const res = await apiClient.post<CustomPaymentMethodDTO>('/catalogs/payment-methods', {
+          companyId: pm.companyId === 'ambas' ? null : pm.companyId,
+          name: pm.name,
+          category: pm.category,
+          bankAccountId: pm.bankAccountId,
+          commissionPct: pm.commissionPct,
+          requiresReferenceNumber: pm.requiresReferenceNumber,
+          icon: pm.icon,
+        });
+        const server = mapPaymentMethod(res);
+        delete tmpCatalogOpRef.current[tempId];
+        setPaymentMethods((prev) => {
+          const next = prev.filter((p) => p.id !== tempId);
+          return next.some((p) => p.id === server.id) ? next : [...next, server];
+        });
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[tempId];
+        setPaymentMethods((prev) => prev.filter((p) => p.id !== tempId));
+      },
+    });
     addNotification('Método de Pago Agregado', `${pm.name} habilitado para ventas.`, 'success');
   };
 
   const updatePaymentMethod = (id: string, updates: Partial<CustomPaymentMethod>) => {
-    setPaymentMethods((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      setPaymentMethods((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      updateQueuedPayload(queuedOp, {
+        ...(updates.name !== undefined ? { name: updates.name } : {}),
+        ...(updates.category !== undefined ? { category: updates.category } : {}),
+        ...(updates.bankAccountId !== undefined ? { bankAccountId: updates.bankAccountId } : {}),
+        ...(updates.commissionPct !== undefined ? { commissionPct: updates.commissionPct } : {}),
+        ...(updates.requiresReferenceNumber !== undefined ? { requiresReferenceNumber: updates.requiresReferenceNumber } : {}),
+        ...(updates.icon !== undefined ? { icon: updates.icon } : {}),
+      });
+      addNotification('Método de Pago Actualizado', 'Configuración de cobro guardada.', 'info');
+      return;
+    }
+    const prev = paymentMethods.find((p) => p.id === id);
+    setPaymentMethods((prevList) => prevList.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'updatePaymentMethod',
+      queuePayload: {
+        id,
+        ...(updates.companyId !== undefined ? { companyId: updates.companyId === 'ambas' ? null : updates.companyId } : {}),
+        ...(updates.name !== undefined ? { name: updates.name } : {}),
+        ...(updates.category !== undefined ? { category: updates.category } : {}),
+        ...(updates.bankAccountId !== undefined ? { bankAccountId: updates.bankAccountId } : {}),
+        ...(updates.commissionPct !== undefined ? { commissionPct: updates.commissionPct } : {}),
+        ...(updates.requiresReferenceNumber !== undefined ? { requiresReferenceNumber: updates.requiresReferenceNumber } : {}),
+        ...(updates.icon !== undefined ? { icon: updates.icon } : {}),
+        ...(updates.isActive !== undefined ? { isActive: updates.isActive } : {}),
+      },
+      endpointOp: async () => {
+        const res = await apiClient.patch<CustomPaymentMethodDTO>(`/catalogs/payment-methods/${id}`, {
+          ...(updates.companyId !== undefined ? { companyId: updates.companyId === 'ambas' ? null : updates.companyId } : {}),
+          ...(updates.name !== undefined ? { name: updates.name } : {}),
+          ...(updates.category !== undefined ? { category: updates.category } : {}),
+          ...(updates.bankAccountId !== undefined ? { bankAccountId: updates.bankAccountId } : {}),
+          ...(updates.commissionPct !== undefined ? { commissionPct: updates.commissionPct } : {}),
+          ...(updates.requiresReferenceNumber !== undefined ? { requiresReferenceNumber: updates.requiresReferenceNumber } : {}),
+          ...(updates.icon !== undefined ? { icon: updates.icon } : {}),
+          ...(updates.isActive !== undefined ? { isActive: updates.isActive } : {}),
+        });
+        const server = mapPaymentMethod(res);
+        setPaymentMethods((prevList) => prevList.map((p) => (p.id === id ? server : p)));
+      },
+      rollback: () => {
+        if (prev) setPaymentMethods((prevList) => prevList.map((p) => (p.id === id ? prev : p)));
+      },
+    });
     addNotification('Método de Pago Actualizado', 'Configuración de cobro guardada.', 'info');
   };
 
   const deletePaymentMethod = (id: string) => {
-    setPaymentMethods((prev) => prev.filter((p) => p.id !== id));
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      delete tmpCatalogOpRef.current[id];
+      removeByClientOpId(queuedOp);
+      syncPendingCount();
+      setPaymentMethods((prev) => prev.filter((p) => p.id !== id));
+      addNotification('Método de Pago Eliminado', 'Se retiró el método de pago.', 'info');
+      return;
+    }
+    const prev = paymentMethods.find((p) => p.id === id);
+    setPaymentMethods((prevList) => prevList.filter((p) => p.id !== id));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'deletePaymentMethod',
+      queuePayload: { id },
+      endpointOp: async () => {
+        await apiClient.del(`/catalogs/payment-methods/${id}`);
+      },
+      rollback: () => {
+        if (prev) setPaymentMethods((prevList) => [...prevList, prev]);
+      },
+    });
     addNotification('Método de Pago Eliminado', 'Se retiró el método de pago.', 'info');
   };
 
-  // Multi-Printer CRUD & ESC/POS Simulation
+  // Multi-Printer CRUD & ESC/POS Simulation (Fase E5: write-through a /catalogs/printers)
   const addPrinter = (prn: Omit<ThermalPrinterConfig, 'id'>) => {
-    const newPrinter: ThermalPrinterConfig = {
-      ...prn,
-      id: `prn-${Date.now()}`,
-    };
+    const tempId = `prn-${Date.now()}`;
+    const clientOpId = newUuid();
+    const newPrinter: ThermalPrinterConfig = { ...prn, id: tempId };
     setPrinters((prev) => [...prev, newPrinter]);
+    tmpCatalogOpRef.current[tempId] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'createPrinter',
+      queuePayload: {
+        companyId: prn.companyId === 'ambas' ? null : prn.companyId,
+        name: prn.name,
+        role: prn.role,
+        connectionType: prn.connectionType,
+        ipAddress: prn.ipAddress,
+        port: prn.port,
+        paperWidth: prn.paperWidth,
+        autoCut: prn.autoCut,
+        beepOnPrint: prn.beepOnPrint,
+        categories: prn.categoriesMapped,
+        tempId,
+      },
+      endpointOp: async () => {
+        const res = await apiClient.post<PrinterDTO>('/catalogs/printers', {
+          companyId: prn.companyId === 'ambas' ? null : prn.companyId,
+          name: prn.name,
+          role: prn.role,
+          connectionType: prn.connectionType,
+          ipAddress: prn.ipAddress,
+          port: prn.port,
+          paperWidth: prn.paperWidth,
+          autoCut: prn.autoCut,
+          beepOnPrint: prn.beepOnPrint,
+          categories: prn.categoriesMapped,
+        });
+        const server = mapPrinter(res);
+        delete tmpCatalogOpRef.current[tempId];
+        setPrinters((prev) => {
+          const next = prev.filter((p) => p.id !== tempId);
+          return next.some((p) => p.id === server.id) ? next : [...next, server];
+        });
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[tempId];
+        setPrinters((prev) => prev.filter((p) => p.id !== tempId));
+      },
+    });
     addNotification('Ticketera Agregada', `${prn.name} (${prn.ipAddress || prn.connectionType}) conectada.`, 'success');
   };
 
   const updatePrinter = (id: string, updates: Partial<ThermalPrinterConfig>) => {
-    setPrinters((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      setPrinters((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+      updateQueuedPayload(queuedOp, {
+        ...(updates.name !== undefined ? { name: updates.name } : {}),
+        ...(updates.role !== undefined ? { role: updates.role } : {}),
+        ...(updates.connectionType !== undefined ? { connectionType: updates.connectionType } : {}),
+        ...(updates.ipAddress !== undefined ? { ipAddress: updates.ipAddress } : {}),
+        ...(updates.port !== undefined ? { port: updates.port } : {}),
+        ...(updates.paperWidth !== undefined ? { paperWidth: updates.paperWidth } : {}),
+        ...(updates.autoCut !== undefined ? { autoCut: updates.autoCut } : {}),
+        ...(updates.beepOnPrint !== undefined ? { beepOnPrint: updates.beepOnPrint } : {}),
+        ...(updates.categoriesMapped !== undefined ? { categories: updates.categoriesMapped } : {}),
+      });
+      addNotification('Ticketera Actualizada', 'Ajustes de impresora guardados.', 'info');
+      return;
+    }
+    const prev = printers.find((p) => p.id === id);
+    setPrinters((prevList) => prevList.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'updatePrinter',
+      queuePayload: {
+        id,
+        ...(updates.name !== undefined ? { name: updates.name } : {}),
+        ...(updates.role !== undefined ? { role: updates.role } : {}),
+        ...(updates.connectionType !== undefined ? { connectionType: updates.connectionType } : {}),
+        ...(updates.ipAddress !== undefined ? { ipAddress: updates.ipAddress } : {}),
+        ...(updates.port !== undefined ? { port: updates.port } : {}),
+        ...(updates.paperWidth !== undefined ? { paperWidth: updates.paperWidth } : {}),
+        ...(updates.autoCut !== undefined ? { autoCut: updates.autoCut } : {}),
+        ...(updates.beepOnPrint !== undefined ? { beepOnPrint: updates.beepOnPrint } : {}),
+        ...(updates.status !== undefined ? { status: updates.status } : {}),
+        ...(updates.isEnabled !== undefined ? { isEnabled: updates.isEnabled } : {}),
+        ...(updates.categoriesMapped !== undefined ? { categories: updates.categoriesMapped } : {}),
+      },
+      endpointOp: async () => {
+        const res = await apiClient.patch<PrinterDTO>(`/catalogs/printers/${id}`, {
+          ...(updates.name !== undefined ? { name: updates.name } : {}),
+          ...(updates.role !== undefined ? { role: updates.role } : {}),
+          ...(updates.connectionType !== undefined ? { connectionType: updates.connectionType } : {}),
+          ...(updates.ipAddress !== undefined ? { ipAddress: updates.ipAddress } : {}),
+          ...(updates.port !== undefined ? { port: updates.port } : {}),
+          ...(updates.paperWidth !== undefined ? { paperWidth: updates.paperWidth } : {}),
+          ...(updates.autoCut !== undefined ? { autoCut: updates.autoCut } : {}),
+          ...(updates.beepOnPrint !== undefined ? { beepOnPrint: updates.beepOnPrint } : {}),
+          ...(updates.status !== undefined ? { status: updates.status } : {}),
+          ...(updates.isEnabled !== undefined ? { isEnabled: updates.isEnabled } : {}),
+          ...(updates.categoriesMapped !== undefined ? { categories: updates.categoriesMapped } : {}),
+        });
+        const server = mapPrinter(res);
+        setPrinters((prevList) => prevList.map((p) => (p.id === id ? server : p)));
+      },
+      rollback: () => {
+        if (prev) setPrinters((prevList) => prevList.map((p) => (p.id === id ? prev : p)));
+      },
+    });
     addNotification('Ticketera Actualizada', 'Ajustes de impresora guardados.', 'info');
   };
 
   const deletePrinter = (id: string) => {
-    setPrinters((prev) => prev.filter((p) => p.id !== id));
+    const queuedOp = tmpCatalogOpRef.current[id];
+    if (queuedOp) {
+      delete tmpCatalogOpRef.current[id];
+      removeByClientOpId(queuedOp);
+      syncPendingCount();
+      setPrinters((prev) => prev.filter((p) => p.id !== id));
+      addNotification('Ticketera Eliminada', 'Impresora retirada.', 'info');
+      return;
+    }
+    const prev = printers.find((p) => p.id === id);
+    setPrinters((prevList) => prevList.filter((p) => p.id !== id));
+    attemptMutation({
+      clientOpId: newUuid(),
+      entity: 'catalog',
+      op: 'deletePrinter',
+      queuePayload: { id },
+      endpointOp: async () => {
+        await apiClient.del(`/catalogs/printers/${id}`);
+      },
+      rollback: () => {
+        if (prev) setPrinters((prevList) => [...prevList, prev]);
+      },
+    });
     addNotification('Ticketera Eliminada', 'Impresora retirada.', 'info');
   };
 
@@ -2846,8 +3457,11 @@ Doble Alto: PEDIDO EXPRESS #8841
     );
   };
 
-  // Save / Update Recipe
+  // Save / Update Recipe (Fase E5: upsert a /catalogs/recipes; F5 persiste).
+  // El server genera el id real al crear; el id local se reemplaza al reconciliar.
   const saveRecipe = (recipe: Recipe) => {
+    const existed = recipes.some((r) => r.id === recipe.id);
+    const queuedOp = tmpCatalogOpRef.current[recipe.id];
     setRecipes((prev) => {
       const idx = prev.findIndex((r) => r.id === recipe.id);
       if (idx > -1) {
@@ -2858,19 +3472,120 @@ Doble Alto: PEDIDO EXPRESS #8841
       return [recipe, ...prev];
     });
 
+    const serverBody = {
+      companyId: recipe.companyId,
+      productId: recipe.productId || undefined,
+      productName: recipe.productName,
+      category: recipe.category,
+      portions: recipe.portions,
+      salePrice: recipe.salePrice,
+      totalCost: recipe.totalCost,
+      theoreticalFoodCostPct: recipe.theoreticalFoodCostPct,
+      preparationNotes: recipe.preparationNotes,
+      ingredients: recipe.ingredients.map((ing) => ({
+        insumoId: ing.insumoId || null,
+        insumoName: ing.insumoName,
+        quantity: ing.quantity,
+        unit: ing.unit,
+        costPerUnit: ing.costPerUnit,
+        subtotalCost: ing.subtotalCost,
+      })),
+    };
+
+    // Edición de un alta aún no sincronizada: se parchea el save encolado.
+    if (queuedOp) {
+      updateQueuedPayload(queuedOp, { ...serverBody });
+      addNotification('Receta Guardada', `Ficha técnica de "${recipe.productName}" actualizada.`, 'success');
+      return;
+    }
+
+    const clientOpId = newUuid();
+    if (!existed) tmpCatalogOpRef.current[recipe.id] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'saveRecipe',
+      queuePayload: { id: recipe.id, ...serverBody, ...(!existed ? { tempId: recipe.id } : {}) },
+      endpointOp: async () => {
+        let res: RecipeDTO;
+        try {
+          res = await apiClient.patch<RecipeDTO>(`/catalogs/recipes/${recipe.id}`, serverBody);
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            res = await apiClient.post<RecipeDTO>('/catalogs/recipes', serverBody);
+          } else {
+            throw err;
+          }
+        }
+        const mapped = mapRecipe(res);
+        const full: Recipe =
+          mapped.ingredients.length === 0 && recipe.ingredients.length > 0
+            ? { ...mapped, ingredients: recipe.ingredients }
+            : mapped;
+        delete tmpCatalogOpRef.current[recipe.id];
+        setRecipes((prev) => {
+          const next = prev.filter((r) => r.id !== recipe.id);
+          return next.some((r) => r.id === full.id) ? next : [full, ...next];
+        });
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[recipe.id];
+        if (!existed) {
+          setRecipes((prev) => prev.filter((r) => r.id !== recipe.id));
+        }
+      },
+    });
+
     addNotification('Receta Guardada', `Ficha técnica de "${recipe.productName}" actualizada.`, 'success');
   };
 
-  // Add Insumo
+  // Add Insumo (Fase E5: write-through a POST /catalogs/insumos; el server asigna
+  // id/code reales — se reemplazan al reconciliar, F5 persiste)
   const addInsumo = (insumoData: Omit<Insumo, 'id' | 'code'>) => {
-    const newId = `ins-${Date.now()}`;
+    const tempId = `ins-${Date.now()}`;
+    const clientOpId = newUuid();
     const newCode = `INS-${String(insumos.length + 1).padStart(3, '0')}`;
-    const newInsumo: Insumo = {
-      ...insumoData,
-      id: newId,
-      code: newCode,
-    };
+    const newInsumo: Insumo = { ...insumoData, id: tempId, code: newCode };
     setInsumos((prev) => [...prev, newInsumo]);
+    tmpCatalogOpRef.current[tempId] = clientOpId;
+    attemptMutation({
+      clientOpId,
+      entity: 'catalog',
+      op: 'createInsumo',
+      queuePayload: {
+        companyId: insumoData.companyId === 'ambas' ? null : insumoData.companyId,
+        name: insumoData.name,
+        category: insumoData.category,
+        unit: insumoData.unit,
+        currentStock: insumoData.currentStock,
+        minStock: insumoData.minStock,
+        costPerUnit: insumoData.costPerUnit,
+        lastPurchaseDate: insumoData.lastPurchaseDate,
+        tempId,
+      },
+      endpointOp: async () => {
+        const res = await apiClient.post<InsumoDTO>('/catalogs/insumos', {
+          companyId: insumoData.companyId === 'ambas' ? null : insumoData.companyId,
+          name: insumoData.name,
+          category: insumoData.category,
+          unit: insumoData.unit,
+          currentStock: insumoData.currentStock,
+          minStock: insumoData.minStock,
+          costPerUnit: insumoData.costPerUnit,
+          lastPurchaseDate: insumoData.lastPurchaseDate,
+        });
+        const server = mapInsumo(res);
+        delete tmpCatalogOpRef.current[tempId];
+        setInsumos((prev) => {
+          const next = prev.filter((i) => i.id !== tempId);
+          return next.some((i) => i.id === server.id) ? next : [...next, server];
+        });
+      },
+      rollback: () => {
+        delete tmpCatalogOpRef.current[tempId];
+        setInsumos((prev) => prev.filter((i) => i.id !== tempId));
+      },
+    });
     addNotification('Insumo Creado', `Insumo "${newInsumo.name}" registrado en Kardex.`, 'success');
   };
 

@@ -33,7 +33,7 @@ function pick(p: AnyPayload, keys: string[]): Record<string, unknown> {
 }
 
 export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
-  const tryRun = (): Promise<unknown> => {
+  const tryRun = async (): Promise<unknown> => {
     switch (op.op) {
       case 'openOrder':
         return apiClient.post('/operations/orders/open', pick(payload, ['tableId', 'waiter', 'clientOpId']));
@@ -63,6 +63,59 @@ export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<Re
         return apiClient.post('/operations/shifts/switch', pick(payload, ['companyId', 'targetShift', 'reportedCash', 'initialCashForNext', 'notes', 'clientOpId']));
       case 'kardexAdjustment':
         return apiClient.post('/operations/kardex/adjustments', pick(payload, ['insumoId', 'quantity', 'type', 'reason', 'companyId', 'clientOpId']));
+      // ---- Fase E5: mutaciones de catálogos (el payload lleva solo campos del server;
+      // `tempId`/`clientOpId` se excluyen salvo que la ruta los acepte) ----
+      case 'createTable':
+        return apiClient.post('/catalogs/tables', pick(payload, ['companyId', 'number', 'capacity', 'zone', 'notes']));
+      case 'updateTable':
+        return apiClient.patch(`/catalogs/tables/${String(payload.id)}`, pick(payload, ['number', 'capacity', 'zone', 'notes', 'status']));
+      case 'deleteTable':
+        return apiClient.del(`/catalogs/tables/${String(payload.id)}`);
+      case 'createBankAccount':
+        return apiClient.post('/catalogs/bank-accounts', pick(payload, ['companyId', 'bankName', 'accountNumber', 'cci', 'accountType', 'currency', 'holderName', 'alias', 'currentBalance', 'notes']));
+      case 'updateBankAccount':
+        return apiClient.patch(`/catalogs/bank-accounts/${String(payload.id)}`, pick(payload, ['bankName', 'accountNumber', 'cci', 'accountType', 'currency', 'holderName', 'alias', 'currentBalance', 'isActive', 'notes']));
+      case 'deleteBankAccount':
+        return apiClient.del(`/catalogs/bank-accounts/${String(payload.id)}`);
+      case 'createPaymentMethod':
+        return apiClient.post('/catalogs/payment-methods', pick(payload, ['companyId', 'name', 'category', 'bankAccountId', 'commissionPct', 'requiresReferenceNumber', 'icon']));
+      case 'updatePaymentMethod':
+        return apiClient.patch(`/catalogs/payment-methods/${String(payload.id)}`, pick(payload, ['companyId', 'name', 'category', 'bankAccountId', 'commissionPct', 'requiresReferenceNumber', 'icon', 'isActive']));
+      case 'deletePaymentMethod':
+        return apiClient.del(`/catalogs/payment-methods/${String(payload.id)}`);
+      case 'createPrinter':
+        return apiClient.post('/catalogs/printers', pick(payload, ['companyId', 'name', 'role', 'connectionType', 'ipAddress', 'port', 'paperWidth', 'autoCut', 'beepOnPrint', 'categories']));
+      case 'updatePrinter':
+        return apiClient.patch(`/catalogs/printers/${String(payload.id)}`, pick(payload, ['name', 'role', 'connectionType', 'ipAddress', 'port', 'paperWidth', 'autoCut', 'beepOnPrint', 'status', 'isEnabled', 'categories']));
+      case 'deletePrinter':
+        return apiClient.del(`/catalogs/printers/${String(payload.id)}`);
+      case 'createRecipe':
+        return apiClient.post('/catalogs/recipes', pick(payload, ['companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
+      case 'updateRecipe':
+        return apiClient.patch(`/catalogs/recipes/${String(payload.id)}`, pick(payload, ['productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
+      case 'deleteRecipe':
+        return apiClient.del(`/catalogs/recipes/${String(payload.id)}`);
+      case 'createInsumo':
+        return apiClient.post('/catalogs/insumos', pick(payload, ['companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']));
+      case 'updateInsumo':
+        return apiClient.patch(`/catalogs/insumos/${String(payload.id)}`, pick(payload, ['companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']));
+      case 'deleteInsumo':
+        return apiClient.del(`/catalogs/insumos/${String(payload.id)}`);
+      case 'saveRecipe': {
+        // Upsert: intenta PATCH y si la receta no existe (404) la crea con POST.
+        const id = String(payload.id);
+        const body = pick(payload, ['productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']);
+        try {
+          return await apiClient.patch(`/catalogs/recipes/${id}`, body);
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            return await apiClient.post('/catalogs/recipes', {
+              ...pick(payload, ['companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']),
+            });
+          }
+          throw err;
+        }
+      }
       default:
         throw new ApiError(`Operación desconocida en la cola de sincronización: ${op.op}`, 'UNKNOWN_OP', 422);
     }

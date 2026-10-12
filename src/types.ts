@@ -482,7 +482,8 @@ export type PendingOpEntity =
   | 'transaction'
   | 'purchase'
   | 'kardexMovement'
-  | 'shift';
+  | 'shift'
+  | 'catalog';
 
 // Operación local que aún no se sincronizó con la API (write-through fallido o creada offline).
 export interface PendingOp {
