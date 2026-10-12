@@ -1,10 +1,10 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-09-18` (Fase E4: replay automático de la cola offline
-> `ts_pending_queue_v2` al reconectar; idempotencia endurecida en `regularizePurchase` + `sendToKitchen`;
-> **E4-b**: preservación de órdenes/mesas temporales ante recarga con cola pendiente).
-> **Punto de retome: ejecución del smoke E2E del ciclo offline y Fase C (ledger `ClientOp`).**
-> **Pendiente corto (ver `progreso/planactual.md`)**: smoke E2E offline + compra a crédito y error visible (tests opcionales).
+> Bitácora de avance del proyecto. `2026-10-12` (E4 commiteado + Paso 1 fixes de
+> estabilidad + **E5: CRUD catálogos a API con replay**; smoke API de E5 y tests de
+> Compras PASS a nivel API; smoke E2E offline en navegador pendiente del usuario).
+> **Punto de retome: smoke E2E offline en navegador (Paso 2) y Fase C (ledger `ClientOp`).**
+> **Pendiente corto (ver `progreso/planactual.md`)**: smoke navegador del ciclo offline.
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
 
@@ -18,7 +18,7 @@
 | **B** | ✅ Completada | API Express + JWT + servicios de negocio (órdenes, compras, kardex, turnos, analítica) |
 | **C** | 🔲 Pendiente | **Motor de sync offline** (endpoint `client_ops`, idempotencia, queue por terminal) |
 | **D** | 🔲 Pendiente | **Socket.io** en tiempo real (empujar órdenes a cocina/barra, mesas en vivo) |
-| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ (auth + API client)** · **E2 ✅ (catálogos)** · **E3 ✅ (operaciones + clientOpId)** · **E4 ✅ (replay cola offline)** · **E5 ⏭ (mutaciones de catálogos a API)** |
+| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ (auth + API client)** · **E2 ✅ (catálogos)** · **E3 ✅ (operaciones + clientOpId)** · **E4 ✅ (replay cola offline + E4-b)** · **E5 ✅ (mutaciones de catálogos a API, código + smoke API; falta smoke navegador)** |
 | **F** | 🔲 Pendiente | Azure: SQL Server en la nube + deploy del backend (secretos reales) |
 
 > Hasta **2026-09-05** no hay commits de git (el repo no es git todavía). Todo el código
@@ -853,6 +853,56 @@ la apertura sin crear la orden real.
 - `verify-sync.ts` corrido contra BD local: conecta OK, ventana limpia, cero duplicados.
 - **Estado del smoke E2E:** pendiente de ejecutar por el usuario (2 fases en `planactual.md`: toggle y
   reload — la Fase II valida explícitamente este fix).
+
+### Paso 1 — Fixes de estabilidad E1–E3 (✔ realizado 2026-10-12)
+
+> Re-verificación de código + corrección de los 6 gaps del relevamiento antes del smoke.
+
+1. **Gap #4 (alta)**: `addItemToOrder` fabricaba `order-<table>-...` → 404 garantizado.
+   Ahora crea `order-tmp-*` y dispara el `openOrder` real con flush (igual que
+   `selectAndOpenTable`), con rollback que libera la mesa si el server rechaza.
+2. **Gap #2**: `sendToKitchen` sumó `rollback` (restaura items a `agregado`, revierte
+   kardex/stock local y estado de mesa ante 4xx).
+3. **Gap #3**: `completePayment` completó su rollback (quita tx optimista `tx-*`,
+   orden a `por_cobrar`, cierra recibo, revierte bump de saldo).
+4. **Gap #5 (análisis)**: `quantity:1` es el DELTA correcto (el server hace merge por
+   producto+nota con `increment`); el flush de tmp sí envía cantidades acumuladas.
+   Se dejó como está + comentario aclaratorio.
+5. **Gap #6**: arqueo usa caja inicial del último `ShiftRecord` (fallback 350, igual que
+   el server) y calcula `bankTransferSales` (antes hardcodeado 0). El server sigue
+   siendo la verdad tras el refresh post-write.
+- Verificación: `tsc --noEmit` 0 (raíz+server) · `npm run build` OK.
+
+### E5 — Mutaciones de catálogos a API (✔ código + smoke API 2026-10-12)
+
+> Las 11 funciones eran 100% locales (se perdían con F5). Ahora hacen write-through a
+> `POST/PATCH/DELETE /catalogs/*` con reconcile del id real del server, rollback ante
+> 4xx y replay offline en la cola (`entity:'catalog'`).
+
+- **Tipos/cola**: `PendingOpEntity += 'catalog'` (`src/types.ts`); `getPendingCatalogTmpIds()` +
+  `updateQueuedPayload()` en `src/lib/offlineQueue.ts` (editar un alta sin sincronizar
+  parchea el create encolado; borrarla retira la op de la cola).
+- **Dispatcher** (`src/lib/replayQueue.ts`): 19 ops de catálogos (create/update/delete de
+  table, bankAccount, paymentMethod, printer, recipe, insumo + `saveRecipe` upsert con
+  fallback PATCH→POST). `companyId 'ambas'` → `null`; `categoriesMapped` → `categories`.
+- **Contexto** (`src/context/POSContext.tsx`): `tmpCatalogOpRef` (tempId→clientOpId);
+  `loadCatalogs` preserva altas temporales referenciadas por la cola (extensión E4-b);
+  el replay reconcilia altas (temp→id real, con fallback de ingredientes en recetas
+  porque `PATCH /recipes` no devuelve `ingredients`) y converge catálogos si `stuck==0`.
+- **Limitación conocida v1**: los endpoints de catálogos no aceptan `clientOpId`
+  (sin idempotencia server); un fallo de red tras el POST podría duplicar al reintentar
+  (mismo riesgo aceptado de `openOrder` en E4).
+- **Smoke API `:4000` (todo PASS, filas de prueba eliminadas después)**:
+  create table/bank/payment/printer/insumo/recipe → 201; GET lista el nuevo;
+  PATCH table/bank/recipe → 200; DELETE ×6 → 200.
+- **Tests Compras opcionales (PASS a nivel API)**: compra `Crédito 15 días` → creada sin
+  transacción (tx el-tayta 7→7); re-regularizar → **409 `ALREADY_REGULARIZED`**
+  ("La compra ya fue regularizada."). BD restaurada con `npx tsx prisma/seed.ts`;
+  `verify-sync.ts` conecta OK, cero duplicados por `clientOpId`.
+- **Commits**: `f8b9175` (E4/E4-b + verify-sync + docs db) · `3977804` (Paso 1 + E5).
+
+**Pendiente**: smoke E2E offline en navegador (Paso 2 de `planactual.md`: ciclo offline →
+reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 
 ---
 

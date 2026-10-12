@@ -1,8 +1,7 @@
-# Plan actual — Re-verificación E1–E3 + fixes de estabilidad, luego smoke offline (E4) y tests opcionales de Compras
+# Plan actual — Smoke E2E offline en navegador (E4) + persistencia F5 de catálogos (E5)
 
-> Objetivo (orden de ejecución): (1) re-probar los procesos ya implementados (E1–E3) en la UI y corregir
-> los gaps de código hallados, sobre una base estable ANTES del smoke; (2) validar de punta a punta la
-> resiliencia offline recién implementada (E4); (3) cerrar los 2 casos de control de Compras opcionales.
+> Objetivo: validar de punta a punta en el navegador lo ya implementado y verificado a
+> nivel API (2026-10-12): resiliencia offline E4/E4-b y persistencia de catálogos E5.
 > El avance histórico y las decisiones van en `progreso/progress.md`.
 
 ---
@@ -25,54 +24,20 @@
 ## Plan de ejecución
 
 ### Paso 0 — Preparación
-- [ ] Asegurar seed canónico y sesión iniciada (PIN `1004`, device `TERM-CENTRAL-01`).
-- [ ] Levantar servidor (`:4000`), front (`:3000`) y confirmar que SQL Server local responde.
+- [x] Seed canónico y sesión (PIN `1004`, device `TERM-CENTRAL-01`) — verificado por API 2026-10-12.
+- [x] Servidor (`:4000`) + SQL Server local responden (`/health` OK, `verify-sync.ts` OK).
 
-### Paso 1 — Re-verificación de procesos previos + fixes de estabilidad (nuevo, previo al smoke)
+### Paso 1 — Re-verificación de procesos previos + fixes de estabilidad (✔ hecho 2026-10-12)
+- [x] Gaps #2/#3/#4/#6 corregidos en `POSContext.tsx` (ver `progress.md`); gap #5 analizado
+      (delta `quantity:1` correcto, sin cambio); `tsc` 0 + `build` OK.
+- [x] **E5 completo**: 11 CRUD de catálogos → `POST/PATCH/DELETE /catalogs/*` con reconcile,
+      rollback y replay (`entity:'catalog'`); temps preservados en `loadCatalogs`.
+      Smoke API PASS (crear→leer→actualizar→borrar ×6 entidades).
 
-> Re-prueba guiada de los procesos E1–E3 ya implementados; cada ítem se verifica en la UI y en BD
-> (`sqlcmd` a BD `tayta_sabroso` / `server/scripts/verify-sync.ts`). Todo bug o mejora detectada se
-> anota y se corrige aquí mismo antes de pasar al Paso 2.
+### Paso 2 — Smoke E2E del ciclo offline en navegador (PENDIENTE — ejecutar con la app abierta)
 
-#### Checklist de re-prueba guiada (UI + BD)
-- [ ] **Login/seguridad**: PIN erróneo → 401 con mensaje; login OK; F5 restaura sesión vía `/me`;
-      logout revoca; switcher de empresa activa.
-- [ ] **Ciclo de venta completo**: abrir mesa → ítems (merge mismo producto+nota) → cocina
-      (kardex baja) → por cobrar → cobrar (vuelto, boleta, tx, saldo banco, mesa libre).
-      Vaciar comanda libera mesa; borrar ítem en cocina revierte kardex.
-- [ ] **Caja (transacciones manuales)**: ingreso/egreso actualiza saldo banco + tx; dedup por
-      `clientOpId`.
-- [ ] **Compras + regularización**: compra formal (kardex ENTRADA + costo promedio + tx); compra a
-      crédito (sin tx); vale → regularizar propaga folio a kardex/caja; re-regularizar → 409 visible.
-- [ ] **Kardex / inventario**: ajuste merma/entrada; recargar sin perder datos.
-- [ ] **Arqueo de turnos**: switch → record + turno nuevo + ajuste de saldo si difiere.
-- [ ] **Catálogos/settings**: crear mesa/cuenta/método/impresora/receta/insumo → **F5** → ¿persisten?
-      (hoy NO deberían: es el gap #1 confirmado).
+> Con `npm run dev:all` corriendo (`:3000` + `:4000`), PIN `1004`.
 
-#### Gaps a corregir (orden de prioridad, del relevamiento del frontend)
-1. **CRUD catálogos 100% local** (se pierde al recargar online) → conectar
-   `addNewTable | addBankAccount/update/delete | addPaymentMethod/update/delete |
-   addPrinter/update/delete | saveRecipe | addInsumo` a `POST/PATCH/DELETE /catalogs/*`
-   (endpoints ya existen en `server/src/routes/catalogs.routes.ts`); los ids client-side se
-   reemplazan por los del server; fallback a estado local + cola si falla la red.
-2. **`sendToKitchen` sin rollback**: restaurar items a `agregado` + revertir kardex/stock local
-   si el server rechaza con 4xx (`POSContext.tsx:1845-1916`, `1171-1236`).
-3. **`completePayment` rollback parcial**: remover tx optimista, mesa a `por_cobrar`, revertir
-   bump de saldo (`POSContext.tsx:1980-2147`).
-4. **`addItemToOrder` fabrica id `order-<table>-...`** → 404 garantizado; usar rama temporal
-   `order-tmp-*` con flush o resync (`POSContext.tsx:1496-1520,1566-1589`).
-5. **Payload `addItem` quantity:1 hardcodeado**: enviar la cantidad acumulada real del merge
-   (`POSContext.tsx:1522-1542,1566-1585`).
-6. **Arqueo heurístico** (caja inicial fija 350 + match por descripción): mejoras post-reconciliación
-   con la verdad del server (`POSContext.tsx:2517-2553`).
-
-#### Verificación de cierre de la ronda
-- `npx tsc --noEmit` (raíz y `server/`) = 0 errores · `npm run build` OK.
-- F5 con catálogos creados → **persisten** (verificación clave del gap #1).
-- Re-correr lo tocado (catálogos, cocina, cobro).
-- Documentar resultado en `progreso/progress.md`.
-
-### Paso 2 — Smoke E2E del ciclo offline (nuevo, E4)
 - [ ] Desde Configuración → "Simular Corte de Internet".
 - [ ] Operar el ciclo completo offline:
       abrir mesa → añadir ítems → enviar a cocina → pedir cuenta → cobrar (pago) → transacción manual de
@@ -80,24 +45,21 @@
 - [ ] Reconectar (botón "Restablecer Conexión" o reload con red real).
 - [ ] Verificar en la UI: contador de cola en 0, notificación "Sincronización completada", stock/caja/kardex
       coherentes (refrescan automáticamente).
-- [ ] Verificar en BD con `sqlcmd` (BD `tayta_sabroso`): una sola orden/transacción/compra/movimiento de
-      kardex por op encolada, sin duplicados y sin doble deducción de stock.
-- [ ] Verificar el caso "mesa liberada offline": abrir mesa offline, vaciarla (se libera), reconectar → no se
+- [ ] Verificar en BD (`server/scripts/verify-sync.ts` o `sqlcmd` a BD `tayta_sabroso`): una sola
+      orden/transacción/compra/movimiento de kardex por op encolada, sin duplicados y sin doble deducción.
+- [ ] Caso "mesa liberada offline": abrir mesa offline, vaciarla (se libera), reconectar → no se
       crea orden fantasma en BD.
-- [ ] **Verificar el fix E4-b (recarga con cola pendiente)**: abrir mesa + ítems offline, y **sin** pulsar
-      "Restablecer Conexión" recargar la página (F5) con la red real activa → el auto-replay al arrancar debe
-      crear/cobrar esa orden (antes se perdía porque `loadOperations`/`loadCatalogs` borraban la orden/mesa tmp).
+- [ ] **Fix E4-b (recarga con cola pendiente)**: abrir mesa + ítems offline, y **sin** pulsar
+      "Restablecer Conexión" recargar (F5) con red activa → el auto-replay debe crear/cobrar esa orden.
+- [ ] **Persistencia E5 (nuevo)**: crear mesa/cuenta/método/impresora/receta/insumo online → **F5** →
+      persisten (verificación clave de E5). Repetir uno en offline → reconectar → persiste tras replay.
 
-### Paso 3 — Test "compra a crédito" (opcional)
-- [ ] Compras → Registrar Compra → modo de pago **Crédito 15 días** → Guardar.
-- [ ] Verificar: la compra aparece en la lista, pero **NO** se crea transacción "Pago Proveedor" en Caja
-      ni cambia el saldo de ninguna cuenta bancaria.
+### Paso 3 — Test "compra a crédito" (✔ verificado a nivel API 2026-10-12)
+- [x] Compra `Crédito 15 días` → creada sin transacción (tx el-tayta 7→7). Falta refrendo en UI.
 
-### Paso 4 — Test "error visible" (opcional)
-- [ ] Tomar una compra ya `regularizado` (o regularizar primero) e intentar **regularizar de nuevo**.
-- [ ] Verificar: notificación de error visible ("La compra ya fue regularizada." / 409), sin pantalla en blanco.
-- [ ] (Con E4) El mismo 409 al reintentar **online** TAMBIÉN cubre el caso "already" del replay: debe
-      quitarse de la cola sin duplicar folios.
+### Paso 4 — Test "error visible" (✔ verificado a nivel API 2026-10-12)
+- [x] Re-regularizar → **409 `ALREADY_REGULARIZED`** ("La compra ya fue regularizada.").
+      El dispatcher lo traduce a `already` (quita de la cola sin duplicar folios). Falta refrendo en UI.
 
 ---
 
@@ -107,15 +69,16 @@
 |---|---|
 | Red cae exactamente entre `openOrder` y el flush de ítems del replay | Riesgo aceptado en v1 (ver progress.md E4): el `try/catch` marca `stuck` y no borra la cola; posible orden creada sin ítems. No se cerró con idempotencia total en `openOrder` en esta iteración |
 | F5 / reload durante un replay en curso | Mutex `isReplayingRef` + idempotencia por `clientOpId`; recalcular contador real de `queueCount()` |
-| Los 2 tests de Compras son opcionales | No bloquean la entrega; pueden marcarse como hechos o diferirse |
+| Catálogos sin `clientOpId` en el server | Riesgo aceptado en v1 (ver progress.md E5): un fallo de red tras el POST podría duplicar al reintentar |
+| Los refrendos en UI son opcionales | La lógica ya está verificada a nivel API; el smoke navegador los cubre de paso |
 
 ---
 
 ## Estado
 
-- [ ] Paso 0 — Preparación
-- [ ] Paso 1 — Re-verificación de procesos previos + fixes de estabilidad
-- [ ] Paso 2 — Smoke E2E del ciclo offline (E4)
-- [ ] Paso 3 — Test "compra a crédito" (opcional)
-- [ ] Paso 4 — Test "error visible" (opcional)
-- [ ] Documentar resultado en `progreso/progress.md` y limpiar este archivo.
+- [x] Paso 0 — Preparación
+- [x] Paso 1 — Re-verificación de procesos previos + fixes de estabilidad + E5
+- [ ] Paso 2 — Smoke E2E del ciclo offline en navegador (E4) + persistencia F5 (E5)
+- [x] Paso 3 — Test "compra a crédito" (API ✔, refrendo UI pendiente)
+- [x] Paso 4 — Test "error visible" (API ✔, refrendo UI pendiente)
+- [ ] Documentar resultado del smoke navegador en `progreso/progress.md` y limpiar este archivo.
