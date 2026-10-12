@@ -904,6 +904,22 @@ la apertura sin crear la orden real.
 **Pendiente**: smoke E2E offline en navegador (Paso 2 de `planactual.md`: ciclo offline →
 reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 
+### Fase 1 — Reset total a seed demo (✔ realizado 2026-10-12)
+
+> Limpieza para pruebas completas por fase, previa a la ruta Azure (Fase F).
+
+- **Backup**: `BACKUP DATABASE [TaytaSabroso]` verificado en `msdb`
+  (`/var/opt/mssql/backup/tayta_sabroso_20261012.bak`, `WITH INIT, COMPRESSION`).
+- **Reset**: `npx tsx prisma/seed.ts` (borra las 23 tablas incl. `sessions`/`client_ops` y
+  recrea el canónico).
+- **Verificación**: `verify-sync.ts` OK (cero duplicados); catálogos por API 13/16/13/7/4/9/4;
+  re-login PIN `1004` OK.
+- ⚠️ **Hallazgo (bloqueador prod, no bloquea pruebas)**: `requireAuth`
+  (`server/src/lib/auth.ts:33`) solo verifica firma JWT + usuario activo — **NO valida
+  `sessions.tokenHash`**. El token viejo siguió con `/me` 200 tras borrar sesiones; el
+  logout no revoca efectivamente el JWT hasta su expiración (12h). Endurecer en Fase F
+  (chequear sesión en el middleware + `JWT_SECRET` real + `CORS_ORIGIN` restringido).
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)
