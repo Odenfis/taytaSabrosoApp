@@ -934,6 +934,24 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   API `orders/active` 0 en ambas empresas, tx/kardex 0, 13/13 mesas libres; saldos y
   stocks de apertura intactos; `tsc` server 0.
 
+### Fix cocina: UNIQUE en kardex por `clientOpId` compartido (✔ realizado 2026-10-12)
+
+> Reportado por el usuario: "enviar a cocina no genera ninguna acción".
+> Causa: E4 ponía UN solo `clientOpId` a todos los movimientos del despacho
+> (`order.service.ts:493`) y esa columna es `UNIQUE` → con 2+ movimientos el `createMany`
+> revertía todo (visible en el log como `uq_movimientos_kardex_id_operacion_cliente`).
+> En la UI parecía no-op por el rollback + resync. Latente desde E4, primer despacho real
+> que lo disparó.
+- **Fix** (`server/src/services/order.service.ts` `sendToKitchen`): solo deduce ítems en
+  `agregado` (cierra además una doble-deducción latente al pulsar cocina 2 veces); sin
+  nada que deducir → no-op `replayed:true` (cubre el replay sin depender del `clientOpId`
+  compartido); cada movimiento vuelve a su propio UUID. Compras ya usaba UUID por
+  movimiento (a salvo).
+- **Verificación API**: mesa t-04 → lomo+ceviche → cocina 200 con **11 movimientos** y
+  stock 18.5→18.28 (una sola rebaja); 2.º despacho mismo `clientOpId` → 0 movs,
+  `replayed:true`, stock intacto; borrado de ítems reversó cocina (18.5) y liberó la mesa.
+  Orden de prueba vaciada por API; `tsc` server 0.
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)

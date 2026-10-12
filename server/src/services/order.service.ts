@@ -431,22 +431,21 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
     if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
 
-    // Idempotencia (E4): si este clientOpId de despacho ya generó movimientos de kardex,
-    // el envío ya fue aplicado (replay de cola offline) → no re-descontar.
-    if (input?.clientOpId) {
-      const alreadyDispatched = await tx.kardexMovement.findFirst({
-        where: { clientOpId: input.clientOpId },
-        take: 1,
+    // Idempotencia (fix 2026-10-12): solo se deducen ítems en `agregado`. Los ítems
+    // `en_cocina`/`servido` ya fueron rebajados por un despacho previo, así que un
+    // reintento o replay llega aquí sin nada que deducir → no-op `replayed:true`.
+    // (El intento E4 de reusar un único clientOpId por despacho chocaba con la
+    // UNIQUE de kardexMovement.clientOpId cuando había 2+ movimientos; cada
+    // movimiento vuelve a llevar su propio UUID.)
+    const pendingItems = order.items.filter((i) => i.status === 'agregado');
+    if (pendingItems.length === 0) {
+      const current = await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'en_cocina' },
+        include: { items: true },
       });
-      if (alreadyDispatched) {
-        const current = await tx.order.update({
-          where: { id: orderId },
-          data: { status: 'en_cocina' },
-          include: { items: true },
-        });
-        await tx.orderItem.updateMany({ where: { orderId }, data: { status: 'en_cocina' } });
-        return { order: current, kardexMovements: 0, replayed: true };
-      }
+      await tx.orderItem.updateMany({ where: { orderId }, data: { status: 'en_cocina' } });
+      return { order: current, kardexMovements: 0, replayed: true };
     }
 
     const recipes = await tx.recipe.findMany({ where: { isDeleted: false }, include: { ingredients: true } });
@@ -455,7 +454,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
     const movements: Prisma.KardexMovementCreateManyInput[] = [];
     const deductionByInsumo: Record<string, number> = {};
 
-    for (const item of order.items) {
+    for (const item of pendingItems) {
       const recipe = recipes.find(
         (r) => r.productId === item.productId || r.productName === item.name
       );
@@ -490,7 +489,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
           stockBefore: currentStock,
           stockAfter: round2(currentStock - qtyNeeded),
           notes: `Consumo automático según Ficha Técnica (${recipe.productName})`,
-          clientOpId: input?.clientOpId ?? randomUUID(),
+          clientOpId: randomUUID(),
         });
       }
     }
