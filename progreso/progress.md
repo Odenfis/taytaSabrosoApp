@@ -1,10 +1,11 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-10-12` (E4 commiteado + Paso 1 fixes de
-> estabilidad + **E5: CRUD catálogos a API con replay**; smoke API de E5 y tests de
-> Compras PASS a nivel API; smoke E2E offline en navegador pendiente del usuario).
-> **Punto de retome: smoke E2E offline en navegador (Paso 2) y Fase C (ledger `ClientOp`).**
-> **Pendiente corto (ver `progreso/planactual.md`)**: smoke navegador del ciclo offline.
+> Bitácora de avance del proyecto. `2026-10-13` (E1–E5 completas a nivel código;
+> primera ronda de pruebas UI del usuario + fix cocina UNIQUE verificado; base vacía
+> con `seed-empty.ts` lista para la segunda ronda; smoke E2E offline en navegador
+> pendiente del usuario).
+> **Punto de retome: segunda ronda de pruebas UI desde cero (Paso 2 de `planactual.md`:
+> ciclo offline + replay + persistencia F5 de catálogos), luego Fase C y Fase F (Azure).**
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
 
@@ -18,11 +19,11 @@
 | **B** | ✅ Completada | API Express + JWT + servicios de negocio (órdenes, compras, kardex, turnos, analítica) |
 | **C** | 🔲 Pendiente | **Motor de sync offline** (endpoint `client_ops`, idempotencia, queue por terminal) |
 | **D** | 🔲 Pendiente | **Socket.io** en tiempo real (empujar órdenes a cocina/barra, mesas en vivo) |
-| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ (auth + API client)** · **E2 ✅ (catálogos)** · **E3 ✅ (operaciones + clientOpId)** · **E4 ✅ (replay cola offline + E4-b)** · **E5 ✅ (mutaciones de catálogos a API, código + smoke API; falta smoke navegador)** |
+| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ · E2 ✅ · E3 ✅ · E4 ✅ (+E4-b)** · **E5 ✅ (código + smoke API; refrendo navegador pendiente)** · 1.ª ronda UI del usuario OK (2 ventas cobradas) + fix cocina verificado |
 | **F** | 🔲 Pendiente | Azure: SQL Server en la nube + deploy del backend (secretos reales) |
 
-> Hasta **2026-09-05** no hay commits de git (el repo no es git todavía). Todo el código
-> del `server/` es local. **Antes de continuar, considerar `git init`** para no perder avance.
+> Repo con git desde 2026-10-12 (`main` + `origin/main`, mensajes `update ...` en minúscula).
+> Antes de cada sesión: `git status --short` debe estar limpio.
 
 ---
 
@@ -955,6 +956,17 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   `replayed:true`, stock intacto; borrado de ítems reversó cocina (18.5) y liberó la mesa.
   Orden de prueba vaciada por API; `tsc` server 0.
 
+### 1.ª ronda de pruebas UI del usuario (2026-10-12, sobre base vacía)
+
+- El usuario operó el ciclo real: **2 ventas cobradas** (tickets 1 y 3, mesa 01, con sus
+  transacciones `Venta (Mesa)`) + despachos a cocina con sus movimientos kardex (41 movs
+  en ventana, incl. devoluciones de pruebas de vaciado).
+- En la ronda salió el bug de cocina UNIQUE (sección anterior) → fix verificado a nivel API;
+  **refrendo del botón en UI pendiente en la 2.ª ronda**.
+- Tras la ronda: reset a base vacía (`seed.ts + seed-empty.ts`, 0/0/0/0 verificado,
+  commit `19d6d80`). Lección: el seed demo trae órdenes/mesas ocupadas a propósito y
+  confundía el inicio → por eso existe `seed-empty.ts`.
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)
@@ -988,6 +1000,10 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 | `server/prisma/migrations/0001_init/migration.sql` | Migración inicial (sin BOM) |
 | `server/prisma/migrations/0002_rename_spanish/migration.sql` | Españolización física (sp_rename, sin BOM) |
 | `server/prisma/seed.ts` | Seed demo canónico |
+| `server/prisma/seed-empty.ts` | Seed vacío (tras el canónico: 0 operaciones, 13 mesas libres, secuencias en 0) |
+| `db/processes/` + `db/process-map.html` | DBML por proceso (01–09 + _all) y mapa visual de procesos |
+| `db/gen-process-dbml.mjs` + `db/gen-process-map.mjs` | Generadores del DBML fragmentado y del mapa HTML |
+| `src/lib/replayQueue.ts` | Dispatcher del replay offline (`replayCall`, 14 ops E4 + 19 E5) |
 | `server/src/lib/utils.ts` | AppError, errorHandler (Zod/Prisma), round*, toNum, plain |
 | `server/src/lib/auth.ts` | JWT + requireAuth/requireRoles |
 | `server/src/lib/prisma.ts` | PrismaClient singleton (plano) |
@@ -998,7 +1014,9 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 | `server/scripts/verify-sync.ts` | Verificación de sync en BD (ventana 3h; órdenes/tx/compras/kardex/turnos/cuentas/insumos + check duplicados `clientOpId`) — smoke E4 |
 | `server/.env` | Conexión local SQL Server |
 | `server/.env.example` | Plantillas Azure SQL para producción |
-| `src/` (raíz) | Front demo React — NO tocar (fase E) |
+| `src/` (raíz) | Front React conectado a la API (E1–E5); `POSContext.tsx` = estado + write-through + replay |
+
+> Nota: `src/data/initialData.ts` queda como fallback offline/demo cuando la API no responde.
 
 ---
 
@@ -1012,25 +1030,25 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   contra la BD real: PIN `1004` / `TERM-CENTRAL-01` lee las 2 empresas y los turnos;
   un PIN erróneo devuelve `401`.
 
-**🔶 Parcialmente conectado a la BD desde la UI (frontend en `:3000`) — desde E1 (2026-09-06)**
+**🟢 Todo conectado a la BD desde la UI (frontend en `:3000`, desde E1–E5)**
 - ✅ **Login/sesión real**: PIN `1004` autentica contra la API (`POST /api/auth/login` → SQL Server),
   token JWT guardado, sesión validada con `GET /api/auth/me` al recargar, logout revoca sesión.
-- ✅ **Catálogos reales** (desde E2): mesas, productos, insumos, recetas, cuentas bancarias, métodos de
+- ✅ **Catálogos lectura** (desde E2): mesas, productos, insumos, recetas, cuentas bancarias, métodos de
   pago e impresoras se descargan con `GET /api/catalogs/*` (ambas empresas) al iniciar sesión; metadatos
   para delta-sync guardados en `ts_catalog_meta_v2`.
+- ✅ **Catálogos escritura** (desde E5): altas/ediciones/bajas → `POST/PATCH/DELETE /catalogs/*`
+  con reconcile de id real, rollback y replay offline (`entity:'catalog'`); F5 persiste.
 - ✅ **Operaciones reales** (desde E3): con `clientOpId` idempotente — apertura y comanda rápida de órdenes,
   ítems (add/qty/nota/remove), envío a cocina (deducción Kardex), pago de mesa (`POST /tables/:id/pay`),
   transacciones manuales de Caja (`POST /transactions`), compras (`POST /purchases`), ajustes de Kardex
   (`POST /kardex/adjustments`) y arqueo de turnos (`POST /shifts/switch`). Fallos de red → cola local
   `ts_pending_queue_v2` (replay = E4).
-- ❌ **Catálogos (mutaciones) y otros CRUD siguen en mock**: mesas nuevas, bancos, métodos de pago,
-  insumos/recetas e impresoras aún no tocan la API (fase posterior a E3). `regularizePurchase` **SÍ** está
-  conectado a `POST /purchases/:id/regularize` y desde 2026-09-08 propaga el folio formal a
+- `regularizePurchase` conectado a `POST /purchases/:id/regularize` y propaga el folio formal a
   Kardex/Caja (migración `0003`, kardex/tx con `[antes <VALE>]`).
 
 **Barrera para "usar el sistema de verdad" (operar sin internet)**
-- **E4 (replay de la cola) ✅** (2026-09-18): el POS encola ante fallas, reconecta y drena
+- **E4 (replay de la cola) ✅**: el POS encola ante fallas, reconecta y drena
   `ts_pending_queue_v2` con idempotencia por `clientOpId` (replay automático al reconectar, al arrancar con
   sesión o con el botón "Forzar Sincronización"). Falta **Fase C** (ledger `ClientOp` deductivo para
   conflictos multi-terminal) y la Fase D (Socket.io) para offline-first robusto en 5+ terminales.
-- Aún no hay commits de git; considerar `git init` para no perder avance.
+- Repo con git (`main` + `origin/main`); verificar `git status` limpio antes de cada sesión.
