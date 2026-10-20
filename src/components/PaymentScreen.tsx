@@ -1,7 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
 import { PaymentMethod, CustomPaymentMethod } from '../types';
-import { ReceiptModal } from './ReceiptModal';
 
 export const PaymentScreen: React.FC = () => {
   const {
@@ -424,9 +423,6 @@ export const PaymentScreen: React.FC = () => {
           </div>
         </section>
       </main>
-
-      {/* Electronic Ticket Modal */}
-      <ReceiptModal />
     </div>
   );
 };

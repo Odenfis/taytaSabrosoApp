@@ -21,6 +21,7 @@ export default defineConfig(() => {
       proxy: {
         '/api': 'http://localhost:4000',
         '/health': 'http://localhost:4000',
+        '/socket.io': { target: 'http://localhost:4000', ws: true },
       },
     },
   };

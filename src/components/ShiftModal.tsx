@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { CompanyId, ShiftType } from '../types';
+import { isBankMovement, isCashMovement } from '../lib/finance';
 
 export const ShiftModal: React.FC = () => {
   const {
     isShiftModalOpen,
     setIsShiftModalOpen,
     companyShifts,
+    companyShiftCash,
     activeShift,
     shiftRecords,
     switchCompanyShift,
@@ -30,7 +32,7 @@ export const ShiftModal: React.FC = () => {
   );
 
   const cashSales = compTxs
-    .filter((t) => t.isIncome && (t.paymentMethod === 'Efectivo' || !t.bankAccountId))
+    .filter((t) => t.isIncome && isCashMovement(t))
     .reduce((sum, t) => sum + t.amount, 0);
 
   const cardSales = compTxs
@@ -57,22 +59,35 @@ export const ShiftModal: React.FC = () => {
     .filter(
       (t) =>
         t.isIncome &&
-        (t.bankAccountId !== undefined ||
-          (t.description && t.description.toLowerCase().includes('transferencia')))
+        isBankMovement(t) &&
+        t.paymentMethod !== 'Tarjeta' &&
+        t.paymentMethod !== 'Billetera Digital' &&
+        t.paymentMethod !== 'Yape / Plin'
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
   const totalSales = cashSales + cardSales + walletSales;
+  // Regla de gaveta: solo egresos sin cuenta bancaria salen de la caja efectivo
+  // (un 'Caja Chica' pagado desde banco decrementa el banco, no la gaveta).
   const cashExpenses = compTxs
-    .filter((t) => !t.isIncome && (!t.bankAccountId || t.type === 'Caja Chica'))
+    .filter((t) => !t.isIncome && isCashMovement(t))
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const initialCash = 350.0;
+  const initialCash = companyShiftCash[targetCompany] ?? 350.0;
   const expectedCashInDrawer = +(initialCash + cashSales - cashExpenses).toFixed(2);
 
   const [reportedCash, setReportedCash] = useState<number>(expectedCashInDrawer);
   const [initialForNext, setInitialForNext] = useState<number>(350.0);
   const [notes, setNotes] = useState<string>('');
+
+  // Al reabrir el modal, el efectivo esperado se prellena con el cálculo vigente
+  // (los state no se reinician porque el componente está siempre montado).
+  useEffect(() => {
+    if (isShiftModalOpen) {
+      setReportedCash(expectedCashInDrawer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isShiftModalOpen, targetCompany]);
 
   if (!isShiftModalOpen) return null;
 

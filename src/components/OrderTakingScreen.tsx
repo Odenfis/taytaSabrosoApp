@@ -15,6 +15,9 @@ export const OrderTakingScreen: React.FC = () => {
     removeItemFromOrder,
     sendToKitchen,
     proceedToPayment,
+    confirmDispatchAndProceed,
+    dismissKitchenConfirm,
+    pendingKitchenConfirm,
     setCurrentScreen,
     currentUser,
   } = usePOS();
@@ -22,6 +25,7 @@ export const OrderTakingScreen: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<ProductCategory | 'todos'>('platos');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingNoteItem, setEditingNoteItem] = useState<{ id: string; name: string; notes: string } | null>(null);
+  const [isDispatchingKitchen, setIsDispatchingKitchen] = useState(false);
 
   // Active table
   const currentTable = useMemo(() => {
@@ -374,6 +378,50 @@ export const OrderTakingScreen: React.FC = () => {
             setEditingNoteItem(null);
           }}
         />
+      )}
+
+      {/* Confirmación: despachar a cocina antes de cobrar (regla Kardex) */}
+      {pendingKitchenConfirm && pendingKitchenConfirm.tableId === currentTable?.id && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md bg-[#2a2a2a] border border-[#54433c] rounded-2xl shadow-2xl p-6 flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-[#ebc246] text-[28px] fill">local_fire_department</span>
+              <h3 className="text-[16px] font-bold text-[#e5e2e1]">
+                Ítems sin enviar a cocina
+              </h3>
+            </div>
+            <p className="text-[13px] text-[#dac1b8] leading-relaxed">
+              Hay <span className="font-bold text-[#ebc246]">{pendingKitchenConfirm.itemCount} ítem(s)</span> de la mesa{' '}
+              <span className="font-bold text-[#e5e2e1]">{currentTable.number}</span> que aún no fueron enviados a cocina.
+              Si cobras sin despachar, los insumos NO se descontarán del Kardex.
+            </p>
+            <p className="text-[13px] text-[#dac1b8] leading-relaxed">
+              ¿Enviar a Cocina ahora y continuar al cobro?
+            </p>
+            <div className="flex gap-3 pt-1">
+              <button
+                type="button"
+                disabled={isDispatchingKitchen}
+                onClick={() => {
+                  setIsDispatchingKitchen(true);
+                  confirmDispatchAndProceed(currentTable.id).finally(() => setIsDispatchingKitchen(false));
+                }}
+                className="flex-1 h-[44px] bg-[#ffb597] text-[#581d00] hover:bg-[#ffdbcd] font-bold text-[13px] rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-wait cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[18px]">restaurant_menu</span>
+                <span>{isDispatchingKitchen ? 'Enviando...' : 'Enviar a Cocina y Cobrar'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isDispatchingKitchen}
+                onClick={dismissKitchenConfirm}
+                className="flex-1 h-[44px] border-2 border-[#54433c] text-[#dac1b8] hover:bg-[#353535] hover:text-white font-bold text-[13px] rounded-xl transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+              >
+                <span>Cancelar</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

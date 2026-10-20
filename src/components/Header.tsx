@@ -20,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
     setCurrentScreen,
     offlineState,
     lastSyncResult,
+    realtimeStatus,
   } = usePOS();
   const [time, setTime] = useState<string>('');
   const [showNotifications, setShowNotifications] = useState(false);
@@ -178,8 +179,8 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           }`}
           title={
             lastSyncResult
-              ? `Última escritura: ${lastSyncResult.op} → ${lastSyncResult.ok ? 'OK' : 'FALLÓ'} (${new Date(lastSyncResult.ts).toLocaleTimeString()})`
-              : 'Sin operaciones de escritura aún'
+              ? `Última escritura: ${lastSyncResult.op} → ${lastSyncResult.ok ? 'OK' : 'FALLÓ'} (${new Date(lastSyncResult.ts).toLocaleTimeString()}) • Tiempo real: ${realtimeStatus}`
+              : `Sin operaciones de escritura aún • Tiempo real: ${realtimeStatus}`
           }
         >
           <span
@@ -205,6 +206,16 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
               {offlineState.pendingSyncCount} en cola
             </span>
           )}
+          <span
+            title={`Tiempo real: ${realtimeStatus}`}
+            className={`w-2 h-2 rounded-full ${
+              realtimeStatus === 'connected'
+                ? 'bg-emerald-400'
+                : realtimeStatus === 'connecting'
+                ? 'bg-amber-400 animate-pulse'
+                : 'bg-[#54433c]'
+            }`}
+          />
         </button>
 
         {/* Notifications button */}

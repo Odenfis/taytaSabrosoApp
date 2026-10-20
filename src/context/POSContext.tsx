@@ -17,6 +17,9 @@ import {
   Recipe,
   Purchase,
   KardexMovement,
+  KardexMovementType,
+  PurchaseCategory,
+  PurchaseDocumentStatus,
   ExpenseRatioAnalysis,
   BankAccount,
   CustomPaymentMethod,
@@ -31,8 +34,10 @@ import {
   CatalogEntity,
   CatalogSyncMeta,
   PendingOpEntity,
+  ProductCategory,
 } from '../types';
 import { apiClient, ApiError, getAuthToken, storeAuthToken, clearAuthToken } from '../lib/api';
+import { isCashMovement } from '../lib/finance';
 import {
   mapTable,
   mapProduct,
@@ -42,6 +47,7 @@ import {
   mapPaymentMethod,
   mapPrinter,
   extractMeta,
+  toCompanyId,
   TableDTO,
   ProductDTO,
   InsumoDTO,
@@ -77,6 +83,24 @@ import {
   ReplayDisposition,
 } from '../lib/replayQueue';
 import {
+  connectRealtime,
+  disconnectRealtime,
+  joinRealtimeCompany,
+  type RealtimeStatus,
+  type TableChangedEvent,
+  type OrderChangedEvent,
+  type KardexChangedEvent,
+  type PurchaseChangedEvent,
+  type TransactionChangedEvent,
+  type ShiftChangedEvent,
+  type RecipeChangedEvent,
+  type InsumoChangedEvent,
+  type PaymentMethodChangedEvent,
+  type PrinterChangedEvent,
+  type ProductChangedEvent,
+} from '../lib/realtime';
+import { round2 } from '../lib/format';
+import {
   COMPANIES,
   INITIAL_PRODUCTS,
   INITIAL_TABLES,
@@ -102,6 +126,7 @@ interface POSContextType {
   catalogSyncMeta: CatalogSyncMeta;
   isCatalogsLoading: boolean;
   isOperationsLoading: boolean;
+  realtimeStatus: RealtimeStatus;
   // Multiempresa
   companies: Company[];
   activeCompanyId: CompanyId | 'todas';
@@ -124,6 +149,8 @@ interface POSContextType {
   lastCompletedOrder: Order | null;
   isReceiptModalOpen: boolean;
   setIsReceiptModalOpen: (open: boolean) => void;
+  receiptMode: 'preview' | 'paid';
+  setReceiptMode: (mode: 'preview' | 'paid') => void;
   // Insumos, Recetas, Compras, Kardex
   insumos: Insumo[];
   recipes: Recipe[];
@@ -149,6 +176,7 @@ interface POSContextType {
   deletePaymentMethod: (id: string) => void;
   // Turnos (Día y Noche)
   companyShifts: Record<CompanyId, ShiftType>;
+  companyShiftCash: Record<CompanyId, number>;
   activeShift: ShiftType;
   shiftRecords: ShiftRecord[];
   switchCompanyShift: (
@@ -167,8 +195,11 @@ interface POSContextType {
   updateItemQuantity: (tableId: string, itemId: string, delta: number) => void;
   updateItemNotes: (tableId: string, itemId: string, notes: string) => void;
   removeItemFromOrder: (tableId: string, itemId: string) => void;
-  sendToKitchen: (tableId: string) => void;
+  sendToKitchen: (tableId: string) => Promise<boolean>;
   proceedToPayment: (tableId: string) => void;
+  confirmDispatchAndProceed: (tableId: string) => Promise<void>;
+  dismissKitchenConfirm: () => void;
+  pendingKitchenConfirm: { tableId: string; itemCount: number } | null;
   completePayment: (
     tableId: string,
     paymentMethod: PaymentMethod | string,
@@ -273,6 +304,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isSessionInitializing, setIsSessionInitializing] = useState(true);
   const [isCatalogsLoading, setIsCatalogsLoading] = useState(false);
   const [isOperationsLoading, setIsOperationsLoading] = useState(false);
+  // Tiempo real (Fase D acotada): estado del socket mesas/órdenes.
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('disconnected');
 
   // Metadatos de catálogos cargados desde el API (para delta-sync Fase C).
   const [catalogSyncMeta, setCatalogSyncMeta] = useState<CatalogSyncMeta>(() =>
@@ -335,6 +368,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Turnos por empresa (El cliente sólo maneja 2 turnos: Día y Noche)
   const [companyShifts, setCompanyShifts] = useState<Record<CompanyId, ShiftType>>(() => {
     return safeParse(STORAGE_KEYS.SHIFTS, { 'el-tayta': 'Día', 'el-sabroso': 'Día' });
+  });
+
+  // Caja inicial vigente por empresa (turnos_empresa.caja_inicial del server).
+  // Alimenta el saldo "Efectivo en Caja" del Libro de Caja.
+  const [companyShiftCash, setCompanyShiftCash] = useState<Record<CompanyId, number>>({
+    'el-tayta': 350,
+    'el-sabroso': 350,
   });
 
   const [shiftRecords, setShiftRecords] = useState<ShiftRecord[]>(() => {
@@ -411,6 +451,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [lastCompletedOrder, setLastCompletedOrder] = useState<Order | null>(null);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+  const [receiptMode, setReceiptMode] = useState<'preview' | 'paid'>('paid');
+  // Regla "no cobrar sin despacho": modal de confirmación pendiente {tableId, itemCount}.
+  const [pendingKitchenConfirm, setPendingKitchenConfirm] = useState<{ tableId: string; itemCount: number } | null>(null);
 
   // Convierte el arreglo de turnos del API ({companyId, currentShift, ...}) al
   // mapa local Record<CompanyId, ShiftType> que usa la UI.
@@ -419,6 +462,18 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     shifts.forEach((s) => {
       if (s && s.companyId) {
         result[s.companyId as CompanyId] = s.currentShift as ShiftType;
+      }
+    });
+    return result;
+  };
+
+  // Convierte el arreglo de turnos del API al mapa de caja inicial vigente
+  // (turnos_empresa.caja_inicial) que alimenta "Efectivo en Caja".
+  const mapCompanyShiftCash = (shifts: CompanyShiftDTO[]): Record<CompanyId, number> => {
+    const result: Record<CompanyId, number> = { 'el-tayta': 350, 'el-sabroso': 350 };
+    shifts.forEach((s) => {
+      if (s && s.companyId && typeof s.initialCash === 'number') {
+        result[s.companyId as CompanyId] = s.initialCash;
       }
     });
     return result;
@@ -558,6 +613,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const replayRef = useRef<() => void>(() => {});
   // Ref de loadOperations para refrescar al terminar el replay sin dependencias viejas.
   const loadOperationsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // Ref de loadCatalogs para el resync al reconectar el socket (tablas).
+  const loadCatalogsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // Refs vivas para los handlers estables del socket (evitan cierres rancios).
+  const tablesRef = useRef<Table[]>([]);
+  const ordersRef = useRef<Record<string, Order>>({});
+  const selectedTableIdRef = useRef<string | null>(null);
+  tablesRef.current = tables;
+  ordersRef.current = orders;
+  selectedTableIdRef.current = selectedTableId;
+  loadCatalogsRef.current = loadCatalogs;
 
   // Refreshers granulares de operaciones (el server hace efectos colaterales: Kardex, libros, saldos).
   const refreshKardex = async (): Promise<void> => {
@@ -734,7 +799,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // Fase E5: reconcilia un alta de catálogo aplicada en el replay (reemplaza el id
     // temporal por el id real del server). Para recetas conserva ingredientes locales
     // si el PATCH del server no los devuelve (updateRecipe no incluye `ingredients`).
-    const reconcileCatalogCreate = (op: string, tempId: string | undefined, data: unknown) => {
+    const reconcileCatalogCreate = (op: string, tempId: string | undefined, data: unknown, tempProductId?: string) => {
       if (!tempId) return;
       delete tmpCatalogOpRef.current[tempId];
       if (op === 'createTable' || op === 'quickOrder') {
@@ -772,6 +837,24 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           const next = prev.filter((r) => r.id !== tempId);
           return next.some((r) => r.id === full.id) ? next : [full, ...next];
         });
+        // Remapea el producto local creado desde la ficha (id temporal) al id real
+        // que asignó el server, para que el plato siga apuntando en mesas sin duplicarse.
+        if (tempProductId && server.productId) {
+          setProducts((prev) =>
+            prev.map((p) =>
+              p.id === tempProductId
+                ? {
+                    ...p,
+                    id: server.productId,
+                    name: server.productName,
+                    price: server.salePrice,
+                    category: server.category as ProductCategory,
+                    hasRecipe: true,
+                  }
+                : p
+            )
+          );
+        }
       } else if (op === 'createInsumo') {
         const server = mapInsumo(data as InsumoDTO);
         setInsumos((prev) => {
@@ -839,7 +922,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const result = await replayCall(opItem, payload);
       if (result.disposition === 'ok') {
         if (opItem.entity === 'catalog') {
-          reconcileCatalogCreate(opItem.op, payload.tempId as string | undefined, result.data);
+          reconcileCatalogCreate(
+            opItem.op,
+            payload.tempId as string | undefined,
+            result.data,
+            payload.tempProductId as string | undefined
+          );
         }
         removeByClientOpId(opItem.clientOpId);
         synced += 1;
@@ -914,7 +1002,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     queuePayload: unknown;
     endpointOp: () => Promise<void>;
     rollback?: () => void;
-  }): Promise<void> => {
+  }): Promise<'ok' | 'queued' | 'rejected'> => {
     if (offlineState.isSimulatedOffline) {
       enqueueOp({
         clientOpId: params.clientOpId,
@@ -924,11 +1012,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         createdAt: new Date().toISOString(),
       });
       syncPendingCount();
-      return;
+      return 'queued';
     }
     try {
       await params.endpointOp();
       setLastSyncResult({ ok: true, ts: Date.now(), op: params.op });
+      return 'ok';
     } catch (err) {
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         if (err.status === 401 && err.isUnauthorized) {
@@ -939,12 +1028,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             'warning'
           );
           logout();
-          return;
+          return 'rejected';
         }
         params.rollback?.();
         setLastSyncResult({ ok: false, ts: Date.now(), op: params.op });
         addNotification('Operación rechazada por el servidor', `${params.op}: ${err.message}`, 'warning');
         loadOperations();
+        return 'rejected';
       } else {
         setLastSyncResult({ ok: false, ts: Date.now(), op: params.op });
         enqueueOp({
@@ -960,6 +1050,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           `${params.op} se guardó localmente y se sincronizará cuando haya conexión.`,
           'warning'
         );
+        return 'queued';
       }
     }
   };
@@ -981,6 +1072,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCurrentUser(res.user);
         setCompanies(res.companies);
         setCompanyShifts(mapCompanyShifts(res.companyShifts));
+        setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
         loadCatalogs();
         loadOperations();
       })
@@ -1019,6 +1111,378 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       void replayRef.current();
     }
   }, [currentUser, offlineState.isOnline, offlineState.isSimulatedOffline]);
+
+  // Tiempo real (Fase D acotada): handlers estables que delegan vía refs.
+  // - table:changed → merge de mesa (sin pisar mis tmps offline) + fetch de la
+  //   orden si es nueva para mí; si liberaron, retira mi copia local real.
+  // - order:changed → refresca la orden vía GET si la tengo o la estoy mirando.
+  const kardexHandlerRef = useRef<(e: KardexChangedEvent) => void>(() => undefined);
+  const purchaseHandlerRef = useRef<(e: PurchaseChangedEvent) => void>(() => undefined);
+  const transactionHandlerRef = useRef<(e: TransactionChangedEvent) => void>(() => undefined);
+  const shiftRealtimeHandlerRef = useRef<(e: ShiftChangedEvent) => void>(() => undefined);
+  const recipeHandlerRef = useRef<(e: RecipeChangedEvent) => void>(() => undefined);
+  const insumoHandlerRef = useRef<(e: InsumoChangedEvent) => void>(() => undefined);
+  const paymentMethodHandlerRef = useRef<(e: PaymentMethodChangedEvent) => void>(() => undefined);
+  const printerHandlerRef = useRef<(e: PrinterChangedEvent) => void>(() => undefined);
+  const productHandlerRef = useRef<(e: ProductChangedEvent) => void>(() => undefined);
+  const tableHandlerRef = useRef<(e: TableChangedEvent) => void>(() => undefined);
+  const orderHandlerRef = useRef<(e: OrderChangedEvent) => void>(() => undefined);
+  tableHandlerRef.current = (e) => {
+    if (!e || !e.tableId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const local = tablesRef.current.find((t) => t.id === e.tableId);
+    if (!local) {
+      // Mesa creada por otro terminal (barra quick-bar): agregarla si aplica.
+      if (e.companyId !== activeCompanyId && activeCompanyId !== 'todas') return;
+        const incoming: Table = {
+        id: e.tableId,
+        companyId: e.companyId as CompanyId,
+        number: e.tableId.slice(-2),
+        capacity: 2,
+        zone: 'Barra',
+        status: (e.status as Table['status']) ?? 'ocupada',
+        currentOrderId: e.currentOrderId ?? undefined,
+        waiter: e.waiter ?? undefined,
+      };
+      setTables((prev) => (prev.some((t) => t.id === e.tableId) ? prev : [...prev, incoming]));
+    } else {
+      // No pisar mi trabajo offline pendiente ni mis mesas temporales locales.
+      if (local.id.startsWith('t-express-') || local.id.startsWith('t-custom-')) return;
+      const { orderTmpIds } = getPendingTmpIds();
+      if (local.currentOrderId && orderTmpIds.has(local.currentOrderId)) return;
+      const oldOrderId = local.currentOrderId;
+      setTables((prev) =>
+        prev.map((t) =>
+          t.id === e.tableId
+            ? {
+                ...t,
+                status: (e.status as Table['status']) ?? t.status,
+                currentOrderId: e.currentOrderId ?? undefined,
+                waiter: e.waiter ?? t.waiter,
+                occupiedSince: e.status === 'libre' ? undefined : (t.occupiedSince ?? e.updatedAt),
+                minutesElapsed: e.status === 'libre' ? undefined : (t.minutesElapsed ?? 1),
+              }
+            : t
+        )
+      );
+      if (e.status === 'libre' && oldOrderId && !oldOrderId.startsWith('order-tmp-')) {
+        setOrders((prev) => {
+          if (!prev[oldOrderId]) return prev;
+          const next = { ...prev };
+          delete next[oldOrderId];
+          return next;
+        });
+      }
+    }
+    if (e.currentOrderId && !e.currentOrderId.startsWith('order-tmp-') && !ordersRef.current[e.currentOrderId]) {
+      void apiClient
+        .get<OrderDTO>(`/operations/orders/${e.currentOrderId}`)
+        .then((dto) => setOrders((prev) => ({ ...prev, [dto.id]: mapOrder(dto) })))
+        .catch(() => undefined);
+    }
+  };
+  orderHandlerRef.current = (e) => {
+    if (!e || !e.orderId || e.orderId.startsWith('order-tmp-')) return;
+    if (offlineState.isSimulatedOffline) return;
+    const selectedId = selectedTableIdRef.current;
+    const selectedOrderId = selectedId
+      ? tablesRef.current.find((t) => t.id === selectedId)?.currentOrderId
+      : undefined;
+    const watching = selectedOrderId === e.orderId || !!ordersRef.current[e.orderId];
+    const tablePointsHere = e.tableId
+      ? tablesRef.current.find((t) => t.id === e.tableId)?.currentOrderId !== e.orderId
+      : false;
+    if (watching || tablePointsHere) {
+      void apiClient
+        .get<OrderDTO>(`/operations/orders/${e.orderId}`)
+        .then((dto) => setOrders((prev) => ({ ...prev, [dto.id]: mapOrder(dto) })))
+        .catch(() => undefined);
+    }
+  };
+
+  kardexHandlerRef.current = (e) => {
+    if (!e || !e.insumoId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const movement: KardexMovement = {
+      id: `kdx-rt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      companyId: toCompanyId(e.companyId),
+      timestamp: Date.parse(e.updatedAt) || Date.now(),
+      date: 'Hoy',
+      time: new Date(Date.parse(e.updatedAt) || Date.now()).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      insumoId: e.insumoId,
+      insumoName: e.insumoName,
+      type: e.type as KardexMovementType,
+      referenceDoc: e.referenceDoc,
+      quantity: e.quantity,
+      unit: e.unit,
+      unitCost: e.unitCost,
+      totalCost: e.totalCost,
+      stockBefore: e.stockBefore,
+      stockAfter: e.stockAfter,
+      notes: undefined,
+      clientOpId: undefined,
+    };
+    // Evita duplicar el movimiento si ya llegó (eco del socket o resync REST posterior).
+    setKardexMovements((prev) => {
+      const exists = prev.some(
+        (m) => m.referenceDoc === e.referenceDoc && m.insumoId === e.insumoId
+      );
+      if (exists) return prev;
+      return [movement, ...prev];
+    });
+    // Refleja el nuevo saldo del insumo afectado.
+    setInsumos((prev) =>
+      prev.map((ins) => (ins.id === e.insumoId ? { ...ins, currentStock: e.stockAfter } : ins))
+    );
+  };
+
+  // Replica compras/facturas en tiempo real: alta de compra o regularización de vale.
+  purchaseHandlerRef.current = (e) => {
+    if (!e || !e.purchaseId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const mapped: Purchase = {
+      id: e.purchaseId,
+      companyId: toCompanyId(e.companyId),
+      category: (e.category || 'insumos') as PurchaseCategory,
+      documentStatus: (e.documentStatus || 'provisional') as PurchaseDocumentStatus,
+      provisionalNoteNumber: e.provisionalNoteNumber ?? undefined,
+      invoiceNumber: e.invoiceNumber,
+      supplierName: e.supplierName,
+      supplierRuc: e.supplierRuc,
+      date: 'Hoy',
+      time: new Date(Date.parse(e.updatedAt) || Date.now()).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      shift: 'Día',
+      items: [],
+      subtotal: e.total,
+      igv: 0,
+      total: e.total,
+      paymentStatus: undefined,
+      paidFromCash: undefined,
+      bankAccountId: undefined,
+      bankAccountAlias: undefined,
+      notes: undefined,
+      regularizedAt: undefined,
+      regularizedBy: undefined,
+      clientOpId: undefined,
+    };
+    // Evita duplicar si ya llegó por REST; si ya existe, actualiza en su lugar.
+    setPurchases((prev) => {
+      const exists = prev.find((p) => p.id === e.purchaseId);
+      if (exists) {
+        return prev.map((p) => (p.id === e.purchaseId ? mapped : p));
+      }
+      return [mapped, ...prev];
+    });
+    // Refresca kardex e insumos para reflejar la entrada de stock si aplica.
+    void refreshKardex();
+    void refreshInsumos();
+  };
+
+  // Replica recetas / fichas técnicas en tiempo real: creación, edición o eliminación.
+  recipeHandlerRef.current = (e) => {
+    if (!e || !e.recipeId) return;
+    if (offlineState.isSimulatedOffline) return;
+    setRecipes((prev) => {
+      if (e.action === 'delete') {
+        return prev.filter((r) => r.id !== e.recipeId);
+      }
+      const mapped: Recipe = {
+        id: e.recipeId,
+        companyId: toCompanyId(e.companyId),
+        productId: e.recipeId,
+        productName: e.productName,
+        category: e.category,
+        portions: 1,
+        salePrice: 0,
+        ingredients: [],
+        totalCost: 0,
+        theoreticalFoodCostPct: 0,
+        updatedAt: e.updatedAt,
+      };
+      const exists = prev.find((r) => r.id === e.recipeId);
+      if (exists) {
+        return prev.map((r) => (r.id === e.recipeId ? { ...r, ...mapped } : r));
+      }
+      return [mapped, ...prev];
+    });
+  };
+
+  // Replica insumos en tiempo real: creación, edición o eliminación.
+  insumoHandlerRef.current = (e) => {
+    if (!e || !e.insumoId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const mapped: Insumo = {
+      id: e.insumoId,
+      companyId: (e.companyId as Insumo['companyId']) || 'ambas',
+      code: `INS-${e.insumoId.slice(-6)}`,
+      name: e.name,
+      category: e.category as Insumo['category'],
+      unit: e.unit as Insumo['unit'],
+      currentStock: e.currentStock,
+      minStock: 5,
+      costPerUnit: e.costPerUnit,
+      lastPurchaseDate: 'Hoy',
+    };
+    setInsumos((prev) => {
+      if (e.action === 'delete') {
+        return prev.filter((i) => i.id !== e.insumoId);
+      }
+      const exists = prev.find((i) => i.id === e.insumoId);
+      if (exists) {
+        return prev.map((i) => (i.id === e.insumoId ? mapped : i));
+      }
+      return [mapped, ...prev];
+    });
+  };
+
+  // Replica métodos de pago en tiempo real: creación, edición o eliminación.
+  paymentMethodHandlerRef.current = (e) => {
+    if (!e || !e.paymentMethodId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const mapped: CustomPaymentMethod = {
+      id: e.paymentMethodId,
+      companyId: (e.companyId as CustomPaymentMethod['companyId']) || 'ambas',
+      name: e.name,
+      category: e.category,
+      bankAccountId: undefined,
+      commissionPct: 0,
+      requiresReferenceNumber: false,
+      icon: e.icon,
+      isActive: true,
+    };
+    setPaymentMethods((prev) => {
+      if (e.action === 'delete') {
+        return prev.filter((p) => p.id !== e.paymentMethodId);
+      }
+      const exists = prev.find((p) => p.id === e.paymentMethodId);
+      if (exists) {
+        return prev.map((p) => (p.id === e.paymentMethodId ? mapped : p));
+      }
+      return [mapped, ...prev];
+    });
+  };
+
+  // Replica impresoras en tiempo real: creación, edición o eliminación.
+  printerHandlerRef.current = (e) => {
+    if (!e || !e.printerId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const mapped: ThermalPrinterConfig = {
+      id: e.printerId,
+      companyId: (e.companyId as ThermalPrinterConfig['companyId']) || 'ambas',
+      name: e.name,
+      role: e.role,
+      connectionType: e.connectionType,
+      ipAddress: e.ipAddress || undefined,
+      port: 9100,
+      paperWidth: '80mm',
+      autoCut: true,
+      beepOnPrint: false,
+      categoriesMapped: [],
+      isEnabled: true,
+      status: 'online',
+    };
+    setPrinters((prev) => {
+      if (e.action === 'delete') {
+        return prev.filter((p) => p.id !== e.printerId);
+      }
+      const exists = prev.find((p) => p.id === e.printerId);
+      if (exists) {
+        return prev.map((p) => (p.id === e.printerId ? mapped : p));
+      }
+      return [mapped, ...prev];
+    });
+  };
+
+  // Replica productos en tiempo real: creación (desde fichas técnicas), edición o eliminación.
+  productHandlerRef.current = (e) => {
+    if (!e || !e.productId) return;
+    if (offlineState.isSimulatedOffline) return;
+    const mapped: Product = {
+      id: e.productId,
+      companyId: e.companyId as Product['companyId'],
+      name: e.name,
+      description: '',
+      price: e.price,
+      category: e.category as ProductCategory,
+      image: '',
+      available: true,
+      hasRecipe: e.hasRecipe,
+      updatedAt: e.updatedAt,
+    };
+    setProducts((prev) => {
+      if (e.action === 'delete') return prev.filter((p) => p.id !== e.productId);
+      const exists = prev.find((p) => p.id === e.productId);
+      if (exists) return prev.map((p) => (p.id === e.productId ? mapped : p));
+      return [mapped, ...prev];
+    });
+    // Si una orden abierta usa este producto, refresca su visibilidad en la mesa activa.
+  };
+
+  // Libro de Caja en vivo (Fase D extendida): venta cobrada, transacción manual,
+  // pago/regularización de compra. La verdad va en REST: refresco transacciones y
+  // bancos (todo cambio de saldo bancario viaja con una fila en transacciones).
+  transactionHandlerRef.current = (e) => {
+    if (!e || !e.companyId) return;
+    if (offlineState.isSimulatedOffline) return;
+    void Promise.all([refreshTransactions(), refreshBankAccounts()]);
+  };
+
+  // Cierre/arqueo de turno hecho en OTRA terminal: alinea turnos, transacciones y
+  // la caja inicial vigente (companyShiftCash) para que la gaveta no quede desfasada.
+  shiftRealtimeHandlerRef.current = (e) => {
+    if (!e || !e.companyId) return;
+    if (offlineState.isSimulatedOffline) return;
+    setCompanyShiftCash((prev) => ({
+      ...prev,
+      [toCompanyId(e.companyId)]: e.initialCash,
+    }));
+    void Promise.all([refreshShiftRecords(), refreshTransactions()]);
+  };
+
+  // Conexión del socket: con sesión válida y red real (no simulada).
+  // Al reconectar, resync contra REST (verdad del server, preserva tmps).
+  useEffect(() => {
+    if (!currentUser || !authToken) {
+      disconnectRealtime();
+      setRealtimeStatus('disconnected');
+      return;
+    }
+    if (offlineState.isSimulatedOffline || !offlineState.isOnline) {
+      disconnectRealtime();
+      setRealtimeStatus('disconnected');
+      return;
+    }
+    connectRealtime({
+      token: authToken.token,
+      companyId: activeCompanyId,
+      onTableChanged: (e) => tableHandlerRef.current(e),
+      onOrderChanged: (e) => orderHandlerRef.current(e),
+      onKardexChanged: (e) => kardexHandlerRef.current(e),
+      onPurchaseChanged: (e) => purchaseHandlerRef.current(e),
+      onRecipeChanged: (e) => recipeHandlerRef.current(e),
+      onInsumoChanged: (e) => insumoHandlerRef.current(e),
+      onPaymentMethodChanged: (e) => paymentMethodHandlerRef.current(e),
+      onPrinterChanged: (e) => printerHandlerRef.current(e),
+      onProductChanged: (e) => productHandlerRef.current(e),
+      onTransactionChanged: (e) => transactionHandlerRef.current(e),
+      onShiftChanged: (e) => shiftRealtimeHandlerRef.current(e),
+      onStatus: (s) => {
+        setRealtimeStatus(s);
+        if (s === 'connected') {
+          void loadOperationsRef.current();
+          void loadCatalogsRef.current();
+        }
+      },
+    });
+    // Sin disconnect en cleanup: el cambio de empresa hace join, no reconexión.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, authToken, activeCompanyId, offlineState.isSimulatedOffline, offlineState.isOnline]);
 
   // Sync to Local Storage
   useEffect(() => {
@@ -1122,6 +1586,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCurrentUser(res.user);
       setCompanies(res.companies);
       setCompanyShifts(mapCompanyShifts(res.companyShifts));
+      setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
 
       // Mantiene la empresa activa si sigue existiendo; si no, prioriza la
       // empresa asignada al usuario (o la primera del catálogo).
@@ -1165,6 +1630,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (auth) {
       apiClient.post<unknown>('/auth/logout').catch(() => undefined);
     }
+    disconnectRealtime();
+    setRealtimeStatus('disconnected');
     clearAuthToken();
     setAuthToken(null);
     setCurrentUser(null);
@@ -1318,109 +1785,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSelectedTableId(tableId);
 
     if (table.status === 'libre') {
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const tmpOrderId = `order-tmp-${Date.now()}`;
-      const clientOpId = newUuid();
-
-      const newOrder: Order = {
-        id: tmpOrderId,
-        companyId: table.companyId,
-        ticketNumber: `${Math.floor(10000 + Math.random() * 90000)}`,
-        tableId: table.id,
-        tableNumber: table.number,
-        zone: table.zone,
-        waiter: currentUser?.name || 'Carlos M.',
-        items: [],
-        createdAt: timeStr,
-        subtotal: 0,
-        igv: 0,
-        total: 0,
-        status: 'abierto',
-      };
-
-      setOrders((prev) => ({ ...prev, [tmpOrderId]: newOrder }));
-      setTables((prev) =>
-        prev.map((t) =>
-          t.id === tableId
-            ? {
-                ...t,
-                status: 'ocupada',
-                occupiedSince: timeStr,
-                minutesElapsed: 1,
-                currentOrderId: tmpOrderId,
-                waiter: currentUser?.name || 'Carlos M.',
-              }
-            : t
-        )
-      );
-
+      // Apertura perezosa: entrar a mirar NO ocupa ni crea orden en BD.
+      // La orden real se crea al agregar el primer producto (addItemToOrder).
+      // Si quedó un currentOrderId huérfano de una versión anterior, se conserva
+      // para mostrar sus ítems; si no hay orden, simplemente se selecciona.
+      setSelectedTableId(tableId);
       setCurrentScreen('pedido');
-      addNotification(`Mesa ${table.number} Abierta`, 'Se inició una nueva comanda.', 'info');
-
-      // Write-through (Fase E3): abre la orden real en el server y reconcilia ids.
-      // (tmpOrderId viaja en el payload para que el replay E4 refluya los ítems si se encoló offline.)
-      tmpOrderOpRef.current[tmpOrderId] = clientOpId;
-      attemptMutation({
-        clientOpId,
-        entity: 'order',
-        op: 'openOrder',
-        queuePayload: { tableId, waiter: newOrder.waiter, clientOpId, tmpOrderId },
-        endpointOp: async () => {
-          const res = await apiClient.post<OrderDTO>('/operations/orders/open', {
-            tableId,
-            waiter: newOrder.waiter,
-            clientOpId,
-          });
-          const serverOrder = mapOrder(res);
-          const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
-          delete tmpOrderItemsRef.current[tmpOrderId];
-          delete tmpOrderOpRef.current[tmpOrderId];
-          setOrders((prev) => {
-            const next = { ...prev };
-            delete next[tmpOrderId];
-            next[serverOrder.id] = serverOrder;
-            return next;
-          });
-          setTables((prev) =>
-            prev.map((t) => (t.id === tableId ? { ...t, currentOrderId: serverOrder.id } : t))
-          );
-          if (pendingItems.length > 0) {
-            for (const it of pendingItems) {
-              await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
-                productId: it.productId,
-                quantity: it.quantity,
-                notes: it.notes || undefined,
-              });
-            }
-            const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
-            setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
-          }
-        },
-        rollback: () => {
-          delete tmpOrderItemsRef.current[tmpOrderId];
-          delete tmpOrderOpRef.current[tmpOrderId];
-          setOrders((prev) => {
-            const next = { ...prev };
-            delete next[tmpOrderId];
-            return next;
-          });
-          setTables((prev) =>
-            prev.map((t) =>
-              t.id === tableId
-                ? {
-                    ...t,
-                    status: 'libre',
-                    occupiedSince: undefined,
-                    minutesElapsed: undefined,
-                    currentOrderId: undefined,
-                    waiter: undefined,
-                  }
-                : t
-            )
-          );
-        },
-      });
+      if (!table.currentOrderId || !orders[table.currentOrderId]) {
+        addNotification(
+          `Mesa ${table.number} lista`,
+          'Agrega productos para abrir la comanda.',
+          'info'
+        );
+      }
     } else if (table.status === 'ocupada') {
       setCurrentScreen('pedido');
     } else if (table.status === 'por_cobrar') {
@@ -1450,116 +1827,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         status: 'libre',
       };
       setTables((prev) => [...prev, newTable]);
-
-      const tmpOrderId = `order-tmp-${Date.now()}`;
-      const clientOpId = newUuid();
-      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const tmpOrder: Order = {
-        id: tmpOrderId,
-        companyId: compId,
-        ticketNumber: `${Math.floor(10000 + Math.random() * 90000)}`,
-        tableId: newId,
-        tableNumber: newNum,
-        zone: 'Barra',
-        waiter: currentUser?.name || 'Carlos M.',
-        items: [],
-        createdAt: timeStr,
-        subtotal: 0,
-        igv: 0,
-        total: 0,
-        status: 'abierto',
-      };
-
-      setOrders((prev) => ({ ...prev, [tmpOrderId]: tmpOrder }));
-      setTables((prev) =>
-        prev.map((t) =>
-          t.id === newId
-            ? {
-                ...t,
-                status: 'ocupada',
-                occupiedSince: timeStr,
-                minutesElapsed: 1,
-                currentOrderId: tmpOrderId,
-                waiter: currentUser?.name || 'Carlos M.',
-              }
-            : t
-        )
-      );
       setSelectedTableId(newId);
       setCurrentScreen('pedido');
-      addNotification(`Mesa ${newNum} Abierta`, 'Comanda rápida de Barra.', 'info');
-
-      // Write-through (Fase E3): el server crea la mesa de barra y la orden.
-      // (tmpOrderId/tmpTableId viajan en el payload para el replay E4.)
-      tmpOrderOpRef.current[tmpOrderId] = clientOpId;
-      attemptMutation({
-        clientOpId,
-        entity: 'order',
-        op: 'quickOrder',
-        queuePayload: {
-          companyId: compId,
-          waiter: tmpOrder.waiter,
-          clientOpId,
-          tmpOrderId,
-          tmpTableId: newId,
-        },
-        endpointOp: async () => {
-          const res = await apiClient.post<OrderDTO>('/operations/orders/quick-bar', {
-            companyId: compId,
-            waiter: tmpOrder.waiter,
-            clientOpId,
-          });
-          const serverOrder = mapOrder(res);
-          const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
-          delete tmpOrderItemsRef.current[tmpOrderId];
-          delete tmpOrderOpRef.current[tmpOrderId];
-          setOrders((prev) => {
-            const next = { ...prev };
-            delete next[tmpOrderId];
-            next[serverOrder.id] = serverOrder;
-            return next;
-          });
-          setTables((prev) => {
-            const withoutTmp = prev.filter((t) => t.id !== newId);
-            const serverTable: Table = {
-              id: serverOrder.tableId,
-              companyId: compId,
-              number: serverOrder.tableNumber,
-              capacity: 2,
-              zone: serverOrder.zone,
-              status: 'ocupada',
-              occupiedSince: timeStr,
-              minutesElapsed: 1,
-              currentOrderId: serverOrder.id,
-              waiter: serverOrder.waiter,
-            };
-            return [...withoutTmp, serverTable];
-          });
-          setSelectedTableId(serverOrder.tableId);
-          if (pendingItems.length > 0) {
-            for (const it of pendingItems) {
-              await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
-                productId: it.productId,
-                quantity: it.quantity,
-                notes: it.notes || undefined,
-              });
-            }
-            const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
-            setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
-          }
-        },
-        rollback: () => {
-          delete tmpOrderItemsRef.current[tmpOrderId];
-          delete tmpOrderOpRef.current[tmpOrderId];
-          setOrders((prev) => {
-            const next = { ...prev };
-            delete next[tmpOrderId];
-            return next;
-          });
-          setTables((prev) => prev.filter((t) => t.id !== newId));
-          setSelectedTableId(null);
-        },
-      });
+      addNotification(`Mesa ${newNum} lista`, 'Agrega productos para abrir la comanda de barra.', 'info');
     }
   };
 
@@ -1575,13 +1845,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     if (!currentOrder) {
-      // Gap #4 fix: nunca fabricar `order-<table>-...` (404 garantizado en el
-      // server). Se crea `order-tmp-*` y se dispara el openOrder real con flush,
-      // igual que selectAndOpenTable. El guard serverIssued de abajo queda para
-      // órdenes ya reconciliadas.
+      // Apertura perezosa: la orden real se crea recién al primer producto.
+      // Mesas normales → POST /operations/orders/open.
+      // Mesas temporales de barra (t-express-*) → POST /operations/orders/quick-bar
+      // (el server crea la mesa real y la orden; se migra el tmp local).
+      const isExpressTmp = table.id.startsWith('t-express-');
       const tmpOrderId = `order-tmp-${Date.now()}`;
       const tmpClientOpId = newUuid();
       const ticketNumber = `${Math.floor(10000 + Math.random() * 90000)}`;
+      const waiterName = currentUser?.name || 'Carlos M.';
       const baseOrder: Order = {
         id: tmpOrderId,
         companyId: table.companyId,
@@ -1589,7 +1861,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         tableId: table.id,
         tableNumber: table.number,
         zone: table.zone,
-        waiter: currentUser?.name || 'Carlos M.',
+        waiter: waiterName,
         items: [],
         createdAt: timeStr,
         subtotal: 0,
@@ -1619,12 +1891,79 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 status: t.status === 'libre' ? 'ocupada' : t.status,
                 currentOrderId: tmpOrderId,
                 occupiedSince: t.occupiedSince || timeStr,
+                minutesElapsed: t.minutesElapsed ?? 1,
+                waiter: t.waiter || waiterName,
               }
             : t
         )
       );
       tmpOrderItemsRef.current[tmpOrderId] = createdOrder.items;
       tmpOrderOpRef.current[tmpOrderId] = tmpClientOpId;
+      if (isExpressTmp) {
+        attemptMutation({
+          clientOpId: tmpClientOpId,
+          entity: 'order',
+          op: 'quickOrder',
+          queuePayload: { companyId: table.companyId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId },
+          endpointOp: async () => {
+            const res = await apiClient.post<OrderDTO>('/operations/orders/quick-bar', {
+              companyId: table.companyId,
+              waiter: waiterName,
+              clientOpId: tmpClientOpId,
+            });
+            const serverOrder = mapOrder(res);
+            const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
+            delete tmpOrderItemsRef.current[tmpOrderId];
+            delete tmpOrderOpRef.current[tmpOrderId];
+            setOrders((prev) => {
+              const next = { ...prev };
+              delete next[tmpOrderId];
+              next[serverOrder.id] = serverOrder;
+              return next;
+            });
+            setTables((prev) => {
+              const withoutTmp = prev.filter((t) => t.id !== tableId);
+              const serverTable: Table = {
+                id: serverOrder.tableId,
+                companyId: table.companyId,
+                number: serverOrder.tableNumber,
+                capacity: table.capacity,
+                zone: serverOrder.zone,
+                status: 'ocupada',
+                occupiedSince: timeStr,
+                minutesElapsed: 1,
+                currentOrderId: serverOrder.id,
+                waiter: serverOrder.waiter,
+              };
+              return [...withoutTmp, serverTable];
+            });
+            setSelectedTableId(serverOrder.tableId);
+            if (pendingItems.length > 0) {
+              for (const it of pendingItems) {
+                await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
+                  productId: it.productId,
+                  quantity: it.quantity,
+                  notes: it.notes || undefined,
+                });
+              }
+              const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
+              setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
+            }
+          },
+          rollback: () => {
+            delete tmpOrderItemsRef.current[tmpOrderId];
+            delete tmpOrderOpRef.current[tmpOrderId];
+            setOrders((prev) => {
+              const next = { ...prev };
+              delete next[tmpOrderId];
+              return next;
+            });
+            setTables((prev) => prev.filter((t) => t.id !== tableId));
+            setSelectedTableId(null);
+          },
+        });
+        return;
+      }
       attemptMutation({
         clientOpId: tmpClientOpId,
         entity: 'order',
@@ -1865,6 +2204,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           removeByClientOpId(openOpId);
           delete tmpOrderOpRef.current[orderId];
         }
+        delete tmpOrderItemsRef.current[orderId];
       }
       return;
     }
@@ -1992,6 +2332,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           removeByClientOpId(openOpId);
           delete tmpOrderOpRef.current[orderId];
         }
+        delete tmpOrderItemsRef.current[orderId];
       }
       return;
     }
@@ -2014,14 +2355,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Send to kitchen (Triggers Recipe Kardex deduction)
-  const sendToKitchen = (tableId: string) => {
+  // Regla "no cobrar sin despacho": retorna true si el despacho quedó confirmado
+  // ('ok') o encolado offline ('queued'); false si fue rechazado o no procede.
+  const sendToKitchen = async (tableId: string): Promise<boolean> => {
     const table = tables.find((t) => t.id === tableId);
-    if (!table || !table.currentOrderId) return;
+    if (!table || !table.currentOrderId) return false;
 
     const currentOrder = orders[table.currentOrderId];
     if (!currentOrder || currentOrder.items.length === 0) {
       addNotification('Comanda Vacía', 'Agrega productos antes de enviar a cocina.', 'warning');
-      return;
+      return false;
     }
 
     const updatedItems: OrderItem[] = currentOrder.items.map((item) => ({
@@ -2062,9 +2405,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // En modo offline la deducción local queda y la op se encola.
     // (E4: también se encola si la orden es temporal y estamos offline — el replay la re-resuelve.)
     const orderId = table.currentOrderId;
+    let outcome: 'ok' | 'queued' | 'rejected' = 'ok';
     if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
       const clientOpId = newUuid();
-      attemptMutation({
+      outcome = await attemptMutation({
         clientOpId,
         entity: 'order',
         op: 'sendToKitchen',
@@ -2116,22 +2460,46 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
     }
 
-    addNotification(
-      'Comanda Enviada a Cocina',
-      `Mesa ${table.number} (${table.companyId === 'el-tayta' ? 'El Tayta' : 'El Sabroso'}) • Insumos rebajados de Kardex.`,
-      'success'
-    );
+    if (outcome !== 'rejected') {
+      addNotification(
+        'Comanda Enviada a Cocina',
+        `Mesa ${table.number} (${table.companyId === 'el-tayta' ? 'El Tayta' : 'El Sabroso'}) • Insumos rebajados de Kardex.`,
+        'success'
+      );
+    }
+
+    return outcome !== 'rejected';
   };
 
+  // Regla "no cobrar sin despacho": si hay ítems 'agregado' (nunca enviados a
+  // cocina → Kardex sin descontar) se abre el modal de confirmación en vez de
+  // navegar al cobro. Las lecturas van por refs para evitar cierres stale.
   const proceedToPayment = (tableId: string) => {
-    const table = tables.find((t) => t.id === tableId);
+    const table = tablesRef.current.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return;
 
-    const currentOrder = orders[table.currentOrderId];
+    const currentOrder = ordersRef.current[table.currentOrderId];
     if (!currentOrder || currentOrder.items.length === 0) {
       addNotification('Sin productos', 'No hay ítems para cobrar en esta mesa.', 'warning');
       return;
     }
+
+    const pendingCount = currentOrder.items.filter((i) => i.status === 'agregado').length;
+    if (pendingCount > 0) {
+      setPendingKitchenConfirm({ tableId, itemCount: pendingCount });
+      return;
+    }
+    finishProceedToPayment(tableId);
+  };
+
+  // Navega al cobro (solo llamado cuando la comanda ya está despachada).
+  const finishProceedToPayment = (tableId: string) => {
+    const table = tablesRef.current.find((t) => t.id === tableId);
+    if (!table || !table.currentOrderId) return;
+
+    const orderId = table.currentOrderId;
+    const currentOrder = ordersRef.current[orderId];
+    if (!currentOrder) return;
 
     setTables((prev) =>
       prev.map((t) =>
@@ -2144,20 +2512,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       )
     );
 
-    setOrders((prev) => ({
-      ...prev,
-      [table.currentOrderId!]: {
-        ...currentOrder,
-        status: 'por_cobrar',
-      },
-    }));
+    // Se usa el updater (estado fresco) para no pisar los ítems ya despachados
+    // con una copia stale de `currentOrder`.
+    setOrders((prev) => {
+      const target = prev[orderId];
+      if (!target) return prev;
+      return { ...prev, [orderId]: { ...target, status: 'por_cobrar' } };
+    });
 
     setSelectedTableId(tableId);
     setCurrentScreen('cobro');
+    setPendingKitchenConfirm(null);
+
+    // Nuevo orden: la BOLETA de la cuenta se muestra ANTES del cobro para que
+    // el cliente la revise/imprima/comparta; el botón "Continuar al pago" cierra
+    // el modal y queda en la pantalla de Resumen + Método de Pago.
+    setReceiptMode('preview');
+    setLastCompletedOrder({ ...currentOrder });
+    setIsReceiptModalOpen(true);
 
     // Write-through (Fase E3): persiste el estado "por cobrar" en el server.
     // (E4: también se encola si la orden es temporal y estamos offline.)
-    const orderId = table.currentOrderId;
     if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
       const prevTableStatus = table.status;
       const prevOrderStatus = currentOrder.status;
@@ -2183,6 +2558,21 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
     }
   };
+
+  // Acción del modal híbrido: despacha a cocina (Kardex queda descontado) y,
+  // si todo va bien ('ok' online / 'queued' offline), continúa al cobro.
+  const confirmDispatchAndProceed = async (tableId: string) => {
+    const dispatched = await sendToKitchen(tableId);
+    if (!dispatched) {
+      // Rechazado por el server (4xx): rollback ya restauró la comanda y
+      // attemptMutation avisó. No navegamos al cobro.
+      setPendingKitchenConfirm(null);
+      return;
+    }
+    finishProceedToPayment(tableId);
+  };
+
+  const dismissKitchenConfirm = () => setPendingKitchenConfirm(null);
 
   // Complete Payment
   const completePayment = (
@@ -2278,6 +2668,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // 3. Save finalized order
     setOrders((prev) => ({ ...prev, [finalizedOrder.id]: finalizedOrder }));
+    setReceiptMode('paid');
     setLastCompletedOrder(finalizedOrder);
     setIsReceiptModalOpen(true);
 
@@ -2325,7 +2716,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               ? prev
               : [serverTx, ...prev]
           );
+          // Voucher siempre: re-afirma el modal con los datos reales del server
+          // (belt & suspenders: sobrevive a cualquier cierre intermedio).
+          setReceiptMode('paid');
           setLastCompletedOrder(serverOrder);
+          setIsReceiptModalOpen(true);
           await Promise.all([refreshTransactions(), refreshBankAccounts()]);
         },
         rollback: () => {
@@ -2767,7 +3162,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
 
     const cashSales = compTxs
-      .filter((t) => t.isIncome && (t.paymentMethod === 'Efectivo' || !t.bankAccountId))
+      .filter((t) => t.isIncome && isCashMovement(t))
       .reduce((sum, t) => sum + t.amount, 0);
 
     const cardSales = compTxs
@@ -2796,11 +3191,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       .filter((t) => !t.isIncome)
       .reduce((sum, t) => sum + t.amount, 0);
 
+    // Regla de gaveta: solo los egresos SIN cuenta bancaria salen de la caja
+    // efectivo (los pagados desde banco no tocan la gaveta).
+    const cashExpenses = compTxs
+      .filter((t) => !t.isIncome && isCashMovement(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+
     // Gap #6 fix: caja inicial desde el último arqueo local (el server usa su
     // companyShift.initialCash como verdad y el refresh post-write la impone).
     // Además se calcula bankTransferSales en vez de dejarlo en 0.
     const lastRecord = shiftRecords.find((r) => r.companyId === companyId);
-    const initialCash = lastRecord ? lastRecord.initialCash : 350.0;
+    const initialCash = companyShiftCash[companyId] ?? (lastRecord ? lastRecord.initialCash : 350.0);
     const bankTransferSales = compTxs
       .filter(
         (t) =>
@@ -2812,7 +3213,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           t.paymentMethod !== 'Yape / Plin'
       )
       .reduce((sum, t) => sum + t.amount, 0);
-    const systemCashExpected = +(initialCash + cashSales - totalExpenses).toFixed(2);
+    const systemCashExpected = +(initialCash + cashSales - cashExpenses).toFixed(2);
     const difference = +(reportedCash - systemCashExpected).toFixed(2);
 
     const newRecord: ShiftRecord = {
@@ -2841,6 +3242,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCompanyShifts((prev) => ({
       ...prev,
       [companyId]: targetShift,
+    }));
+
+    // El fondo inicial del turno nuevo pasa a ser la caja vigente de la gaveta.
+    setCompanyShiftCash((prev) => ({
+      ...prev,
+      [companyId]: initialCashForNext,
     }));
 
     if (difference !== 0) {
@@ -3462,6 +3869,8 @@ Doble Alto: PEDIDO EXPRESS #8841
   const saveRecipe = (recipe: Recipe) => {
     const existed = recipes.some((r) => r.id === recipe.id);
     const queuedOp = tmpCatalogOpRef.current[recipe.id];
+    // Estándar de dos decimales en fichas técnicas (creación y persistencia).
+    const r2 = (n: number) => round2(Number(n) || 0);
     setRecipes((prev) => {
       const idx = prev.findIndex((r) => r.id === recipe.id);
       if (idx > -1) {
@@ -3472,24 +3881,46 @@ Doble Alto: PEDIDO EXPRESS #8841
       return [recipe, ...prev];
     });
 
+    // Fase E5 — una ficha técnica crea/actualiza su plato en el catálogo para que
+    // aparezca en las mesas. Si no se vinculó un plato existente, se crea uno nuevo.
+    const linkedProduct = recipe.productId ? products.find((p) => p.id === recipe.productId) : null;
+    const tempProductId = linkedProduct?.id ?? `prod-${Date.now()}`;
+    const productWasCreated = !linkedProduct;
+
+    if (productWasCreated) {
+      const localProduct: Product = {
+        id: tempProductId,
+      companyId: recipe.companyId || 'el-tayta',
+      name: recipe.productName,
+      description: recipe.preparationNotes || '',
+        price: r2(recipe.salePrice),
+        category: (recipe.category || 'platos') as ProductCategory,
+        image: '',
+        available: true,
+        hasRecipe: true,
+        updatedAt: new Date().toISOString(),
+      };
+      setProducts((prev) => [...prev.filter((p) => p.id !== tempProductId), localProduct]);
+    }
+
     const serverBody = {
-      companyId: recipe.companyId,
-      productId: recipe.productId || undefined,
-      productName: recipe.productName,
-      category: recipe.category,
-      portions: recipe.portions,
-      salePrice: recipe.salePrice,
-      totalCost: recipe.totalCost,
-      theoreticalFoodCostPct: recipe.theoreticalFoodCostPct,
-      preparationNotes: recipe.preparationNotes,
-      ingredients: recipe.ingredients.map((ing) => ({
+      companyId: recipe.companyId || 'el-tayta',
+      productId: recipe.productId || null,
+      productName: recipe.productName || '',
+      category: recipe.category || 'platos',
+      portions: recipe.portions || 1,
+      salePrice: r2(recipe.salePrice),
+      totalCost: r2(recipe.totalCost),
+      theoreticalFoodCostPct: r2(recipe.theoreticalFoodCostPct),
+      preparationNotes: recipe.preparationNotes || null,
+      ingredients: recipe.ingredients?.map((ing) => ({
         insumoId: ing.insumoId || null,
-        insumoName: ing.insumoName,
-        quantity: ing.quantity,
-        unit: ing.unit,
-        costPerUnit: ing.costPerUnit,
-        subtotalCost: ing.subtotalCost,
-      })),
+        insumoName: ing.insumoName || '',
+        quantity: r2(Number(ing.quantity)),
+        unit: ing.unit || 'un',
+        costPerUnit: r2(Number(ing.costPerUnit)),
+        subtotalCost: r2(Number(ing.subtotalCost)),
+      })) || [],
     };
 
     // Edición de un alta aún no sincronizada: se parchea el save encolado.
@@ -3501,18 +3932,83 @@ Doble Alto: PEDIDO EXPRESS #8841
 
     const clientOpId = newUuid();
     if (!existed) tmpCatalogOpRef.current[recipe.id] = clientOpId;
+    const queuePayload = {
+      id: recipe.id,
+      ...serverBody,
+      ...(!existed ? { tempId: recipe.id } : {}),
+      // El server crea el producto si el productId temporal aún no existe (FK).
+      // Este marcador permite remapear el producto local al id real en el replay.
+      ...(productWasCreated ? { tempProductId } : {}),
+    };
     attemptMutation({
       clientOpId,
       entity: 'catalog',
       op: 'saveRecipe',
-      queuePayload: { id: recipe.id, ...serverBody, ...(!existed ? { tempId: recipe.id } : {}) },
+      queuePayload,
       endpointOp: async () => {
         let res: RecipeDTO;
         try {
+          if (productWasCreated) {
+            // El plato no existe en el catálogo: se crea junto con la ficha.
+            const prodRes = await apiClient.post<ProductDTO>('/catalogs/products', {
+              companyId: recipe.companyId || 'el-tayta',
+              name: recipe.productName,
+              description: recipe.preparationNotes || '',
+              price: r2(recipe.salePrice),
+              category: (recipe.category || 'platos') as ProductCategory,
+              image: '',
+              available: true,
+              hasRecipe: true,
+            });
+            const realProduct = mapProduct(prodRes);
+            setProducts((prev) => prev.map((p) => (p.id === tempProductId ? realProduct : p)));
+            setRecipes((prev) =>
+              prev.map((r) => (r.id === recipe.id ? { ...r, productId: realProduct.id } : r))
+            );
+            serverBody.productId = realProduct.id;
+            // Si luego el save de la receta se encola (red caída), el replay ya
+            // llega con el id real del producto y no duplica el plato.
+            queuePayload.productId = realProduct.id;
+          } else if (linkedProduct) {
+            // Mantener nombre/precio del plato vinculado sincronizados con la ficha (best-effort).
+            try {
+              await apiClient.patch(`/catalogs/products/${linkedProduct.id}`, {
+                name: recipe.productName,
+                price: recipe.salePrice || 0,
+                category: (recipe.category || 'platos') as ProductCategory,
+                description: recipe.preparationNotes || '',
+                hasRecipe: true,
+              });
+            } catch {
+              /* el plato sigue vinculado aunque la actualización falle */
+            }
+          }
           res = await apiClient.patch<RecipeDTO>(`/catalogs/recipes/${recipe.id}`, serverBody);
         } catch (err) {
           if (err instanceof ApiError && err.status === 404) {
-            res = await apiClient.post<RecipeDTO>('/catalogs/recipes', serverBody);
+            // La receta no existe en el servidor (ID temporal de nueva ficha): crear con POST.
+            try {
+              res = await apiClient.post<RecipeDTO>('/catalogs/recipes', serverBody);
+            } catch (postErr) {
+              const apiErr = postErr instanceof ApiError ? postErr : null;
+              const issues = apiErr?.issues;
+              const msg = apiErr
+                ? `POST recetas falló (${apiErr.status}): ${apiErr.code} - ${apiErr.message}`
+                : `POST recetas falló: ${String(postErr)}`;
+              addNotification('Error guardando receta', msg, 'warning');
+              console.error('POST /catalogs/recipes failed:', {
+                status: apiErr ? apiErr.status : 'unknown',
+                code: apiErr ? apiErr.code : 'unknown',
+                message: apiErr ? apiErr.message : String(postErr),
+                issues,
+                serverBody,
+              });
+              throw postErr;
+            }
+          } else if (err instanceof ApiError && (err.status === 401 || err.code === 'UNAUTHORIZED')) {
+            // Sesión expirada o sin token: invalidar sesión y notificar.
+            logout();
+            throw err;
           } else {
             throw err;
           }
@@ -3532,6 +4028,9 @@ Doble Alto: PEDIDO EXPRESS #8841
         delete tmpCatalogOpRef.current[recipe.id];
         if (!existed) {
           setRecipes((prev) => prev.filter((r) => r.id !== recipe.id));
+          if (productWasCreated) {
+            setProducts((prev) => prev.filter((p) => p.id !== tempProductId));
+          }
         }
       },
     });
@@ -3614,24 +4113,38 @@ Doble Alto: PEDIDO EXPRESS #8841
   };
 
   // Dynamic Cash Ledger Calculations
+  // - totalIngresos/totalEgresos: facturación general (todas las cuentas, caja + bancos).
+  // - saldoActual ("Efectivo en Caja"): SOLO movimientos de gaveta (!bankAccountId)
+  //   + caja inicial vigente del turno (regla: un movimiento toca la gaveta ⇔ sin banco).
   const { totalIngresos, totalEgresos, saldoActual } = useMemo(() => {
     let ingresos = 0;
     let egresos = 0;
+    let cashIngresos = 0;
+    let cashEgresos = 0;
 
     filteredTransactions.forEach((tx) => {
       if (tx.isIncome) {
         ingresos += tx.amount;
+        if (isCashMovement(tx)) cashIngresos += tx.amount;
       } else {
         egresos += tx.amount;
+        if (isCashMovement(tx)) cashEgresos += tx.amount;
       }
     });
+
+    const cashCompanies: CompanyId[] =
+      activeCompanyId === 'todas' ? ['el-tayta', 'el-sabroso'] : [activeCompanyId as CompanyId];
+    const initialCash = cashCompanies.reduce(
+      (sum, cid) => sum + (companyShiftCash[cid] ?? 0),
+      0
+    );
 
     return {
       totalIngresos: +ingresos.toFixed(2),
       totalEgresos: +egresos.toFixed(2),
-      saldoActual: +(ingresos - egresos).toFixed(2),
+      saldoActual: +(initialCash + cashIngresos - cashEgresos).toFixed(2),
     };
-  }, [filteredTransactions]);
+  }, [filteredTransactions, activeCompanyId, companyShiftCash]);
 
   // FINANCIAL RATIOS & EXPENSE RATIOS ENGINE ("¿Se está pasando de gastos?")
   const getCompanyAnalysis = (cid: CompanyId | 'todas'): ExpenseRatioAnalysis => {
@@ -3748,6 +4261,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         catalogSyncMeta,
         isCatalogsLoading,
         isOperationsLoading,
+        realtimeStatus,
         companies,
         activeCompanyId,
         setActiveCompanyId,
@@ -3766,6 +4280,8 @@ Doble Alto: PEDIDO EXPRESS #8841
         notifications,
         lastCompletedOrder,
         isReceiptModalOpen,
+        receiptMode,
+        setReceiptMode,
         setIsReceiptModalOpen,
         insumos,
         recipes,
@@ -3789,6 +4305,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         deletePaymentMethod,
         // Turnos (Día y Noche)
         companyShifts,
+        companyShiftCash,
         activeShift,
         shiftRecords,
         switchCompanyShift,
@@ -3803,6 +4320,9 @@ Doble Alto: PEDIDO EXPRESS #8841
         removeItemFromOrder,
         sendToKitchen,
         proceedToPayment,
+        confirmDispatchAndProceed,
+        dismissKitchenConfirm,
+        pendingKitchenConfirm,
         completePayment,
         addManualTransaction,
         addNewTable,

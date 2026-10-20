@@ -105,3 +105,41 @@
     radial-gradient(circle at 85% 30%, rgba(235, 194, 70, 0.03), transparent 25%);
 }
 
+
+/* ==== Impresión del voucher (Boleta Electrónica) ====
+   Solo se imprime el papel del voucher; el resto del app queda oculto. */
+@media print {
+  @page {
+    size: 80mm auto; /* rollo térmico de 80mm; browser ajusta alto */
+    margin: 0;
+  }
+
+  html, body {
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .receipt-print-target,
+  .receipt-print-target * {
+    visibility: visible;
+  }
+
+  /* El papel del voucher ancla a la página sin sombras ni bordes de pantalla */
+  .receipt-print-target {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 80mm !important;
+    max-width: 80mm !important;
+    margin: 0 !important;
+    padding: 4mm !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+}

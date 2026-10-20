@@ -96,7 +96,7 @@ export const RecipesScreen: React.FC = () => {
         if (found) {
           item.insumoName = found.name;
           item.unit = found.unit;
-          item.costPerUnit = found.costPerUnit;
+          item.costPerUnit = +found.costPerUnit.toFixed(2);
         }
       }
 
@@ -138,8 +138,13 @@ export const RecipesScreen: React.FC = () => {
     if (!productName || !salePrice) return;
 
     const validIngredients = ingredients.filter((ing) => ing.insumoId && ing.quantity > 0);
-    const totalCost = +validIngredients.reduce((s, i) => s + i.subtotalCost, 0).toFixed(2);
-    const price = parseFloat(salePrice) || 1;
+    const price = +(parseFloat(salePrice) || 1).toFixed(2);
+    const normalizedIngredients = validIngredients.map((ing) => {
+      const qty = +(parseFloat(ing.quantity as any) || 0).toFixed(2);
+      const cost = +(parseFloat(ing.costPerUnit as any) || 0).toFixed(2);
+      return { ...ing, quantity: qty, costPerUnit: cost, subtotalCost: +(qty * cost).toFixed(2) };
+    });
+    const totalCost = +normalizedIngredients.reduce((s, i) => s + i.subtotalCost, 0).toFixed(2);
     const foodCostPct = +((totalCost / price) * 100).toFixed(2);
 
     const recipeId = selectedRecipe && selectedRecipe.productName === productName
@@ -154,7 +159,7 @@ export const RecipesScreen: React.FC = () => {
       category: 'platos',
       portions: parseInt(portions) || 1,
       salePrice: price,
-      ingredients: validIngredients,
+      ingredients: normalizedIngredients,
       totalCost,
       theoreticalFoodCostPct: foodCostPct,
       preparationNotes: preparationNotes.trim() || undefined,
@@ -262,7 +267,7 @@ export const RecipesScreen: React.FC = () => {
                           : 'bg-amber-950 text-amber-300 border border-amber-600/40'
                       }`}
                     >
-                      {recipe.theoreticalFoodCostPct.toFixed(1)}% FC
+                      {recipe.theoreticalFoodCostPct.toFixed(2)}% FC
                     </span>
                   </div>
 
@@ -355,7 +360,7 @@ export const RecipesScreen: React.FC = () => {
                         : 'text-rose-400'
                     }`}
                   >
-                    {selectedRecipe.theoreticalFoodCostPct.toFixed(1)}%
+                    {selectedRecipe.theoreticalFoodCostPct.toFixed(2)}%
                   </p>
                 </div>
 
@@ -396,7 +401,7 @@ export const RecipesScreen: React.FC = () => {
                       {selectedRecipe.ingredients.map((ing, idx) => {
                         const pctOfCost =
                           selectedRecipe.totalCost > 0
-                            ? +((ing.subtotalCost / selectedRecipe.totalCost) * 100).toFixed(1)
+                            ? +((ing.subtotalCost / selectedRecipe.totalCost) * 100).toFixed(2)
                             : 0;
 
                         return (
@@ -405,7 +410,7 @@ export const RecipesScreen: React.FC = () => {
                               {ing.insumoName}
                             </td>
                             <td className="p-3 text-right font-mono font-bold">
-                              {ing.quantity} {ing.unit}
+                              {Number(ing.quantity).toFixed(2)} {ing.unit}
                             </td>
                             <td className="p-3 text-right font-mono text-[#dac1b8]">
                               S/ {ing.costPerUnit.toFixed(2)} / {ing.unit}
@@ -586,7 +591,7 @@ export const RecipesScreen: React.FC = () => {
                         <input
                           type="number"
                           step="0.01"
-                          min="0.001"
+                          min="0.01"
                           placeholder="Cant."
                           value={ing.quantity}
                           onChange={(e) => handleIngredientChange(idx, 'quantity', e.target.value)}

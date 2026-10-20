@@ -9,12 +9,14 @@ const EXPIRES_KEY = 'ts_auth_expires';
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly issues?: Array<{ field: string; message: string }>;
 
-  constructor(message: string, code: string, status: number) {
+  constructor(message: string, code: string, status: number, issues?: Array<{ field: string; message: string }>) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.issues = issues;
   }
 
   get isUnauthorized(): boolean {
@@ -53,6 +55,7 @@ interface ApiErrorBody {
   error?: {
     code?: string;
     message?: string;
+    issues?: Array<{ field: string; message: string }>;
   };
 }
 
@@ -97,7 +100,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const errBody = body as ApiErrorBody | null;
     const code = errBody?.error?.code || 'UNKNOWN_ERROR';
     const message = errBody?.error?.message || `Error inesperado (${res.status})`;
-    throw new ApiError(message, code, res.status);
+    const issues = errBody?.error?.issues;
+    throw new ApiError(message, code, res.status, issues);
   }
 
   return body as T;

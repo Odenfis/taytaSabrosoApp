@@ -1,27 +1,32 @@
 import React, { useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
+import { isBankMovement, isCashMovement } from '../lib/finance';
 
 export const ReportsScreen: React.FC = () => {
-  const { transactions, orders, tables, totalIngresos, totalEgresos, saldoActual, activeShift } = usePOS();
+  const { filteredTransactions: transactions, orders, tables, totalIngresos, totalEgresos, saldoActual, activeShift } = usePOS();
 
-  // Calculate payment method distribution
+  // Distribución por cuenta destino (regla: ingreso con bankAccountId = banco;
+  // sin bankAccountId = gaveta de efectivo; yape/plin es subgrupo digital).
   const paymentBreakdown = useMemo(() => {
     let cash = 0;
-    let card = 0;
+    let bank = 0;
     let yape = 0;
 
     transactions.forEach((tx) => {
-      if (tx.isIncome) {
-        if (tx.paymentMethod === 'Tarjeta') card += tx.amount;
-        else if (tx.paymentMethod === 'Yape / Plin') yape += tx.amount;
-        else cash += tx.amount;
-      }
+      if (!tx.isIncome) return;
+      const isDigitalWallet =
+        !tx.bankAccountId &&
+        ((tx.paymentMethod ?? '').toLowerCase().includes('yape') ||
+          (tx.paymentMethod ?? '').toLowerCase().includes('plin'));
+      if (isDigitalWallet) yape += tx.amount;
+      else if (isCashMovement(tx)) cash += tx.amount;
+      else if (isBankMovement(tx)) bank += tx.amount;
     });
 
-    const total = cash + card + yape || 1;
+    const total = cash + bank + yape || 1;
     return {
       cash: { amount: cash, pct: Math.round((cash / total) * 100) },
-      card: { amount: card, pct: Math.round((card / total) * 100) },
+      bank: { amount: bank, pct: Math.round((bank / total) * 100) },
       yape: { amount: yape, pct: Math.round((yape / total) * 100) },
       total,
     };
@@ -128,14 +133,14 @@ export const ReportsScreen: React.FC = () => {
               <div className="flex justify-between text-[13px] font-semibold mb-1 text-[#e5e2e1]">
                 <span className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-[#60d4fb]"></span>
-                  Tarjetas Débito / Crédito
+                  Cuentas Bancarias
                 </span>
-                <span>S/ {paymentBreakdown.card.amount.toFixed(2)} ({paymentBreakdown.card.pct}%)</span>
+                <span>S/ {paymentBreakdown.bank.amount.toFixed(2)} ({paymentBreakdown.bank.pct}%)</span>
               </div>
               <div className="w-full h-2.5 bg-[#2a2a2a] rounded-full overflow-hidden">
                 <div
                   className="h-full bg-[#60d4fb] rounded-full"
-                  style={{ width: `${paymentBreakdown.card.pct}%` }}
+                  style={{ width: `${paymentBreakdown.bank.pct}%` }}
                 ></div>
               </div>
             </div>

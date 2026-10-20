@@ -22,6 +22,7 @@ import { BankAccountsScreen } from './components/BankAccountsScreen';
 import { ShiftModal } from './components/ShiftModal';
 import { PrinterTestModal } from './components/PrinterTestModal';
 import { OfflineModal } from './components/OfflineModal';
+import { ReceiptModal } from './components/ReceiptModal';
 
 const MainLayout: React.FC = () => {
   const { currentUser, isSessionInitializing, currentScreen } = usePOS();
@@ -81,10 +82,12 @@ const MainLayout: React.FC = () => {
         </div>
       </div>
 
-      {/* Global Modals for Shift Arqueo, Thermal Printer Diagnostics, and Offline Connectivity */}
+      {/* Global Modals for Shift Arqueo, Thermal Printer Diagnostics, Offline Connectivity and Payment Voucher */}
       <ShiftModal />
       <PrinterTestModal />
       <OfflineModal />
+      {/* Voucher de pago global: sobrevive a cualquier cambio de pantalla. */}
+      <ReceiptModal />
     </div>
   );
 };

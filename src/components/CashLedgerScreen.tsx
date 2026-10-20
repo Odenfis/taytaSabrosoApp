@@ -153,7 +153,7 @@ export const CashLedgerScreen: React.FC = () => {
               S/ {totalIngresos.toFixed(2)}
             </h3>
             <p className="text-[11px] text-[#dac1b8]/70 mt-0.5">
-              Ventas en mesas y barra
+              Ventas de todas las cuentas (caja + bancos)
             </p>
           </div>
         </div>
@@ -171,7 +171,7 @@ export const CashLedgerScreen: React.FC = () => {
               S/ {totalEgresos.toFixed(2)}
             </h3>
             <p className="text-[11px] text-[#dac1b8]/70 mt-0.5">
-              Compras y caja chica
+              Compras y gastos de todas las cuentas
             </p>
           </div>
         </div>
