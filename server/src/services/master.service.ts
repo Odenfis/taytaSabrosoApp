@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { AppError, plain } from '../lib/utils';
+import { AppError, plain, toNum, round2 } from '../lib/utils';
 import { prisma } from '../lib/prisma';
+import { emitRecipeChanged, emitInsumoChanged, emitPaymentMethodChanged, emitPrinterChanged, emitProductChanged } from '../lib/realtime';
 
 // companyId opcional para filtrar recursos por empresa.
 // Los recursos 'ambas' (companyId NULL) siempre se incluyen cuando hay filtro.
@@ -100,17 +101,49 @@ export async function createProduct(input: {
   const product = await prisma.product.create({
     data: { id: randomUUID(), ...input },
   });
-  return plain(product);
+  emitProductChanged(input.companyId, {
+    productId: product.id,
+    companyId: input.companyId,
+    action: 'create',
+    name: product.name,
+    price: Number(product.price),
+    category: product.category,
+    hasRecipe: !!product.hasRecipe,
+    updatedAt: new Date(product.updatedAt).toISOString(),
+  });
+  return product;
 }
 
 export async function updateProduct(id: string, updates: Partial<{
   name: string; description: string; price: number; category: string; image: string; available: boolean; hasRecipe: boolean;
 }>) {
-  return plain(await prisma.product.update({ where: { id }, data: { ...updates } }));
+  const product = plain(await prisma.product.update({ where: { id }, data: { ...updates } }));
+  emitProductChanged(product.companyId, {
+    productId: product.id,
+    companyId: product.companyId,
+    action: 'update',
+    name: product.name,
+    price: Number(product.price),
+    category: product.category,
+    hasRecipe: !!product.hasRecipe,
+    updatedAt: new Date(product.updatedAt).toISOString(),
+  });
+  return product;
 }
 
 export async function deleteProduct(id: string) {
-  return plain(await prisma.product.update({ where: { id }, data: { isDeleted: true } }));
+  const product = plain(await prisma.product.update({ where: { id }, data: { isDeleted: true } }));
+  emitProductChanged(product.companyId, {
+    productId: product.id,
+    companyId: product.companyId,
+    action: 'delete',
+    name: product.name,
+    price: Number(product.price),
+    category: product.category,
+    hasRecipe: !!product.hasRecipe,
+    updatedAt: new Date(product.updatedAt).toISOString(),
+  });
+  return product;
 }
 
 // ============================ INSUMOS ============================
@@ -161,17 +194,63 @@ export async function createInsumo(input: {
       lastPurchaseUtc: new Date(),
     },
   });
+
+  // Notifica en tiempo real la creación del insumo a los terminales de la empresa.
+  emitInsumoChanged(input.companyId ?? null, {
+    insumoId: insumo.id,
+    companyId: input.companyId ?? null,
+    action: 'create',
+    name: insumo.name,
+    category: insumo.category,
+    unit: insumo.unit,
+    currentStock: toNum(insumo.currentStock),
+    costPerUnit: toNum(insumo.costPerUnit),
+    updatedAt: insumo.createdAt.toISOString(),
+  });
+
   return plain(insumo);
 }
 
 export async function updateInsumo(id: string, updates: Partial<{
   companyId: string | null; name: string; category: string; unit: string; currentStock: number; minStock: number; costPerUnit: number; lastPurchaseDate: string | null;
 }>) {
-  return plain(await prisma.insumo.update({ where: { id }, data: { ...updates } }));
+  const updated = await prisma.insumo.update({ where: { id }, data: { ...updates } });
+
+  // Notifica en tiempo real la actualización del insumo a los terminales de la empresa.
+  emitInsumoChanged(updated.companyId ?? null, {
+    insumoId: updated.id,
+    companyId: updated.companyId ?? null,
+    action: 'update',
+    name: updated.name,
+    category: updated.category,
+    unit: updated.unit,
+    currentStock: toNum(updated.currentStock),
+    costPerUnit: toNum(updated.costPerUnit),
+    updatedAt: updated.updatedAt.toISOString(),
+  });
+
+  return plain(updated);
 }
 
 export async function deleteInsumo(id: string) {
-  return plain(await prisma.insumo.update({ where: { id }, data: { isDeleted: true } }));
+  const insumo = await prisma.insumo.findUnique({ where: { id } });
+  if (!insumo) throw new AppError('Insumo no encontrado.', 404, 'NOT_FOUND');
+  await prisma.insumo.update({ where: { id }, data: { isDeleted: true } });
+
+  // Notifica en tiempo real la eliminación (soft-delete) del insumo a los terminales de la empresa.
+  emitInsumoChanged(insumo.companyId ?? null, {
+    insumoId: insumo.id,
+    companyId: insumo.companyId ?? null,
+    action: 'delete',
+    name: insumo.name,
+    category: insumo.category,
+    unit: insumo.unit,
+    currentStock: toNum(insumo.currentStock),
+    costPerUnit: toNum(insumo.costPerUnit),
+    updatedAt: new Date().toISOString(),
+  });
+
+  return plain(insumo);
 }
 
 // ============================ RECIPES ============================
@@ -188,6 +267,70 @@ export async function listRecipes(companyId?: string) {
   return plain(recipes);
 }
 
+// Resuelve el plato de una ficha: si productId es nulo o no existe en productos
+// (p.ej. id temporal generado offline), crea automáticamente el producto con los
+// datos de la ficha para que impacte en el menú de mesas. Devuelve el productId final.
+async function resolveRecipeProduct(
+  companyId: string,
+  productId: string | null | undefined,
+  productName: string,
+  category: string,
+  salePrice: number,
+  preparationNotes?: string | null
+): Promise<string | null> {
+  const existing = productId ? await prisma.product.findUnique({ where: { id: productId } }) : null;
+  if (existing) {
+    if (!existing.hasRecipe) {
+      const updated = await prisma.product.update({ where: { id: existing.id }, data: { hasRecipe: true } });
+      emitProductChanged(existing.companyId, {
+        productId: updated.id,
+        companyId: updated.companyId,
+        action: 'update',
+        name: updated.name,
+        price: Number(updated.price),
+        category: updated.category,
+        hasRecipe: true,
+        updatedAt: new Date(updated.updatedAt).toISOString(),
+      });
+    }
+    return existing.id;
+  }
+  const created = await prisma.product.create({
+    data: {
+      id: randomUUID(),
+      companyId,
+      name: productName,
+      description: preparationNotes ?? '',
+      price: round2(salePrice),
+      category,
+      image: '',
+      available: true,
+      hasRecipe: true,
+    },
+  });
+  emitProductChanged(companyId, {
+    productId: created.id,
+    companyId,
+    action: 'create',
+    name: created.name,
+    price: Number(created.price),
+    category: created.category,
+    hasRecipe: true,
+    updatedAt: created.createdAt.toISOString(),
+  });
+  return created.id;
+}
+
+// Verifica qué insumos existen antes de insertar ingredientes para no violar la FK
+// de ingredientes_receta (los insumos creados offline llevan ids temporales que
+// aún no existen en el server: se guardan con insumo_id NULL conservando el nombre).
+async function validInsumoIds(nestedIds: (string | null | undefined)[]): Promise<Set<string>> {
+  const wanted = [...new Set(nestedIds.filter((v): v is string => !!v))];
+  if (wanted.length === 0) return new Set();
+  const rows = await prisma.insumo.findMany({ where: { id: { in: wanted } }, select: { id: true } });
+  return new Set(rows.map((r) => r.id));
+}
+
 export async function createRecipe(input: {
   companyId: string;
   productId?: string | null;
@@ -197,35 +340,55 @@ export async function createRecipe(input: {
   salePrice: number;
   totalCost: number;
   theoreticalFoodCostPct: number;
-  preparationNotes?: string;
+  preparationNotes?: string | null;
   ingredients: { insumoId?: string | null; insumoName: string; quantity: number; unit: string; costPerUnit: number; subtotalCost: number }[];
 }) {
+  const productId = await resolveRecipeProduct(
+    input.companyId,
+    input.productId ?? null,
+    input.productName,
+    input.category,
+    input.salePrice,
+    input.preparationNotes
+  );
+  const valid = await validInsumoIds(input.ingredients.map((ing) => ing.insumoId));
   const recipe = await prisma.recipe.create({
     data: {
       id: randomUUID(),
       companyId: input.companyId,
-      productId: input.productId ?? null,
+      productId,
       productName: input.productName,
       category: input.category,
       portions: input.portions ?? 1,
-      salePrice: input.salePrice,
-      totalCost: input.totalCost,
-      theoreticalFoodCostPct: input.theoreticalFoodCostPct,
+      salePrice: round2(input.salePrice),
+      totalCost: round2(input.totalCost),
+      theoreticalFoodCostPct: round2(input.theoreticalFoodCostPct),
       preparationNotes: input.preparationNotes,
       ingredients: {
         create: input.ingredients.map((ing) => ({
           id: randomUUID(),
-          insumoId: ing.insumoId ?? null,
+          insumoId: ing.insumoId && valid.has(ing.insumoId) ? ing.insumoId : null,
           insumoName: ing.insumoName,
-          quantity: ing.quantity,
+          quantity: round2(ing.quantity),
           unit: ing.unit,
-          costPerUnit: ing.costPerUnit,
-          subtotalCost: ing.subtotalCost,
+          costPerUnit: round2(ing.costPerUnit),
+          subtotalCost: round2(ing.subtotalCost),
         })),
       },
     },
     include: { ingredients: true },
   });
+
+  // Notifica en tiempo real la creación de la receta a los terminales de la empresa.
+  emitRecipeChanged(input.companyId, {
+    recipeId: recipe.id,
+    companyId: input.companyId,
+    action: 'create',
+    productName: recipe.productName,
+    category: recipe.category,
+    updatedAt: recipe.createdAt.toISOString(),
+  });
+
   return plain(recipe);
 }
 
@@ -243,10 +406,35 @@ export async function updateRecipe(
   }> & { ingredients?: { insumoId?: string | null; insumoName: string; quantity: number; unit: string; costPerUnit: number; subtotalCost: number }[] }
 ) {
   const { ingredients, ...data } = input;
-  return prisma.$transaction(async (tx) => {
+  // Estándar de dos decimales: se normaliza lo monetario antes de escribir.
+  const roundedData: typeof data = {
+    ...data,
+    ...(data.salePrice !== undefined ? { salePrice: round2(data.salePrice) } : {}),
+    ...(data.totalCost !== undefined ? { totalCost: round2(data.totalCost) } : {}),
+    ...(data.theoreticalFoodCostPct !== undefined
+      ? { theoreticalFoodCostPct: round2(data.theoreticalFoodCostPct) }
+      : {}),
+  };
+  let effectiveData = roundedData;
+  // Solo si el payload trae productId: lo resuelve/crea si no existe en productos.
+  if (effectiveData.productId !== undefined) {
+    const existing = await prisma.recipe.findUnique({ where: { id } });
+    if (existing) {
+      effectiveData.productId = await resolveRecipeProduct(
+        existing.companyId,
+        effectiveData.productId,
+        effectiveData.productName ?? existing.productName,
+        effectiveData.category ?? existing.category,
+        effectiveData.salePrice !== undefined ? effectiveData.salePrice : Number(existing.salePrice),
+        effectiveData.preparationNotes !== undefined ? effectiveData.preparationNotes : existing.preparationNotes
+      );
+    }
+  }
+  const valid = ingredients ? await validInsumoIds(ingredients.map((ing) => ing.insumoId)) : null;
+  const updated = await prisma.$transaction(async (tx) => {
     const recipe = await tx.recipe.update({
       where: { id },
-      data: { ...data },
+      data: { ...effectiveData },
     });
     if (ingredients) {
       await tx.recipeIngredient.deleteMany({ where: { recipeId: id } });
@@ -254,21 +442,47 @@ export async function updateRecipe(
         data: ingredients.map((ing) => ({
           id: randomUUID(),
           recipeId: id,
-          insumoId: ing.insumoId ?? null,
+          insumoId: ing.insumoId && valid?.has(ing.insumoId) ? ing.insumoId : null,
           insumoName: ing.insumoName,
-          quantity: ing.quantity,
+          quantity: round2(ing.quantity),
           unit: ing.unit,
-          costPerUnit: ing.costPerUnit,
-          subtotalCost: ing.subtotalCost,
+          costPerUnit: round2(ing.costPerUnit),
+          subtotalCost: round2(ing.subtotalCost),
         })),
       });
     }
     return recipe;
-  }).then((r) => plain(r));
+  });
+
+  // Notifica en tiempo real la actualización de la receta a los terminales de la empresa.
+  emitRecipeChanged(updated.companyId, {
+    recipeId: updated.id,
+    companyId: updated.companyId,
+    action: 'update',
+    productName: updated.productName,
+    category: updated.category,
+    updatedAt: updated.updatedAt.toISOString(),
+  });
+
+  return plain(updated);
 }
 
 export async function deleteRecipe(id: string) {
-  return plain(await prisma.recipe.update({ where: { id }, data: { isDeleted: true } }));
+  const recipe = await prisma.recipe.findUnique({ where: { id } });
+  if (!recipe) throw new AppError('Receta no encontrada.', 404, 'NOT_FOUND');
+  await prisma.recipe.update({ where: { id }, data: { isDeleted: true } });
+
+  // Notifica en tiempo real la eliminación (soft-delete) de la receta a los terminales de la empresa.
+  emitRecipeChanged(recipe.companyId, {
+    recipeId: recipe.id,
+    companyId: recipe.companyId,
+    action: 'delete',
+    productName: recipe.productName,
+    category: recipe.category,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return plain(recipe);
 }
 
 // ============================ BANK ACCOUNTS ============================
@@ -359,17 +573,57 @@ export async function createPaymentMethod(input: {
       icon: input.icon ?? 'payments',
     },
   });
+
+  // Notifica en tiempo real la creación del método de pago a los terminales de la empresa.
+  emitPaymentMethodChanged(input.companyId ?? null, {
+    paymentMethodId: method.id,
+    companyId: input.companyId ?? null,
+    action: 'create',
+    name: method.name,
+    category: method.category,
+    icon: method.icon,
+    updatedAt: method.createdAt.toISOString(),
+  });
+
   return plain(method);
 }
 
 export async function updatePaymentMethod(id: string, updates: Partial<{
   companyId: string | null; name: string; category: string; bankAccountId: string | null; commissionPct: number | null; requiresReferenceNumber: boolean; icon: string; isActive: boolean;
 }>) {
-  return plain(await prisma.customPaymentMethod.update({ where: { id }, data: { ...updates } }));
+  const updated = await prisma.customPaymentMethod.update({ where: { id }, data: { ...updates } });
+
+  // Notifica en tiempo real la actualización del método de pago a los terminales de la empresa.
+  emitPaymentMethodChanged(updated.companyId, {
+    paymentMethodId: updated.id,
+    companyId: updated.companyId ?? null,
+    action: 'update',
+    name: updated.name,
+    category: updated.category,
+    icon: updated.icon,
+    updatedAt: updated.updatedAt.toISOString(),
+  });
+
+  return plain(updated);
 }
 
 export async function deletePaymentMethod(id: string) {
-  return plain(await prisma.customPaymentMethod.update({ where: { id }, data: { isDeleted: true } }));
+  const method = await prisma.customPaymentMethod.findUnique({ where: { id } });
+  if (!method) throw new AppError('Método de pago no encontrado.', 404, 'NOT_FOUND');
+  await prisma.customPaymentMethod.update({ where: { id }, data: { isDeleted: true } });
+
+  // Notifica en tiempo real la eliminación (soft-delete) del método de pago a los terminales de la empresa.
+  emitPaymentMethodChanged(method.companyId, {
+    paymentMethodId: method.id,
+    companyId: method.companyId ?? null,
+    action: 'delete',
+    name: method.name,
+    category: method.category,
+    icon: method.icon,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return plain(method);
 }
 
 // ============================ PRINTERS ============================
@@ -422,6 +676,19 @@ export async function createPrinter(input: {
     },
     include: { categories: { orderBy: { idx: 'asc' } } },
   });
+
+  // Notifica en tiempo real la creación de la impresora a los terminales de la empresa.
+  emitPrinterChanged(input.companyId ?? null, {
+    printerId: printer.id,
+    companyId: input.companyId ?? null,
+    action: 'create',
+    name: printer.name,
+    role: printer.role,
+    connectionType: printer.connectionType,
+    ipAddress: printer.ipAddress,
+    updatedAt: printer.createdAt.toISOString(),
+  });
+
   return plain(printer);
 }
 
@@ -432,7 +699,7 @@ export async function updatePrinter(
   }> & { categories?: string[] }
 ) {
   const { categories, ...data } = input;
-  return prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
     const printer = await tx.printer.update({ where: { id }, data: { ...data } });
     if (categories) {
       await tx.printerCategory.deleteMany({ where: { printerId: id } });
@@ -446,9 +713,39 @@ export async function updatePrinter(
       });
     }
     return printer;
-  }).then((r) => plain(r));
+  });
+
+  // Notifica en tiempo real la actualización de la impresora a los terminales de la empresa.
+  emitPrinterChanged(updated.companyId, {
+    printerId: updated.id,
+    companyId: updated.companyId ?? null,
+    action: 'update',
+    name: updated.name,
+    role: updated.role,
+    connectionType: updated.connectionType,
+    ipAddress: updated.ipAddress,
+    updatedAt: updated.updatedAt.toISOString(),
+  });
+
+  return plain(updated);
 }
 
 export async function deletePrinter(id: string) {
-  return plain(await prisma.printer.update({ where: { id }, data: { isDeleted: true } }));
+  const printer = await prisma.printer.findUnique({ where: { id } });
+  if (!printer) throw new AppError('Impresora no encontrada.', 404, 'NOT_FOUND');
+  await prisma.printer.update({ where: { id }, data: { isDeleted: true } });
+
+  // Notifica en tiempo real la eliminación (soft-delete) de la impresora a los terminales de la empresa.
+  emitPrinterChanged(printer.companyId ?? null, {
+    printerId: printer.id,
+    companyId: printer.companyId ?? null,
+    action: 'delete',
+    name: printer.name,
+    role: printer.role,
+    connectionType: printer.connectionType,
+    ipAddress: printer.ipAddress,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return plain(printer);
 }

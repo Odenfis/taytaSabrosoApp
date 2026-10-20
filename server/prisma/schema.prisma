@@ -580,7 +580,7 @@ model ClientOp {
   operation    String    @map("operacion") @db.NVarChar(100)
   payload      String    @map("carga") @db.NVarChar(Max)
   clientOpId   String    @unique @map("id_operacion_cliente") @db.NVarChar(36)
-  status       String    @map("estado") @default("PENDING") @db.NVarChar(30) // PENDING | IN_FLIGHT | APPLIED | FAILED_RETRYABLE | FAILED_TERMINAL
+  status       String    @map("estado") @default("PENDIENTE") @db.NVarChar(30) // PENDIENTE | EN_VUELO | APLICADO | FALLO_REINTENTABLE | FALLO_TERMINAL
   attemptCount Int       @map("numero_intentos") @default(0)
   lastError    String?   @map("ultimo_error") @db.NVarChar(500)
   createdAt    DateTime  @map("creado_en") @default(now()) @db.DateTime2

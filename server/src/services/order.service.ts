@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { AppError, plain, round2, round3, toNum } from '../lib/utils';
 import { prisma } from '../lib/prisma';
+import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime';
 
 function nowParts(timeStr?: string) {
   const now = new Date();
@@ -345,6 +346,24 @@ async function reverseKitchenForItems(
 
   if (movements.length > 0) {
     await tx.kardexMovement.createMany({ data: movements });
+
+    for (const m of movements) {
+      emitKardexChanged(order.companyId, {
+        insumoId: m.insumoId ?? null,
+        insumoName: m.insumoName,
+        companyId: order.companyId,
+        type: m.type,
+        quantity: toNum(m.quantity),
+        unit: m.unit,
+        unitCost: toNum(m.unitCost),
+        totalCost: toNum(m.totalCost),
+        stockBefore: toNum(m.stockBefore),
+        stockAfter: toNum(m.stockAfter),
+        referenceDoc: m.referenceDoc,
+        updatedAt: utc.toISOString(),
+      });
+    }
+
     for (const insumoId of Object.keys(deductionByInsumo)) {
       const insumo = await tx.insumo.findUnique({ where: { id: insumoId } });
       if (!insumo) continue;
@@ -497,6 +516,23 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
     if (movements.length > 0) {
       await tx.kardexMovement.createMany({ data: movements });
 
+      for (const m of movements) {
+        emitKardexChanged(order.companyId, {
+          insumoId: m.insumoId ?? null,
+          insumoName: m.insumoName,
+          companyId: order.companyId,
+          type: m.type,
+          quantity: toNum(m.quantity),
+          unit: m.unit,
+          unitCost: toNum(m.unitCost),
+          totalCost: toNum(m.totalCost),
+          stockBefore: toNum(m.stockBefore),
+          stockAfter: toNum(m.stockAfter),
+          referenceDoc: m.referenceDoc,
+          updatedAt: utc.toISOString(),
+        });
+      }
+
       for (const insumoId of Object.keys(deductionByInsumo)) {
         const insumo = await tx.insumo.findUnique({ where: { id: insumoId } });
         if (!insumo) continue;
@@ -523,9 +559,14 @@ export async function markTableForBilling(tableId: string) {
     if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
     if (!table.currentOrderId) throw new AppError('La mesa no tiene pedido activo.', 409, 'NO_ACTIVE_ORDER');
 
-    const order = await tx.order.findUnique({ where: { id: table.currentOrderId } });
+    const order = await tx.order.findUnique({
+      where: { id: table.currentOrderId },
+      include: { items: true },
+    });
     if (!order) throw new AppError('Pedido no encontrado.', 404, 'NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+
+    assertKitchenDispatched(order.items);
 
     const updated = await tx.order.update({
       where: { id: order.id },
@@ -538,6 +579,21 @@ export async function markTableForBilling(tableId: string) {
 
     return updated;
   }).then((o) => plain(o));
+}
+
+// Regla de negocio: no se puede pasar a cobro ni pagar si hay ítems sin despachar
+// (estado 'agregado' = nunca enviados a cocina = Kardex sin descontar).
+function assertKitchenDispatched(
+  items: { status: string }[]
+): void {
+  const pending = items.filter((i) => i.status === 'agregado').length;
+  if (pending > 0) {
+    throw new AppError(
+      `Hay ${pending} ítem(s) sin enviar a cocina. El Kardex no fue descontado; ejecute el despacho antes de continuar al cobro.`,
+      409,
+      'PENDING_KITCHEN'
+    );
+  }
 }
 
 // ============================ PAGO DE MESA ============================
@@ -580,6 +636,8 @@ export async function payTable(tableId: string, input: PayTableInput) {
     });
     if (!order) throw new AppError('Orden no encontrada.', 404, 'ORDER_NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+
+    assertKitchenDispatched(order.items);
 
     const change = Math.max(0, round2(input.amountReceived - toNum(order.total)));
 
@@ -663,6 +721,21 @@ export async function payTable(tableId: string, input: PayTableInput) {
     const finalized = await tx.order.findUnique({
       where: { id: order.id },
       include: { items: true },
+    });
+
+    // Aviso realtime Libro de Caja: la venta (caja/banco) ya está registrada.
+    emitTransactionChanged(order.companyId, {
+      transactionId: transaction.id,
+      companyId: order.companyId,
+      type: txType,
+      amount: toNum(transaction.amount),
+      isIncome: true,
+      paymentMethod: input.paymentMethod,
+      bankAccountId: bankAccountId,
+      bankAccountAlias: bankAccountAlias,
+      shift: companyShift?.currentShift ?? 'Día',
+      tableNumber: table.number,
+      updatedAt: utc.toISOString(),
     });
 
     return { order: finalized, transaction };

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, plain, round2, toNum } from '../lib/utils';
 import { prisma } from '../lib/prisma';
+import { emitShiftChanged, emitTransactionChanged } from '../lib/realtime';
 
 function nowParts() {
   const now = new Date();
@@ -59,8 +60,27 @@ export async function switchCompanyShift(input: {
     const totalExpenses = turnTxs
       .filter((t) => !t.isIncome)
       .reduce((sum, t) => sum + toNum(t.amount), 0);
-    const systemCashExpected = round2(initialCash + cashSales - totalExpenses);
+    // Regla de gaveta: solo los egresos SIN cuenta bancaria salen del efectivo
+    // físico (los pagados desde banco decrementan el banco, no la caja).
+    const cashExpenses = turnTxs
+      .filter((t) => !t.isIncome && !t.bankAccountId)
+      .reduce((sum, t) => sum + toNum(t.amount), 0);
+    const systemCashExpected = round2(initialCash + cashSales - cashExpenses);
     const difference = round2(input.reportedCash - systemCashExpected);
+
+    // Ingresos por cuenta bancaria que no son tarjeta ni billetera digital
+    // (transferencias, cheques, etc.).
+    const bankTransferSales = turnTxs
+      .filter(
+        (t) =>
+          t.isIncome &&
+          !!t.bankAccountId &&
+          (t.paymentMethod || '').toLowerCase() !== 'tarjeta' &&
+          (t.paymentMethod || '').toLowerCase() !== 'billetera digital' &&
+          (t.paymentMethod || '').toLowerCase() !== 'yape / plin' &&
+          (t.paymentMethod || '').toLowerCase() !== 'efectivo'
+      )
+      .reduce((sum, t) => sum + toNum(t.amount), 0);
 
     const { time } = nowParts();
     const operator = input.operator || shiftState?.openedBy || 'Sistema';
@@ -83,7 +103,7 @@ export async function switchCompanyShift(input: {
         totalExpenses,
         cardSales: round2(cardSales),
         digitalWalletSales: round2(walletSales),
-        bankTransferSales: 0,
+        bankTransferSales: round2(bankTransferSales),
         status: 'cerrado',
         notes: input.notes || `Cierre de turno ${currentShift} realizado.`,
       },
@@ -125,6 +145,18 @@ export async function switchCompanyShift(input: {
         },
       });
     }
+
+    // Aviso realtime: cierra turno + nueva caja inicial para las demás terminales.
+    emitShiftChanged(input.companyId, {
+      companyId: input.companyId,
+      closedShift: currentShift,
+      newShift: input.targetShift,
+      initialCash: input.initialCashForNext,
+      reportedCash: input.reportedCash,
+      systemCashExpected,
+      difference,
+      updatedAt: new Date().toISOString(),
+    });
 
     return {
       companyId: input.companyId,
@@ -221,6 +253,21 @@ export async function createManualTransaction(input: CreateManualTransactionInpu
         referenceNumber: input.referenceNumber ?? null,
         clientOpId: input.clientOpId ?? randomUUID(),
       },
+    });
+
+    // Aviso realtime Libro de Caja: transacción manual registrada (toca gaveta o banco).
+    emitTransactionChanged(input.companyId, {
+      transactionId: transaction.id,
+      companyId: input.companyId,
+      type: input.type,
+      amount: toNum(input.amount),
+      isIncome: input.isIncome,
+      paymentMethod: bankAcc ? (bankAcc.alias ?? 'Transferencia') : 'Efectivo',
+      bankAccountId: input.bankAccountId ?? null,
+      bankAccountAlias: bankAcc?.alias ?? null,
+      shift: currentShift,
+      tableNumber: null,
+      updatedAt: utc.toISOString(),
     });
 
     return transaction;

@@ -2,10 +2,23 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../lib/auth';
 import { AppError } from '../lib/utils';
+import { prisma } from '../lib/prisma';
 import * as master from '../services/master.service';
+import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog';
+import type { Request } from 'express';
 
 const router = Router();
 router.use(requireAuth);
+
+// Ledger de operaciones (operaciones_cliente): APPLIED tras el servicio, FAILED_* en fallos.
+function oplog(req: Request, entity: OpEntity, operation: string) {
+  return {
+    ok: (result?: unknown) =>
+      void recordClientOp(req, { entity, operation }, { status: 'APLICADO', result }),
+    fail: (err: unknown) =>
+      void recordClientOp(req, { entity, operation }, { status: statusForError(err), error: err }),
+  };
+}
 
 const idParam = z.object({ id: z.string().min(1) });
 const companyQuery = z.object({ companyId: z.string().optional() });
@@ -31,6 +44,7 @@ router.get('/tables', async (req, res, next) => {
 });
 
 router.post('/tables', async (req, res, next) => {
+  const op = oplog(req, 'mesa', 'crear_mesa');
   try {
     const body = z
       .object({
@@ -41,13 +55,17 @@ router.post('/tables', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createTable(body));
+    const created = await master.createTable(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/tables/:id', async (req, res, next) => {
+  const op = oplog(req, 'mesa', 'actualizar_mesa');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -59,17 +77,24 @@ router.patch('/tables/:id', async (req, res, next) => {
         status: z.enum(['libre', 'ocupada', 'por_cobrar']).optional(),
       })
       .parse(req.body);
-    res.json(await master.updateTable(id, body));
+    const created = await master.updateTable(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/tables/:id', async (req, res, next) => {
+  const op = oplog(req, 'mesa', 'eliminar_mesa');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deleteTable(id));
+    const created = await master.deleteTable(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -87,6 +112,7 @@ router.get('/products', async (req, res, next) => {
 });
 
 router.post('/products', async (req, res, next) => {
+  const op = oplog(req, 'producto', 'crear_producto');
   try {
     const body = z
       .object({
@@ -100,13 +126,17 @@ router.post('/products', async (req, res, next) => {
         hasRecipe: z.boolean().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createProduct(body));
+    const created = await master.createProduct(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/products/:id', async (req, res, next) => {
+  const op = oplog(req, 'producto', 'actualizar_producto');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -120,17 +150,24 @@ router.patch('/products/:id', async (req, res, next) => {
         hasRecipe: z.boolean().optional(),
       })
       .parse(req.body);
-    res.json(await master.updateProduct(id, body));
+    const created = await master.updateProduct(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/products/:id', async (req, res, next) => {
+  const op = oplog(req, 'producto', 'eliminar_producto');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deleteProduct(id));
+    const created = await master.deleteProduct(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -148,6 +185,7 @@ router.get('/insumos', async (req, res, next) => {
 });
 
 router.post('/insumos', async (req, res, next) => {
+  const op = oplog(req, 'insumo', 'crear_insumo');
   try {
     const body = z
       .object({
@@ -161,13 +199,17 @@ router.post('/insumos', async (req, res, next) => {
         lastPurchaseDate: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createInsumo(body));
+    const created = await master.createInsumo(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/insumos/:id', async (req, res, next) => {
+  const op = oplog(req, 'insumo', 'actualizar_insumo');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -182,17 +224,24 @@ router.patch('/insumos/:id', async (req, res, next) => {
         lastPurchaseDate: z.string().nullable().optional(),
       })
       .parse(req.body);
-    res.json(await master.updateInsumo(id, body));
+    const created = await master.updateInsumo(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/insumos/:id', async (req, res, next) => {
+  const op = oplog(req, 'insumo', 'eliminar_insumo');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deleteInsumo(id));
+    const created = await master.deleteInsumo(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -217,6 +266,7 @@ router.get('/recipes', async (req, res, next) => {
 });
 
 router.post('/recipes', async (req, res, next) => {
+  const op = oplog(req, 'receta', 'crear_receta');
   try {
     const body = z
       .object({
@@ -228,19 +278,31 @@ router.post('/recipes', async (req, res, next) => {
         salePrice: z.number().nonnegative(),
         totalCost: z.number().nonnegative(),
         theoreticalFoodCostPct: z.number().nonnegative(),
-        preparationNotes: z.string().optional(),
+        preparationNotes: z.string().nullable().optional(),
         ingredients: z.array(recipeIngredientSchema).default([]),
       })
       .parse(req.body);
-    res.status(201).json(await master.createRecipe(body));
+    const created = await master.createRecipe(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/recipes/:id', async (req, res, next) => {
+  const op = oplog(req, 'receta', 'actualizar_receta');
   try {
     const { id } = idParam.parse(req.params);
+
+    // Verificar existencia antes de validar el cuerpo: si la receta no existe,
+    // devolvemos 404 para que el cliente pueda hacer fallback a POST (crear nueva).
+    const existing = await prisma.recipe.findUnique({ where: { id } });
+    if (!existing) {
+      throw new AppError('Receta no encontrada.', 404, 'NOT_FOUND');
+    }
+
     const body = z
       .object({
         productId: z.string().nullable().optional(),
@@ -254,17 +316,24 @@ router.patch('/recipes/:id', async (req, res, next) => {
         ingredients: z.array(recipeIngredientSchema).optional(),
       })
       .parse(req.body);
-    res.json(await master.updateRecipe(id, body));
+    const created = await master.updateRecipe(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/recipes/:id', async (req, res, next) => {
+  const op = oplog(req, 'receta', 'eliminar_receta');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deleteRecipe(id));
+    const created = await master.deleteRecipe(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -280,6 +349,7 @@ router.get('/bank-accounts', async (req, res, next) => {
 });
 
 router.post('/bank-accounts', async (req, res, next) => {
+  const op = oplog(req, 'cuenta_bancaria', 'crear_cuenta_bancaria');
   try {
     const body = z
       .object({
@@ -295,13 +365,17 @@ router.post('/bank-accounts', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createBankAccount(body));
+    const created = await master.createBankAccount(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/bank-accounts/:id', async (req, res, next) => {
+  const op = oplog(req, 'cuenta_bancaria', 'actualizar_cuenta_bancaria');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -318,17 +392,24 @@ router.patch('/bank-accounts/:id', async (req, res, next) => {
         notes: z.string().nullable().optional(),
       })
       .parse(req.body);
-    res.json(await master.updateBankAccount(id, body));
+    const created = await master.updateBankAccount(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/bank-accounts/:id', async (req, res, next) => {
+  const op = oplog(req, 'cuenta_bancaria', 'eliminar_cuenta_bancaria');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deleteBankAccount(id));
+    const created = await master.deleteBankAccount(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -344,6 +425,7 @@ router.get('/payment-methods', async (req, res, next) => {
 });
 
 router.post('/payment-methods', async (req, res, next) => {
+  const op = oplog(req, 'metodo_pago', 'crear_metodo_pago');
   try {
     const body = z
       .object({
@@ -356,13 +438,17 @@ router.post('/payment-methods', async (req, res, next) => {
         icon: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createPaymentMethod(body));
+    const created = await master.createPaymentMethod(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/payment-methods/:id', async (req, res, next) => {
+  const op = oplog(req, 'metodo_pago', 'actualizar_metodo_pago');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -377,17 +463,24 @@ router.patch('/payment-methods/:id', async (req, res, next) => {
         isActive: z.boolean().optional(),
       })
       .parse(req.body);
-    res.json(await master.updatePaymentMethod(id, body));
+    const created = await master.updatePaymentMethod(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/payment-methods/:id', async (req, res, next) => {
+  const op = oplog(req, 'metodo_pago', 'eliminar_metodo_pago');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deletePaymentMethod(id));
+    const created = await master.deletePaymentMethod(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -403,6 +496,7 @@ router.get('/printers', async (req, res, next) => {
 });
 
 router.post('/printers', async (req, res, next) => {
+  const op = oplog(req, 'impresora', 'crear_impresora');
   try {
     const body = z
       .object({
@@ -418,13 +512,17 @@ router.post('/printers', async (req, res, next) => {
         categories: z.array(z.string()).optional(),
       })
       .parse(req.body);
-    res.status(201).json(await master.createPrinter(body));
+    const created = await master.createPrinter(body);
+    op.ok(created);
+    res.status(201).json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/printers/:id', async (req, res, next) => {
+  const op = oplog(req, 'impresora', 'actualizar_impresora');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -442,17 +540,24 @@ router.patch('/printers/:id', async (req, res, next) => {
         categories: z.array(z.string()).optional(),
       })
       .parse(req.body);
-    res.json(await master.updatePrinter(id, body));
+    const created = await master.updatePrinter(id, body);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/printers/:id', async (req, res, next) => {
+  const op = oplog(req, 'impresora', 'eliminar_impresora');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await master.deletePrinter(id));
+    const created = await master.deletePrinter(id);
+    op.ok(created);
+    res.json(created);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });

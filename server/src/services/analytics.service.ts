@@ -115,6 +115,15 @@ export async function getReportSummary(companyId: string) {
   const totalIngresos = round2(txs.filter((t) => t.isIncome).reduce((s, t) => s + toNum(t.amount), 0));
   const totalEgresos = round2(txs.filter((t) => !t.isIncome).reduce((s, t) => s + toNum(t.amount), 0));
 
+  // "Efectivo en Caja" (gaveta): caja inicial vigente + movimientos SIN cuenta
+  // bancaria (regla: un movimiento toca la gaveta ⇔ sin bankAccountId).
+  const companyShift = companyId === 'all'
+    ? await prisma.companyShift.findMany()
+    : [await prisma.companyShift.findUnique({ where: { companyId } })].filter(Boolean);
+  const initialCash = companyShift.reduce((s, cs) => s + toNum(cs!.initialCash), 0);
+  const cashIngresos = txs.filter((t) => t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
+  const cashEgresos = txs.filter((t) => !t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
+
   const income = txs.filter((t) => t.isIncome);
   const byMethod: Record<string, { count: number; total: number }> = {};
   for (const t of income) {
@@ -145,7 +154,10 @@ export async function getReportSummary(companyId: string) {
     companyId,
     totalIngresos,
     totalEgresos,
-    saldoActual: round2(totalIngresos - totalEgresos),
+    initialCash: round2(initialCash),
+    cashIngresos: round2(cashIngresos),
+    cashEgresos: round2(cashEgresos),
+    saldoActual: round2(initialCash + cashIngresos - cashEgresos),
     paymentMethods: Object.entries(byMethod).map(([method, v]) => ({ method, ...v })),
     topDishes,
     todayOrders,

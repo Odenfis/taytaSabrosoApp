@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, plain, round2, toNum } from '../lib/utils';
 import { prisma } from '../lib/prisma';
+import { emitKardexChanged } from '../lib/realtime';
 
 function nowParts() {
   const now = new Date();
@@ -72,6 +73,22 @@ export async function addKardexAdjustment(input: {
     await tx.insumo.update({
       where: { id: insumo.id },
       data: { currentStock: stockAfter },
+    });
+
+    // Notifica en tiempo real el movimiento de kardex a los terminales de la empresa.
+    emitKardexChanged(companyId, {
+      insumoId: insumo.id,
+      insumoName: insumo.name,
+      companyId,
+      type: input.type,
+      quantity: stockDelta,
+      unit: insumo.unit,
+      unitCost,
+      totalCost,
+      stockBefore,
+      stockAfter,
+      referenceDoc: `Ajuste manual: ${input.reason}`,
+      updatedAt: movement.timestamp.toISOString(),
     });
 
     return { movement, companyId };

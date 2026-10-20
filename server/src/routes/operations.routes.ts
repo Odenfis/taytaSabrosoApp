@@ -22,9 +22,22 @@ import {
   listTransactions,
   createManualTransaction,
 } from '../services/shift.service';
+import { notifyOrderState, notifyTableState } from '../lib/realtime';
+import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog';
+import type { Request } from 'express';
 
 const router = Router();
 router.use(requireAuth);
+
+// Ledger de operaciones (operaciones_cliente): APPLIED tras el servicio, FAILED_* en fallos.
+function oplog(req: Request, entity: OpEntity, operation: string) {
+  return {
+    ok: (result?: unknown) =>
+      void recordClientOp(req, { entity, operation }, { status: 'APLICADO', result }),
+    fail: (err: unknown) =>
+      void recordClientOp(req, { entity, operation }, { status: statusForError(err), error: err }),
+  };
+}
 
 const idParam = z.object({ id: z.string().min(1) });
 
@@ -39,23 +52,33 @@ router.get('/orders/active', async (req, res, next) => {
 });
 
 router.post('/orders/open', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'abrir_pedido');
   try {
     const body = z
       .object({ tableId: z.string().min(1), waiter: z.string().optional(), clientOpId: z.string().optional() })
       .parse(req.body);
-    res.status(201).json(await openOrderForTable(body.tableId, body));
+    const order = await openOrderForTable(body.tableId, body);
+    op.ok(order);
+    res.status(201).json(order);
+    void notifyOrderState((order as { id: string }).id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.post('/orders/quick-bar', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'abrir_barra_rapida');
   try {
     const body = z
       .object({ companyId: z.string().min(1), waiter: z.string().optional(), clientOpId: z.string().optional() })
       .parse(req.body);
-    res.status(201).json(await createQuickBarOrder(body));
+    const order = await createQuickBarOrder(body);
+    op.ok(order);
+    res.status(201).json(order);
+    void notifyOrderState((order as { id: string }).id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -70,6 +93,7 @@ router.get('/orders/:id', async (req, res, next) => {
 });
 
 router.post('/orders/:id/items', async (req, res, next) => {
+  const op = oplog(req, 'linea_pedido', 'agregar_item');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -79,68 +103,97 @@ router.post('/orders/:id/items', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await addItemToOrder(id, body));
+    const order = await addItemToOrder(id, body);
+    op.ok(order);
+    res.status(201).json(order);
+    void notifyOrderState((order as { id: string }).id ?? id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/orders/:id/items/:itemId/quantity', async (req, res, next) => {
+  const op = oplog(req, 'linea_pedido', 'actualizar_cantidad');
   try {
     const params = z
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
     const body = z.object({ delta: z.number().finite() }).parse(req.body);
-    res.json(await updateItemQuantity(params.id, params.itemId, body.delta));
+    const order = await updateItemQuantity(params.id, params.itemId, body.delta);
+    op.ok(order);
+    res.json(order);
+    void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.patch('/orders/:id/items/:itemId/notes', async (req, res, next) => {
+  const op = oplog(req, 'linea_pedido', 'actualizar_notas');
   try {
     const params = z
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
     const body = z.object({ notes: z.string() }).parse(req.body);
     res.json(await updateItemNotes(params.id, params.itemId, body.notes));
+    op.ok();
+    void notifyOrderState(params.id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.delete('/orders/:id/items/:itemId', async (req, res, next) => {
+  const op = oplog(req, 'linea_pedido', 'quitar_item');
   try {
     const params = z
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
-    res.json(await removeItemFromOrder(params.id, params.itemId));
+    const order = await removeItemFromOrder(params.id, params.itemId);
+    op.ok(order);
+    res.json(order);
+    void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.post('/orders/:id/send-to-kitchen', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'enviar_cocina');
   try {
     const { id } = idParam.parse(req.params);
     const body = z.object({ clientOpId: z.string().optional() }).parse(req.body ?? {});
-    res.json(await sendToKitchen(id, body));
+    const result = await sendToKitchen(id, body);
+    op.ok(result);
+    res.json(result);
+    void notifyOrderState((result as { order: { id: string } }).order?.id ?? id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 // ============ PAGO / COBRO ============
 router.post('/tables/:id/por-cobrar', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'marcar_por_cobrar');
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await markTableForBilling(id));
+    const order = await markTableForBilling(id);
+    op.ok(order);
+    res.json(order);
+    void notifyTableState(id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.post('/tables/:id/pay', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'cobrar_mesa');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -152,8 +205,12 @@ router.post('/tables/:id/pay', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    res.json(await payTable(id, body));
+    const result = await payTable(id, body);
+    op.ok(result);
+    res.json(result);
+    void notifyTableState(id).catch(() => undefined);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -169,6 +226,7 @@ router.get('/purchases', async (req, res, next) => {
 });
 
 router.post('/purchases', async (req, res, next) => {
+  const op = oplog(req, 'compra', 'crear_compra');
   try {
     const itemSchema = z.object({
       insumoId: z.string().nullable().optional(),
@@ -201,12 +259,15 @@ router.post('/purchases', async (req, res, next) => {
       })
       .parse(req.body);
     res.status(201).json(await createPurchase(body));
+    op.ok();
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
 
 router.post('/purchases/:id/regularize', async (req, res, next) => {
+  const op = oplog(req, 'compra', 'regularizar_compra');
   try {
     const { id } = idParam.parse(req.params);
     const body = z
@@ -217,13 +278,14 @@ router.post('/purchases/:id/regularize', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    res.json(
-      await regularizePurchase(id, {
-        ...body,
-        operator: req.auth!.user.name,
-      })
-    );
+    const regularized = await regularizePurchase(id, {
+      ...body,
+      operator: req.auth!.user.name,
+    });
+    op.ok(regularized);
+    res.json(regularized);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -241,6 +303,7 @@ router.get('/kardex', async (req, res, next) => {
 });
 
 router.post('/kardex/adjustments', async (req, res, next) => {
+  const op = oplog(req, 'movimiento_kardex', 'ajustar_kardex');
   try {
     const body = z
       .object({
@@ -253,7 +316,9 @@ router.post('/kardex/adjustments', async (req, res, next) => {
       })
       .parse(req.body);
     res.status(201).json(await addKardexAdjustment(body));
+    op.ok();
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -269,6 +334,7 @@ router.get('/shifts/records', async (req, res, next) => {
 });
 
 router.post('/shifts/switch', async (req, res, next) => {
+  const op = oplog(req, 'turno', 'cambiar_turno');
   try {
     const body = z
       .object({
@@ -280,13 +346,14 @@ router.post('/shifts/switch', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    res.json(
-      await switchCompanyShift({
-        ...body,
-        operator: req.auth!.user.name,
-      })
-    );
+    const shiftResult = await switchCompanyShift({
+      ...body,
+      operator: req.auth!.user.name,
+    });
+    op.ok(shiftResult);
+    res.json(shiftResult);
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });
@@ -303,6 +370,7 @@ router.get('/transactions', async (req, res, next) => {
 
 // Transacciones manuales de Caja (Caja Chica / Retiro de Caja / Ingreso Extra / Ajuste de Saldo)
 router.post('/transactions', async (req, res, next) => {
+  const op = oplog(req, 'transaccion', 'crear_transaccion');
   try {
     const body = z
       .object({
@@ -318,7 +386,9 @@ router.post('/transactions', async (req, res, next) => {
       })
       .parse(req.body);
     res.status(201).json(await createManualTransaction(body));
+    op.ok();
   } catch (err) {
+    op.fail(err);
     next(err);
   }
 });

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { AppError, plain, round2, toNum } from '../lib/utils';
 import { prisma } from '../lib/prisma';
+import { emitKardexChanged, emitPurchaseChanged, emitTransactionChanged } from '../lib/realtime';
 
 function nowParts() {
   const now = new Date();
@@ -118,6 +119,22 @@ export async function createPurchase(input: CreatePurchaseInput) {
         },
       });
 
+      // Notifica en tiempo real la entrada de compra al kardex de la empresa.
+      emitKardexChanged(purchase.companyId, {
+        insumoId: item.insumoId ?? null,
+        insumoName: item.insumoName,
+        companyId: purchase.companyId,
+        type: 'ENTRADA_COMPRA',
+        quantity: toNum(item.quantity),
+        unit: item.unit,
+        unitCost: toNum(item.unitCost),
+        totalCost: toNum(item.totalCost),
+        stockBefore: toNum(stockBefore),
+        stockAfter: toNum(stockAfter),
+        referenceDoc: `Compra Factura #${purchase.invoiceNumber || purchase.provisionalNoteNumber} (${purchase.supplierName})`,
+        updatedAt: utc.toISOString(),
+      });
+
       if (existingInsumo) {
         // Costo promedio ponderado (mismo algoritmo que la demo)
         const oldStock = toNum(existingInsumo.currentStock);
@@ -147,7 +164,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
     const currentShift = companyShift?.currentShift ?? 'Día';
 
     if (purchase.paidFromCash) {
-      await tx.transaction.create({
+      const paymentTx = await tx.transaction.create({
         data: {
           id: randomUUID(),
           companyId: purchase.companyId,
@@ -163,6 +180,20 @@ export async function createPurchase(input: CreatePurchaseInput) {
           purchaseId: purchase.id,
         },
       });
+      // Aviso realtime Libro de Caja: egreso de gaveta por pago a proveedor.
+      emitTransactionChanged(purchase.companyId, {
+        transactionId: paymentTx.id,
+        companyId: purchase.companyId,
+        type: 'Pago Proveedor',
+        amount: toNum(purchase.total),
+        isIncome: false,
+        paymentMethod: 'Efectivo',
+        bankAccountId: null,
+        bankAccountAlias: null,
+        shift: currentShift,
+        tableNumber: null,
+        updatedAt: utc.toISOString(),
+      });
     } else if (purchase.bankAccountId) {
       const bankAcc = await tx.bankAccount.findUnique({ where: { id: purchase.bankAccountId } });
       if (bankAcc) {
@@ -171,7 +202,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
           data: { currentBalance: { decrement: toNum(purchase.total) } },
         });
       }
-      await tx.transaction.create({
+      const paymentTx = await tx.transaction.create({
         data: {
           id: randomUUID(),
           companyId: purchase.companyId,
@@ -189,12 +220,41 @@ export async function createPurchase(input: CreatePurchaseInput) {
           purchaseId: purchase.id,
         },
       });
+      // Aviso realtime Libro de Caja: egreso bancario por pago a proveedor.
+      emitTransactionChanged(purchase.companyId, {
+        transactionId: paymentTx.id,
+        companyId: purchase.companyId,
+        type: 'Pago Proveedor',
+        amount: toNum(purchase.total),
+        isIncome: false,
+        paymentMethod: purchase.bankAccountAlias || bankAcc?.alias || 'Transferencia',
+        bankAccountId: purchase.bankAccountId ?? null,
+        bankAccountAlias: purchase.bankAccountAlias || bankAcc?.alias || null,
+        shift: currentShift,
+        tableNumber: null,
+        updatedAt: utc.toISOString(),
+      });
     }
 
     const enriched = await tx.purchase.findUnique({
       where: { id: purchase.id },
       include: { items: true },
     });
+
+    // Notifica en tiempo real la compra creada (entrada de Kardex) a los terminales de la empresa.
+    emitPurchaseChanged(purchase.companyId, {
+      purchaseId: purchase.id,
+      companyId: purchase.companyId,
+      documentStatus: purchase.documentStatus,
+      invoiceNumber: purchase.invoiceNumber,
+      provisionalNoteNumber: purchase.provisionalNoteNumber ?? null,
+      supplierName: purchase.supplierName,
+      supplierRuc: purchase.supplierRuc,
+      total: toNum(purchase.total),
+      category: purchase.category,
+      updatedAt: utc.toISOString(),
+    });
+
     return enriched;
   }).then((p) => plain(p));
 }
@@ -211,7 +271,7 @@ export async function regularizePurchase(
       throw new AppError('La compra ya fue regularizada.', 409, 'ALREADY_REGULARIZED');
     }
 
-    const { time, date } = nowParts();
+    const { time, date, utc } = nowParts();
     const notes = input.notes
       ? `${purchase.notes || ''} [Regularizado: ${input.notes.trim()}]`.trim()
       : purchase.notes;
@@ -245,6 +305,35 @@ export async function regularizePurchase(
       data: {
         description: `Compra Factura #${formalInvoice} - ${purchase.supplierName}${trace}`,
       },
+    });
+
+    // Notifica en tiempo real la compra regularizada (factura formal) a los terminales de la empresa.
+    emitPurchaseChanged(updated.companyId, {
+      purchaseId: updated.id,
+      companyId: updated.companyId,
+      documentStatus: updated.documentStatus,
+      invoiceNumber: updated.invoiceNumber,
+      provisionalNoteNumber: updated.provisionalNoteNumber ?? null,
+      supplierName: updated.supplierName,
+      supplierRuc: updated.supplierRuc,
+      total: toNum(updated.total),
+      category: updated.category,
+      updatedAt: utc.toISOString(),
+    });
+
+    // Aviso realtime Libro de Caja: la regularización re-etiqueta las transacciones
+    // del vale provisional con la factura formal (importes no cambian, sí el detalle).
+    emitTransactionChanged(updated.companyId, {
+      companyId: updated.companyId,
+      type: 'Pago Proveedor',
+      amount: toNum(updated.total),
+      isIncome: false,
+      paymentMethod: updated.bankAccountAlias ?? 'Efectivo',
+      bankAccountId: updated.bankAccountId ?? null,
+      bankAccountAlias: updated.bankAccountAlias ?? null,
+      shift: 'Día',
+      tableNumber: null,
+      updatedAt: utc.toISOString(),
     });
 
     return updated;
