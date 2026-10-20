@@ -1,11 +1,12 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-10-13` (E1–E5 completas a nivel código;
-> primera ronda de pruebas UI del usuario + fix cocina UNIQUE verificado; base vacía
-> con `seed-empty.ts` lista para la segunda ronda; smoke E2E offline en navegador
-> pendiente del usuario).
+> Bitácora de avance del proyecto. `2026-10-17` (E1–E5 completas a nivel código;
+> apertura perezosa de mesa + tiempo real mesas/órdenes (Fase D acotada) verificados;
+> estandarización a 2 decimales en fichas técnicas verificada a nivel API/BD; smoke E2E
+> offline en navegador pendiente del usuario).
 > **Punto de retome: segunda ronda de pruebas UI desde cero (Paso 2 de `planactual.md`:
-> ciclo offline + replay + persistencia F5 de catálogos), luego Fase C y Fase F (Azure).**
+> ciclo offline + replay + persistencia F5 de catálogos + refrendo en vivo 2 navegadores),
+> luego Fase C y Fase F (Azure).**
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
 
@@ -18,8 +19,8 @@
 | **A** | ✅ Completada | Schema SQL Server (23 tablas), migración inicial, seed demo data |
 | **B** | ✅ Completada | API Express + JWT + servicios de negocio (órdenes, compras, kardex, turnos, analítica) |
 | **C** | 🔲 Pendiente | **Motor de sync offline** (endpoint `client_ops`, idempotencia, queue por terminal) |
-| **D** | 🔲 Pendiente | **Socket.io** en tiempo real (empujar órdenes a cocina/barra, mesas en vivo) |
-| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ · E2 ✅ · E3 ✅ · E4 ✅ (+E4-b)** · **E5 ✅ (código + smoke API; refrendo navegador pendiente)** · 1.ª ronda UI del usuario OK (2 ventas cobradas) + fix cocina verificado |
+| **D** | 🚧 En curso (mesas/órdenes en vivo ✅) | **Socket.io** en tiempo real (mesas/órdenes por empresa; cocina/barra en vivo pendiente) |
+| **E** | 🚧 En curso | Frontend React → API. **E1 ✅ · E2 ✅ · E3 ✅ · E4 ✅ (+E4-b)** · **E5 ✅ (código + smoke API; refrendo navegador pendiente)** · 1.ª ronda UI del usuario OK (2 ventas cobradas) + fix cocina verificado · **apertura perezosa ✅** |
 | **F** | 🔲 Pendiente | Azure: SQL Server en la nube + deploy del backend (secretos reales) |
 
 > Repo con git desde 2026-10-12 (`main` + `origin/main`, mensajes `update ...` en minúscula).
@@ -365,12 +366,25 @@ Objetivo: operar sin internet en 5+ terminales por local y sincronizar cuando ha
 
 ---
 
-## 8. Fase D — Socket.io (PRÓXIMA, después de C)
+## 8. Fase D — Socket.io (🚧 en curso: mesas/órdenes en vivo ✅ 2026-10-15)
 
-- Notificar a cocina/barra/caja cuando una orden se envía (`sendToKitchen`).
-- Actualizar estado de mesas/órdenes en vivo entre terminales del mismo local.
-- Rooms por `companyId` (o por local) para no mezclar empresas.
-- Reconexión + re-sync del estado desde REST al conectar.
+- ✅ Mesas/órdenes en vivo entre terminales (rooms por `companyId`, reconexión + re-sync REST).
+- ✅ **Kardex & Stock en vivo**: movimientos de kardex (ajuste/merma en `kardex/adjustments`, despacho `sendToKitchen`, devolución de cocina, entrada de compra `ENTRADA_COMPRA`) se notifican por socket (`kardex:changed`) y se reflejan al instante en el módulo Kardex & Stock de todos los terminales de la empresa (idempotente por `referenceDoc`, respeta modo offline simulado).
+- ✅ **Compras & Facturas en vivo**: alta de compra (`POST /purchases`) y regularización de vale (`POST /purchases/:id/regularize`) se notifican por socket (`purchase:changed`) y aparecen al instante en el módulo Compras, Facturas & Vales de todos los terminales de la empresa (dedup por `purchaseId`, respeta modo offline simulado).
+- ✅ **Recetas / Fichas Técnicas en vivo**: creación (`POST /catalogs/recipes`), actualización (`PATCH /catalogs/recipes/:id`) y soft-delete (`DELETE /catalogs/recipes/:id`) se notifican por socket (`recipe:changed`) y se reflejan al instante en el módulo Fichas Técnicas de todos los terminales de la empresa (dedup por `recipeId`, respeta modo offline simulado).
+- ✅ **Fix validación recetas**: `saveRecipe` en `POSContext.tsx` ahora convierte `quantity`/`costPerUnit`/`subtotalCost` de ingredientes a número con `Number()` antes del `POST /catalogs/recipes`, evitando error `VALIDATION_ERROR: expected number, received string`. También envía `null` en lugar de `undefined` en campos opcionales (`productId`, `preparationNotes`).
+- ✅ **Ficha técnica → plato en el menú (mesas)**: `saveRecipe` crea/actualiza el plato vinculado en el catálogo de productos: si no existe, lo crea con `POST /catalogs/products` (`hasRecipe: true`, nombre, precio de venta, categoría `platos`, empresa de la ficha); si ya existe, lo actualiza con `PATCH /catalogs/products/:id`. El plato aparece al instante en las mesas (escritura optimista local + sincronización al servidor) y se replica a todos los terminales mediante el nuevo evento `product:changed` (Fase D). Si la ficha no vincula un plato existente, se crea uno nuevo automáticamente, resuelviendo que un plato creado desde una ficha técnica no apareciera al elegir en la mesa. Verificado a nivel API con smoke test (2026-10-17): `POST`/`PATCH`/`DELETE /catalogs/products` → HTTP 200 con `hasRecipe` persistido, y `POST /catalogs/recipes` con el `productId` real retornado. Fix colateral: `emitProductChanged` usa conversión segura de fechas (`new Date(...).toISOString()`) porque `plain()` ya serializa fechas a string.
+- ✅ **Fix raíz: FK `fk_recetas_productos` al guardar fichas (2026-10-17)**: el bug reportado ("Arroz con Huevo a la Limeña" visible en la app pero ausente en `recetas`) era que `POST /catalogs/recipes` fallaba con violación de FK cuando el `productId` temporal (`prod-<timestamp>`, fichas creadas con API caída o offline simulado) no existía en `productos` → HTTP 500 → la op en cola quedaba en `retry` infinito (nunca en BD). Correcciones (server `master.service.ts`):
+    1. `resolveRecipeProduct()` en `createRecipe`/`updateRecipe`: si `productId` es nulo o no existe, **se crea el producto automáticamente** con los datos de la ficha (`companyId`, nombre, precio, categoría, `hasRecipe: true`) + `emitProductChanged`; si el producto ya existe, se marca `hasRecipe` si faltaba.
+    2. `validInsumoIds()`: ingredientes con `insumoId` de insumos no sincronizados en BD (ids temporales `ins-*` offline) se guardan ahora con `insumo_id NULL` conservando `nombre_insumo` — antes violaban FK y la receta completa quedaba en cola eterna.
+    3. Schema Zod de `POST /catalogs/recipes`: `preparationNotes` ahora `nullable` (el cliente enviaba `null` y el POST respondía 400 VALIDATION_ERROR aunque el PATCH sí lo aceptaba).
+    4. Cliente: la op en cola `saveRecipe` lleva `tempProductId` y `reconcileCatalogCreate` remapea el plato local al id real tras el replay (sin duplicado en mesa). Si el producto ya se creó en línea pero la receta falla por red, la cola viaja con el `productId` real.
+    5. **Test API/BD confirmado (2026-10-17)**: `POST /catalogs/recipes` con `productId` e `insumoId` inexistentes → HTTP 201; filas verificadas en `recetas`, `productos` (producto auto-creado) e `ingredientes_receta` (`insumo_id` NULL, nombre conservado); `PATCH` → HTTP 200 con reemplazo de ingredientes; limpieza de datos de prueba OK (0 filas activas).
+    6. **✅ Confirmado por el usuario**: tras recargar la app con la API arriba, la ficha pendiente en cola se sincronizó y "Arroz con Huevo a la Limeña" quedó registrada correctamente en la BD (el contador de cola se vació y la ficha ya impacta en `recetas`).
+- ✅ **Insumos en vivo**: creación (`POST /catalogs/insumos`), actualización (`PATCH /catalogs/insumos/:id`) y soft-delete (`DELETE /catalogs/insumos/:id`) se notifican por socket (`insumo:changed`) y se reflejan al instante en el módulo Kardex & Stock de todos los terminales de la empresa (dedup por `insumoId`, respeta modo offline simulado).
+- ✅ **Métodos de pago en vivo**: creación, actualización y soft-delete se notifican por socket (`paymentMethod:changed`) y aparecen al instante en el módulo de configuración de todos los terminales (dedup por `paymentMethodId`, respeta modo offline simulado).
+- ✅ **Impresoras en vivo**: creación, actualización y soft-delete se notifican por socket (`printer:changed`) y aparecen al instante en el módulo de impresoras de todos los terminales (dedup por `printerId`, respeta modo offline simulado).
+- Pendiente: notificar a cocina/barra/caja al enviar (`sendToKitchen`) — pantalla dedicada de cocina/barra pendiente de Fase D/E5.
 
 ---
 
@@ -967,6 +981,431 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   commit `19d6d80`). Lección: el seed demo trae órdenes/mesas ocupadas a propósito y
   confundía el inicio → por eso existe `seed-empty.ts`.
 
+### Apertura perezosa de mesa (✔ realizado 2026-10-15)
+
+> Reportado por el usuario: entrar a una mesa libre la ponía `ocupada` aunque no se
+> agregara ningún producto (y no había ningún timer de 1m: ese `1` era solo el
+> `minutesElapsed: 1` inicial de display). La orden `abierto/total 0` quedaba en BD
+> para siempre hasta vaciar/cobrar.
+
+- **Fix (`src/context/POSContext.tsx`)**: `selectAndOpenTable` y `openQuickOrder` ahora
+  solo seleccionan (mesa sigue `libre`, sin POST). La orden real se crea en
+  `addItemToOrder` al primer producto — mesas normales vía `POST /orders/open`, mesas
+  temporales de barra (`t-express-*`) vía `POST /orders/quick-bar` con migración a la
+  mesa real. `OrderTakingScreen/PaymentScreen` ya soportaban orden nula.
+- Al abandonar un tmp (quitar el único ítem antes del sync) se limpian
+  `tmpOrderItemsRef` + cola para no flushear ítems rancios.
+- **Verificación**: `tsc` 0 (raíz+server) · `build` OK · BD 0/0/0/0 tras limpiar el
+  fantasma `ticket=1/mesa 01/abierto/0` detectado en la sesión.
+
+### Fase D acotada — mesas/órdenes en vivo (✔ realizado 2026-10-15)
+
+> Reportado por el usuario: con 2 navegadores contra la misma BD, el segundo no veía
+> la mesa ocupada hasta F5. Causa: el front solo cargaba al login/`/me` (sin polling
+> ni sockets).
+
+- **Server**: `server/src/lib/realtime.ts` (nuevo) — Socket.io sobre el mismo `:4000`,
+  auth JWT en handshake, rooms `company:el-tayta / el-sabroso` (`todas` = ambas).
+  `notifyOrderState/notifyTableState` emiten `table:changed` + `order:changed` tras cada
+  mutación (`operations.routes.ts`: open, quick-bar, items add/qty/notes/remove, cocina,
+  por-cobrar, pay), best-effort. `server/src/index.ts` crea `httpServer` + `initRealtime`.
+  Deps: `socket.io@4.8.1` (server), `socket.io-client@4.8.4` (front); proxy
+  `/socket.io → :4000` en `vite.config.ts`.
+- **Front**: `src/lib/realtime.ts` (nuevo, singleton) + integración en `POSContext.tsx`
+  (`realtimeStatus`, handlers vía refs estables): merge de mesa sin pisar tmps offline,
+  retiro de orden local al liberar, fetch por GET de órdenes nuevas/vistas; resync REST
+  al reconectar; pausa en offline simulado/sin red; `logout` desconecta. `Header.tsx`:
+  punto verde/ámbar de tiempo real en `btn-sync-status`.
+- **Verificación**: `tsc` 0 + `build` OK (ambos) · smoke 2 sockets en `:4001`: B recibió
+  `table:changed ocupada` al abrir A + aislamiento por empresa OK · BD restaurada a
+  0/0/0/0 con `seed-empty.ts`.
+- **Pendiente**: refrendo en UI con 2 navegadores (`dev:all`, PIN `1004`) + cocina/barra
+  en vivo y catálogos en vivo (siguiente paso de Fase D).
+
+### 2.º reset a base vacía (✔ realizado 2026-10-15)
+
+- Tras apertura perezosa + smoke realtime (órdenes de prueba del harness): re-ejecutado
+  `seed-empty.ts` → 0/0/0/0 + cero duplicados, 13/13 mesas libres, saldos/stocks intactos.
+
+### Estandarización a 2 decimales en Fichas Técnicas (✔ realizado 2026-10-17)
+
+> Pedido: solo dos decimales en creación/observación de fichas técnicas. Decisiones del
+> usuario: (1) quantity/costPerUnit de ingredientes TAMBIÉN a 2 dec; (2) porcentajes
+> (% FC de ficha) mostrados a 2 dec; (3) normalización defensiva en server + front.
+> **Sin migración de BD**: la DB ya acota (money `Decimal(12,2)`); para ingredientes
+> (`Decimal(12,4)`) se redondea ANTES de escribir → sin alterar esquema.
+
+- **`src/lib/format.ts` (nuevo)**: helper `round2(n)` (`Math.round((n+EPSILON)*100)/100`) para el front.
+- **`src/components/RecipesScreen.tsx`**:
+  - Submit (`handleSaveRecipeSubmit`): ingredientes normalizados (`quantity`/`costPerUnit` → `parseFloat().toFixed(2)`, sub-total **recalculado** con valores ya redondeados), `salePrice` → 2 dec (elimina el quantity-string latente al construir la ficha).
+  - `handleIngredientChange`: `costPerUnit` del insumo se copia a 2 dec.
+  - Input cantidad: `min="0.01"` (antes 0.001, incoherente con step 0.01).
+  - Visualización a 2 dec: badges/KPI `% FC` (`toFixed(1)`→`(2)`), `% del Costo` por ingrediente, cantidad en tabla BOM (`Number(ing.quantity).toFixed(2)`).
+- **`src/context/POSContext.tsx` `saveRecipe`**: `serverBody` normaliza salePrice/totalCost/pct y por-ingrediente quantity/costPerUnit/subtotalCost vía `r2()`. El plato vinculado (local + `POST /catalogs/products`) usa `r2(recipe.salePrice)`. La cola offline viaja con valores ya redondeados (replay coherente).
+- **`server/src/services/master.service.ts`**: `round2` (de `utils.ts`) en `createRecipe` (escalares + ingredientes), `updateRecipe` (escalares en el merge + ingredientes del createMany) y en `price` de `resolveRecipeProduct` (auto-creación del plato). Fix colateral de tipos: `preparationNotes?: string | null` en `createRecipe` (la sesión previa hizo nullable el Zod del POST pero no el typo del service — error preexistente del árbol sin commitear, capturado en `tsc`).
+- **No tocado**: `round3` de kardex/despacho (`order.service.ts`, `deductIngredientsForOrder`), ratios analítica a 1 dec, Zod de `/recipes` (la normalización vive solo en el service), seed, mapeadores.
+- **Verificación (todo ✔)**:
+  - `npx tsc --noEmit` raíz + server = 0 · `npm run build` raíz + server OK.
+  - Smoke API: `POST /recipes` con `qty 0.12501 / cost 8.33333 / sale 35.555` → BD (`ingredientes_receta`/`recetas`): `0.38 / 18.12 / 6.80`, `43.00 / 3.46 / 0.13`; producto auto-creado con `precio_venta 35.56`. `PATCH` (`42.995 / 3.45678 / 0.3755 / 18.1234`) → `43.00 / 3.46 / 0.38 / 18.12`. `GET /recipes` refleja 2 dec; luego DELETE de la ficha y el producto de prueba restantes → 200.
+
+### Sesión 2026-10-18 — resumen consolidado (ver entradas detalladas abajo)
+
+> Cinco mejoras entregadas en una sola sesión, todas sin migración de BD y con la base demo
+> restaurada a vacío al final. Detalle completo en las subsecciones siguientes.
+
+1. **Regla "no cobrar sin despacho de cocina"** — guard server `assertKitchenDispatched`
+   (409 `PENDING_KITCHEN`) en `payTable` + `markTableForBilling`; modal híbrido de confirmación
+   en `OrderTakingScreen`; la cola offline FIFO nunca dispara el guard por accidente.
+2. **Caja (gaveta) vs Bancos sin doble imputación** — regla única `un movimiento toca la
+   gaveta ⇔ bankAccountId == null` (`src/lib/finance.ts`); `saldoActual` cash-only + caja
+   inicial vigente por empresa (`companyShiftCash`); arqueo (`shift.service`) y ReportsScreen
+   alineados. La venta con banco ya no infla la gaveta.
+3. **Ledger `operaciones_cliente` (Opción A, pasivo)** — `recordClientOp` upsert idempotente
+   por `clientOpId` instrumenta las 35 mutaciones (14 `/operations` + 21 catálogos); los fallos
+   también quedan escritos (`FALLO_*` + `ultimo_error`); lectura `GET /api/sync/client-ops`.
+4. **Españolización del ledger + `resolveCompanyId`** — entidad/operacion/estado y las llaves
+   del wrapper de `carga` 100% en español snake_case (`pedido/linea_pedido/...`,
+   `APLICADO/FALLO_*`, `parametros/consulta/cuerpo`); lookup perezoso de `empresa_id`
+   (orderId→`pedidos`, mesaId→`mesas`, catálogo concreto→su tabla) → 0 filas con empresa NULL
+   incluso en fallos y líneas de item; UPDATE one-off tradujo las 8 filas históricas del
+   usuario.
+5. **Realtime Libro de Caja** — eventos `transaction:changed` + `shift:changed` emitidos desde
+   `payTable`, transacción manual, compra (pago/regularización) y cambio de turno; la OTRA
+   terminal refresca `transacciones/bancos/turnos` y alinea `companyShiftCash` SIN refrescar
+   la página (smoke con 2 sockets: 12/12 PASS).
+
+- **Estado de verificación al cierre**: `tsc --noEmit` + `npm run build` = 0/OK (raíz + server);
+  smokes API 13/13 y 20/20 previos + realtime 12/12 · log del server sin advertencias
+  `[oplog]` · `operaciones_cliente` activo, en español y con `empresa_id` completo · base demo
+  restaurada a vacío (`seed.ts + seed-empty.ts`).
+
+### Regla "no cobrar sin despacho de cocina" (✔ realizado 2026-10-18)
+
+> Reportado por el usuario: pedido desde mesa → elegir producto → "Cobrar Mesa" directo (sin
+> "Enviar a Cocina") → la venta se cobró y el Kardex NUNCA se descontó. Decisión del usuario:
+> **híbrido con confirmación** (modal) + guard del server en **cobro y paso a por_cobrar**.
+
+- **Server** (`order.service.ts`): helper `assertKitchenDispatched` — lanza `409 PENDING_KITCHEN`
+  si hay ítems activos en `agregado` (nunca despachados = Kardex sin descontar). Aplicado en
+  `payTable` (antes de calcular vuelto/abonar) y en `markTableForBilling` (a quien se le añadió
+  `include: { items }` que no traía). `sendToKitchen` marca TODOS los ítems `en_cocina`
+  (incl. productos sin receta), así que el criterio `agregado` nunca bloquea un flujo legítimo.
+- **Front** (`POSContext.tsx`): `attemptMutation` ahora retorna `'ok' | 'queued' | 'rejected'`
+  (retrocompatible); `sendToKitchen` → `Promise<boolean>` (true si ok/queued; false si 4xx/rollback;
+  notificación de éxito solo si no fue rechazado); `proceedToPayment` detecta ítems `agregado`
+  (lee por `ordersRef`/`tablesRef` + updater para evitar stale) → en vez de navegar, abre el
+  estado `pendingKitchenConfirm {tableId, itemCount}`; nuevo `finishProceedToPayment` (navegación
+  real al cobro sin pisar ítems despachados) + `confirmDispatchAndProceed` (despacha y, si
+  `ok/queued`, continúa; si `rejected` se queda en comanda) + `dismissKitchenConfirm`.
+- **UI** (`OrderTakingScreen.tsx`): modal "Ítems sin enviar a cocina — si cobras sin despachar los
+  insumos NO se descontarán del Kardex. ¿Enviar a Cocina ahora y continuar al cobro?" con botones
+  *"Enviar a Cocina y Cobrar"* / *"Cancelar"* (feedback `Enviando...` mientras espera el despacho).
+- **Offline coherente**: la cola es FIFO (`sendToKitchen` encolado antes que `markForBilling`/
+  `payOrder`) → el replay FIFO nunca dispara el guard; un `PENDING_KITCHEN` en replay caería en
+  rama `business` → aviso y omisión (correcto). `replayQueue.ts` SIN cambios.
+- **Verificación**: `tsc --noEmit` 0 (raíz+server) · `npm run build` OK (ambos) · smoke API 13/13
+  PASS: open+item sin despacho → `pay` 409 PENDING_KITCHEN · `por-cobrar` 409 PENDING_KITCHEN ·
+  `send-to-kitchen` 200 (6 movimientos) · `por-cobrar` 200 · `pay` 200 cobrado con ítems `servido`.
+  BD verificada: 6 movimientos `SALIDA_VENTA_POS` (stock 18.5→18.06 lomo, etc.) + 1 transacción.
+  Base restaurada a vacío (`seed.ts + seed-empty.ts`).
+
+### Regla de cuenta: Caja (gaveta) vs Bancos, sin doble imputación (✔ realizado 2026-10-18)
+
+> Reportado por el usuario: pagos con métodos vinculados a banco incrementaban el banco pero
+> TAMBIÉN sumaban a "Efectivo en Caja" (tarjeta *Billetes y monedas en gaveta* del Libro de Caja).
+> Decisiones del usuario: **(1)** el saldo de gaveta incluye la caja inicial del turno
+> (`turnos_empresa.caja_inicial`); **(2)** corregir el arqueo de turnos en la misma pasada;
+> **(3)** distribución por método del ReportsScreen alineada por cuenta real.
+> **Regla única adoptada: un movimiento toca la gaveta ⇔ `bankAccountId == null`.**
+
+- **Diagnóstico**: el `saldoActual` del front (`POSContext.tsx` memo) sumaba ingresos−egresos de
+  TODAS las transacciones sin excluir las de banco → doble conteo. Mismo cálculo en
+  `analytics.service.ts` (`reportsSummary.saldoActual`). El arqueo (`shift.service.ts:62`) restaba
+  `totalExpenses` GLOBAL del efectivo esperado (compras pagadas desde banco "salían" de la gaveta).
+  Detalle: `ShiftModal` restaba egresos `type==='Caja Chica'` AUNQUE tuvieran banco, y el
+  ReportsScreen clasificaba "efectivo" por nombre (todo lo que no es 'Tarjeta'/'Yape / Plin').
+- **Front**: nuevo `src/lib/finance.ts` con `isCashMovement`/`isBankMovement` (gaveta ⇔ sin
+  `bankAccountId`); estado `companyShiftCash` (caja inicial vigente por empresa, cargado de los
+  `companyShifts` del login/`/me` vía `mapCompanyShiftCash`, actualizado con `initialCashForNext`
+  al cerrar turno) y expuesto en el contexto; **`saldoActual` = caja inicial + ingresos caja −
+  egresos caja** (×2 si `todas`); `totalIngresos`/`totalEgresos` quedan como facturación general
+  (subtítulos de tarjetas claros en `CashLedgerScreen`). Arqueo local (`switchCompanyShift`) y
+  `ShiftModal`: `systemCashExpected = initialCash + cashSales − cashExpenses` (egresos cash-only);
+  `ShiftModal` pre-llena el efectivo esperado al abrir (estados no muertos por montado permanente)
+  y `bankTransferSales` = ingreso con banco que no es tarjeta/billetera/efectivo.
+  `ReportsScreen`: distribución Efectivo (sin banco) / Cuentas Bancarias (con banco) / Digital
+  (yape/plin sin banco) y usa `filteredTransactions` (respetaba empresa sin filtrar).
+- **Server**: `shift.service.ts` — `cashExpenses` (sin banco) para `systemCashExpected`;
+  `totalExpenses` del historial sigue siendo el operativo general; `bankTransferSales: 0 →` valor
+  real. `analytics.service.ts` — `reportsSummary` ahora返回 `initialCash`, `cashIngresos`,
+  `cashEgresos` y `saldoActual` cash-only + caja inicial → cuadra con el front.
+- **Verificación**: `tsc --noEmit` 0 (raíz+server) · `npm run build` OK (ambos) · **smoke API
+  20/20 PASS** (base vacía): saldo inicial 350 → venta efectivo T1 → gaveta 350+T1, banco intacto →
+
+  venta banco T2 → banco +T2, gaveta intacta (403.10) · compra desde banco → banco −compra,
+  gaveta intacta · `totalIngresos` = T1+T2 (facturación) · switch turno con `reportedCash =
+  expected` → `systemCashExpected` 403.10, diferencia 0, `bankTransferSales` = T2 · caja nueva
+  200 propagada al summary (saldo 200+T1). Libro de Caja verificado: tx de banco
+  `bankAccountId+alias`, tx de efectivo sin banco. Base restaurada a vacío.
+
+### Ledger de operaciones: `operaciones_cliente` activo (✔ realizado 2026-10-18)
+
+> La tabla existía desde la Fase B pero NINGÚN runtime la escribía/leía. Decisión del usuario
+> (oct-2026): **(1) Ledger pasivo — Opción A** (no el motor completo de sync de Fase C),
+> **(2) incluir mutaciones de catálogos (E5)**, **(3) registrar también los fallos** (`FAILED_*`
+> con `lastError`). La auditoría JAMÁS rompe la respuesta del API.
+
+- **`server/src/lib/oplog.ts`** (nuevo): `recordClientOp(req, {entity, operation}, {status, result?, error?})` —
+  upsert idempotente por `clientOpId` (UNIQUE): create con `APPLIED`/`FAILED_*`, `processedAt`
+  y `attemptCount=1`; reenvío del MISMO id → `attemptCount++` + re-fija `processedAt` (sin
+  duplicar fila). `deviceId` de `req.auth.deviceId`; `companyId` del body o del resultado
+  (nullable si no está, p.ej. fallo en `/tables/:id/pay` que no lleva companyId); `payload` =
+  JSON `{params, query, body}` truncado a 20k. `statusForError`: `FAILED_TERMINAL` (AppError
+  4xx) / `FAILED_RETRYABLE` (resto). Todo en `try/catch` silencioso con `console.warn('[oplog]')`
+  — la auditoría nunca tumba el flujo. `clientOpId` ausente (ítems, por-cobrar, catálogos
+  PATCH/DELETE) → UUID one-off por request (queda firmado en la fila; SIN deduplicación de
+  negocio — eso es Fase C). Zod NO-strict: acepta `clientOpId` de más sin cambios extra.
+- **Instrumentación mecánica**: helper `oplog(req, entity, operation)` (2 líneas por handler:
+  `const op = ...` FUERA del try (scope) + `op.ok(x)` tras el servicio y `op.fail(err)` en el
+  catch). `operations.routes.ts`: las 14 mutaciones (open/quickBar/addItem/updateQuantity/
+  updateNotes/removeItem/sendToKitchen/markForBilling/payTable/purchases/regularize/adjustments/
+  shifts switch/transactions). `catalogs.routes.ts`: las 21 mutaciones POST/PATCH/DELETE
+  (tables, products, insumos, recipes, bank-accounts, payment-methods, printers) con operation
+  = nombre del servicio (createTable, updateRecipe, …). GETs sin ledger.
+- **Lectura**: `server/src/routes/sync.routes.ts` (nuevo) montado en `/api/sync`:
+  `GET /api/sync/client-ops?companyId&deviceId&entity&operation&status&since&limit&offset`
+  (Bearer, zod, orderBy `creado_en desc`, `{items, total}` via cliente Prisma).
+- **Verificación (todo ✔)**: `tsc --noEmit` 0 + `npm run build` OK (raíz+server) · smoke API
+  13/13 PASS sobre base vacía (open+item+kitchen+pay dup+409 guard+compra+ajuste kardex+catálogo
+  create/delete+transacción) → BD: **12 filas = 12 clientOpIds distintos**, todas `deviceId=dev-01`,
+  payload ok · reenvío del pay con el mismo `op-pay-A1`: pay vuelve a 200 idempotente y la fila
+  sube a `attemptCount=2` sin duplicar · cobro sin despacho → fila `FAILED_TERMINAL` con
+  `lastError="Hay 1 ítem(s) sin enviar a cocina…"` · companyId de fallo en pay nullable
+  (por diseño). `GET /api/sync/client-ops` filtros: status FAILED_TERMINAL → 1 (payTable),
+  entity=order → 4, deviceId dev-01 → 12, dev-zz → 0, sin token → 401 · `processedAt` lleno
+  en toda fila cerrada (bug de create corregido). Server log sin `[oplog]` warnings. Base
+  restaurada a vacío (el seed vacío limpia la tabla).
+
+#### Españolización del ledger + resolveCompanyId (✔ realizado 2026-10-18, misma sesión)
+
+> Petición del usuario tras ver sus primeras filas reales en BD: todo el resto del sistema usa
+> español → traducir TODO el contenido del ledger; además corregir la fila con `empresa_id = NULL`.
+> Decisión de nomenclatura: **snake_case español** (como columnas BD y tipos kardex). Datos
+> existentes: **UPDATE one-off** (8 filas de su sesión de prueba, no se perdieron).
+
+- **Contenido 100% español** (`oplog.ts` + 35 declaraciones de rutas):
+  - `entidad`: `pedido / linea_pedido / transaccion / compra / movimiento_kardex / turno` +
+    catálogos con **entidad concreta** (no genérico): `mesa / producto / insumo / receta /
+    cuenta_bancaria / metodo_pago / impresora`.
+  - `operacion` (snake_case): `abrir_pedido, abrir_barra_rapida, agregar_item, actualizar_cantidad,
+    actualizar_notas, quitar_item, enviar_cocina, marcar_por_cobrar, cobrar_mesa, crear_compra,
+    regularizar_compra, ajustar_kardex, cambiar_turno, crear_transaccion` + crear_/actualizar_/
+    eliminar_ × sujeto por catálogo (ejemplo `crear_mesa`, `actualizar_cuenta_bancaria`,
+    `eliminar_impresora`).
+  - `estado`: `PENDIENTE / EN_VUELO / APLICADO / FALLO_REINTENTABLE / FALLO_TERMINAL` — es
+    `NVarChar(30)` String sin constraint → **sin migración de BD**. Comentario del schema.prisma
+    actualizado al nuevo default ("PENDIENTE") para evitar drift futuro.
+  - `carga`: wrapper re-key `{"parametros": …, "consulta": …, "cuerpo": …}` (el cuerpo del front
+    queda intocado — contrato API intacto).
+- **`resolveCompanyId` (enriquecimiento) — fin de los `empresa_id NULL`**: si ni body ni resultado
+  traen empresa, lookup perezoso por parámetros de ruta: `linea_pedido` (y `enviar_cocina`) →
+  orderId → `pedidos`; `cobrar_mesa/marcar_por_cobrar` → mesaId → `mesas`; catálogos concretos →
+  tabla según entidad (map `CATALOGO_MODELO`). Solo consulta la BD cuando falta (happy path sin
+  costo extra); fallo del lookup → warn + `NULL` explícito. A partir de este cambio ni el 409 de cocina ni
+  las líneas de item pierden empresa.
+- **Script one-off** (`migrate-oplog-es.ts`, ejecutado y BORRADO): tradujo las 8 filas de la
+  sesión del usuario (entidad/operacion/estado + re-key de carga) y rellenó `empresa_id` por
+  lookup. Lección: parsear `.parametros ?? .params` (idempotente) porque el lookup original usaba
+  la key inglesa sobre el payload YA re-keyed → seguía NULL en `actualizar_notas` hasta re-run.
+- **`sync.routes.ts`**: zod del filtro `status` con los 5 valores en español (value en inglés → 400).
+- **Verificación (todo ✔)**: `tsc --noEmit` + `npm run build` OK (raíz+server) · smoke 13/13
+  PASS en base vacía → **12 filas: entidad/operacion/estado/carga-keys en español, `empresa_id`
+  lleno en 12/12** (incl. `FALLO_TERMINAL` de `cobrar_mesa` → el-sabroso y todas las
+  `linea_pedido`), reenvío `numero_intentos=2` · filtros: FALLO_TERMINAL→1 (cobrar_mesa),
+  entidad linea_pedido→2, mesa→2 (crear/eliminar), estado en inglés→400 · server log 0
+  `[oplog]` warnings · base restaurada a vacío.
+
+#### Boleta ANTES del pago + compartir voucher GRÁFICO por WhatsApp (✔ realizado 2026-10-18)
+
+> Ajuste posterior del voucher: el usuario quiere que la boleta de la cuenta aparezca **ANTES**
+> del pago (el cliente la revisa/imprime/comparte) y **luego** continuar a la pantalla de resumen
+> de cuenta + método de cobro; además, en vez de enviar el voucher como texto, compartirlo en
+> **modo gráfico** (él confirma: en su mac y en el cliente Windows tienen la app de WhatsApp
+> Desktop). Decisiones user: (1) Ambas boletas — preview ANTES del pago + voucher "Pago
+> Completado" DESPUÉS (con método/vuelto, para compartir); (2) camio por envío de texto: ahora
+> SOLO gráfico (el deep-link wa.me solo envía texto; con imagen: PNG → portapapeles/se abre
+> WhatsApp Desktop → pegar Cmd+V/Ctrl+V; en móvil usa la ventana nativa Compartir del SO con la
+> imagen). Eliminado el campo de celular del cliente. Backend INTOCADO — frontend only.
+
+- **Nuevo orden del flujo**: Cobrar Mesa (guad cocina intacto) → BOLETA preview
+  (`PENDIENTE DE PAGO`) → botón "Continuar al pago" (cierra modal, queda en cobro) → Resumen
+  + Métodos → cobrar → voucher "Pago Completado" → Volver a Mesas.
+- **`src/lib/voucherImage.ts` (nuevo)**: render del voucher como PNG estilo rollo de 80mm
+  (`TICKET_WIDTH=320`, fuente Courier, sin librerías nuevas — package igual):
+  - `buildVoucherCanvas(order, header, isPaid)`: canvas dinamico con header empresa/RUC/slogan,
+    "BOLETA ELECTRÓNICA #" (pagado) o "COMANDA / CUENTA PRE-VENTA" (preview), mesa/hora/atendido,
+    ítems con cantidades/notas (wrap manual), Subtotal/IGV/TOTAL; si pagado + recibido/vuelto;
+    si preview + "*** PENDIENTE DE PAGO ***"; caption final según modo.
+  - `shareVoucherImage(...)` escalonado: (1) `navigator.share` con File (móvil: ventana
+    nativa); (2) desktop: `clipboard.write(ClipboardItem image/png)` + abre `https://wa.me/?text=`
+    con caption corta (limitación WhatsApp: el deep-link solo texto) — notificación "Imagen
+    copiada: pégala en WhatsApp (Cmd+V / Ctrl+V)"; (3) fallback: descarga `boleta-<ticket>.png` +
+    abre wa.me (adjuntar manual). "AbortError" en share = no notifica.
+- **`POSContext.tsx`**: nuevo `receiptMode: 'preview' | 'paid'` (+ setter en interfaz y value);
+  `finishProceedToPayment`: después de `setCurrentScreen('cobro')` → `setReceiptMode('preview')`
+  + `setLastCompletedOrder({...currentOrder})` + abre modal (el write-through `markForBilling`
+  sigue igual, offline incluido); `completePayment`: optimista y endpointOp éxito ambos
+  `setReceiptMode('paid')` (el voucher post-pago sobrevive igual con re-apertura).
+- **`ReceiptModal.tsx`**: un modal en dos modos: preview = título "Boleta de la Cuenta" + badge
+  ámbar "Pendiente de pago", footer "Documento no válido como comprobante de pago", botones
+  [Compartir WhatsApp]/[Imprimir]/[Continuar al pago →] (cerrar con X o continuar NO navega —
+  el usuario ya está en cobro); paid = título "Pago Completado con Éxito", footer PAGO
+  REGISTRADO, [Compartir]/[Imprimir]/[Volver a Mesas] (cerrar → mesas). Se elimina el botón
+  de texto + campo de celular (reemplazados por el gráfico).
+- **Verificación (✔)**: `tsc --noEmit` + `npm run build` = 0/OK (raíz; server sin cambios);
+  smoke API 13/13 PASS (regresión backend); base restaurada a vacío.
+- **QA manual pendiente del usuario** (checklist): Cobrar Mesa desde comanda → boleta preview
+  "PENDIENTE DE PAGO" → Continuar al pago cae en cobro → voucher pagado con vuelto → Compartir
+  → imagen copiada + WhatsApp Desktop abre → pegar Cmd+V · Imprimir en ambos modos muestra solo
+  el voucher a 80mm · cobro sin despachar desde comanda → guard y rollback sin voucher ·
+  offline: preview ok + voucher pagado local · El Sabroso con su marca/RUC.
+
+---
+
+#### Voucher siempre visible + compartir por WhatsApp + impresión de solo voucher (✔ realizado 2026-10-18)
+
+> Pedido: al cobrar mesa se pasaba directo a la pantalla del voucher "método de pago" y el
+> voucher (venta del ticket) ya no siempre aparecía; además quería el botón de compartir por
+> WhatsApp en la pantalla del voucher. Decisiones del usuario: (1) el texto de WhatsApp lleva el
+> **voucher completo** (ítems con notas, subtotal/IGV/total, vuelto); (2) el celular del cliente
+> es un **campo opcional** (con número abre el chat directo, sin número abre selector de
+> contacto). Backend INTOCADO — frontend only.
+
+- **Diagnóstico del voucher** (`ReceiptModal.tsx` + POSContext):
+  - El modal SÍ se abría optimistamente (`completePayment` 2661-2662) pero estaba montado
+    DENTRO de `PaymentScreen` → si la pantalla cambiaba, el voucher moría con ella; y nada
+    re-abría si algo lo cerraba antes de la confirmación del server.
+  - Encabezado HARCODEADO "El Tayta POS / RUC 20601234567" → una venta de *El Sabroso* imprimía
+    marca errada.
+  - `window.print()` imprimía TODO el app: no existía `@media print` en ningún CSS.
+  - Consolidado el "¿está todo bien con el proceso?": guard de cocina, idempotencia `clientOpId`, cola
+    offline, realtime caja/bancos y rollback del 409 — SANOS; sin toques de negocio.
+- **Voucher SIEMPRE**:
+  - `ReceiptModal` montado a nivel raíz en `App.tsx` (junto a ShiftModal/PrinterTest/Offline) y
+    quitado de `PaymentScreen` → sobrevive a cambios de pantalla.
+  - `completePayment.endpointOp` (éxito server): re-afirma `setIsReceiptModalOpen(true)` tras
+    `setLastCompletedOrder(serverOrder)` (belt & suspenders; el server reemplaza los datos
+    locales con los reales: ticket/cerrado/servido).
+  - Offline/encolado mantiene el voucher con datos locales; el replay al reconectar no lo
+    interrumpe (path probado en E4: no toca `lastCompletedOrder`).
+- **Encabezado por empresa**: `companyHeader` memo desde `companies` del contexto (tradeName +
+  RUC del seed: el-tayta 20601234567 / el-sabroso 20609876543) con fallback por companyId —
+  eslogan conservado vía mapa estático.
+- **Compartir por WhatsApp** (`ReceiptModal.tsx`):
+  - `WhatsAppIcon` SVG inline (Material Symbols no trae el ícono).
+  - Campo opcional de celular (`type="tel"`, se normalizan solo dígitos) + botón verde
+    **Compartir por WhatsApp** full-width sobre Imprimir/Volver.
+  - `whatsappMessage` memo: mensaje completo = empresa, boleta #, mesa (zona), hora, atendido,
+    ítems con cantidades/notas, subtotal/IGV/**TOTAL**, método de pago, recibido/vuelto,
+    gracias. Abre `https://wa.me/{num}?text=` (o `https://wa.me/?text=`) en `_blank`
+    noopener — PC (WhatsApp Web/Desktop) y móvil.
+  - Al cerrar el modal se limpia el celular.
+- **Impresión solo del voucher** (`src/index.css` `@media print`):
+  - `@page size: 80mm auto` (rollo térmico) + `body * visibility:hidden` =
+    `.receipt-print-target*` visible (clase añadida al papel junto al id `receipt-paper`),
+    papel anclado top-left sin sombras/bordes, fondo blanco.
+- **Verificación (todo ✔)**: `tsc --noEmit` + `npm run build` = 0/OK (raíz + server); smoke API
+  oplog 13/13 PASS (regresión backend intacto); base restaurada a vacío.
+- **QA manual pendiente del usuario** (checklist): cobro efectivo → voucher SIEMPRE visible
+  aunque navegue entre pantallas · Imprimir → preview muestra solo el voucher a 80mm ·
+  Compartir → wa.me con voucher completo (con y sin celular) · cobro sin despachar desde el
+  mapa → rollback y ningún voucher falso · cobro offline → voucher queda y revive el replay ·
+  venta de El Sabroso → su marca/RUC en la boleta.
+
+---
+
+#### Realtime Libro de Caja: `transaction:changed` + `shift:changed` (✔ realizado 2026-10-18)
+
+> Reportado por el usuario: cobró una mesa con EFECTIVO en una computadora y el Libro de Caja de
+> la otra PC no se reflejó hasta refrescar manualmente. Diagnóstico: la Fase D nunca emitió
+> eventos para transacciones de caja, turnos ni saldos bancarios (solo mesas/órdenes/kardex/
+> compras/catálogos) → el estado `transactions` del otro terminal solo se hidrataba en
+> login/loadOperations. La pista "¿no estaba realizado?" era correcta: ESE bloque faltaba.
+
+- **Server** (`realtime.ts`): nuevos `emitTransactionChanged` y `emitShiftChanged` (rooms por
+  empresa, best-effort, "evento = aviso; la verdad en REST"). `TransactionChangedPayload` con
+  `transactionId?` (opcional en regularización — varias filas re-etiquetadas), `amount`,
+  `isIncome`, método, `bankAccountId/Alias`, `shift`, `tableNumber`. `ShiftChangedPayload` lleva
+  `closedShift/newShift/initialCash/reportedCash/systemCashExpected/difference`.
+- **Emisiones** (en los servicios, junto a los `emit*` ya existentes, DENTRO del callback de la
+  `$transaction` — mismo patrón que `emitPurchaseChanged`):
+  - `order.service.ts` `payTable`: venta de mesa/barra (caja O banco, una sola fuente).
+  - `shift.service.ts` `createManualTransaction` (Caja Chica/Retiro/Ingreso/Ajuste manual) y
+    `switchCompanyShift` (arqueo + nueva caja inicial del turno).
+  - `purchase.service.ts` `createPurchase` (pago proveedor: gaveta O banco) y
+    `regularizePurchase` (re-etiqueta las transacciones con la factura formal — aviso liviano).
+  - Bandas viejas de saldo bancario SIN transacción no existen en el negocio (todo cambia banco
+    a través de una fila); catálogos de banco no emiten (fuera de alcance).
+- **Front** (`src/lib/realtime.ts`): tipos `TransactionChangedEvent`/`ShiftChangedEvent` +
+  `socket.on(...)` + callbacks `onTransactionChanged/onShiftChanged` en `connectRealtime`.
+- **Front** (`POSContext.tsx`): `transactionHandlerRef` → `Promise.all([refreshTransactions(),
+  refreshBankAccounts()])`; `shiftRealtimeHandlerRef` → `refreshShiftRecords` +
+  `refreshTransactions` + **`setCompanyShiftCash` con la nueva `initialCash`** (clave para que el
+  arqueo hecho en OTRA PC no deje desfasada la gaveta local — `CashLedgerScreen` y el arqueo core
+  de esa cifra). Ambos con el guard `isSimulatedOffline` estándar.
+- **Smoke realtime automatizado (12/12 PASS)**: 2 sockets (terminal A y B, mismo PIN/room
+  el-tayta) + REST desde "A": cobro mesa en Efectivo → A y B reciben `transaction:changed` con
+  `paymentMethod='Efectivo'`, `bankAccountId=null`, `tableNumber` correcta; transacción manual →
+  2º aviso en B; switch turno (reported 0, caja nueva 120) → `shift:changed` con
+  `initialCash=120, closedShift='Día', newShift='Noche'`. El terminal B NUNCA refrescó manualmente
+  y quedó sincronizada (todo fluyó por el evento, sin acciones del usuario).
+- **Verificación**: `tsc --noEmit` + `npm run build` = 0/OK (raíz+server); 0 advertencias de
+  ni `[oplog]` en server log · base restaurada a vacío.
+- **Fuera de alcance**: mutaciones del catálogo de cuentas bancarias (el saldo vivo ya fluye por
+  cada transacción que toca banco) y reportes históricos (solo lectura).
+
+---
+
+#### Fix duplicación de voucher al compartir por WhatsApp (✔ realizado 2026-10-19)
+
+> Reporte: "al pegar en WhatsApp el voucher se copia dos veces". Diagnóstico con el usuario
+> (Mac + WhatsApp Desktop, Chrome): (1) el portapapeles copiaba BIEN la imagen (Notes/TextEdit
+> muestran 1 voucher — la escritura `clipboard.write` es única y correcta); (2) la duplicación
+> era por **doble handoff**: en Chrome desktop `navigator.canShare({files})` es true →
+> `navigator.share` entregaba el archivo a WhatsApp vía la hoja nativa y, si el share
+> rechazaba (error ≠ `AbortError` tras abrir la hoja), el código caía al portapapeles + wa.me
+> → voucher de la hoja + voucher pegado = 2 en el mismo chat; (3) además el caption de texto
+> precargado en wa.me daba la impresión de "solo envía un mensaje" (o 2 burbujas al enviar
+> imagen + caption). Backend INTOCADO — frontend only.
+
+- **`src/lib/voucherImage.ts` — reestructurado con UN solo mecanismo por entorno**:
+  - **Lock de reentrancia** (`shareInProgress`, module-level con `try/finally`): un solo
+    share a la vez; descarta doble invocación del botón.
+  - **`navigator.share` con archivo: SOLO táctil** (`window.matchMedia('(pointer: coarse)')`).
+    En desktop ya NO se usa la hoja nativa (era la fuente del doble handoff).
+  - **Fall-through controlado en táctil**: `AbortError` (usuario canceló) → return silencioso;
+    cualquier otro error tras abrir la hoja → NO cae al portapapeles (pegaría un 2° voucher)
+    → solo avisa "Revisa WhatsApp: el voucher pudo haberse adjuntado".
+  - **Desktop**: `clipboard.write([ClipboardItem image/png])` 1 sola vez → avisa
+    "Voucher copiado al portapapeles (1 vez). Pégalo en WhatsApp" → abre `https://wa.me/`
+    **sin texto precargado** (`openWhatsAppApp()` sin caption; el boleta #/mesa/total ya viajan
+    DENTRO del PNG) → 1 Cmd+V = 1 único contenido en el borrador.
+  - **Notificaciones diferenciadas**: éxito de portapapeles vs "No se pudo copiar. Se descargó
+    el voucher: adjúntalo manualmente" (fallback descarga `boleta-<ticket>.png` + wa.me vacío,
+    solo si `clipboard.write`/ClipboardItem fallan de verdad).
+- **`src/components/ReceiptModal.tsx`**: `handleShareWhatsApp` async con guard `isSharing`
+  (deshabilita el botón mientras corre, opacity + cursor-wait) — segunda barrera anti doble click.
+- **Sin cambios en**: `buildVoucherCanvas`/`buildLines` (render del PNG 80mm), los dos modos
+  del modal (preview/paid), impresión `@media print`, POSContext, backend.
+- **Verificación (✔)**: `npm run lint` (`tsc --noEmit`) = 0 errores · `npm run build` = OK
+  (90 módulos).
+- **QA pendiente del usuario** (checklist): Mac + WhatsApp Desktop → Compartir → abre
+  borrador vacío → Cmd+V UNA vez → **1 solo voucher** (si aún se pegan 2 con un solo Cmd+V
+  persiste el multi-sabor del portapapeles de Chromium → aplicar Plan B:
+  `document.execCommand('copy')` sobre `<img>` oculto con data-URL); móvil → ventana nativa
+  Compartir con la imagen; cancelar la ventana nativa → modal sigue usable; navegador sin
+  ClipboardItem → descarga + wa.me.
+
 ---
 
 ## 10. Gotchas / Convenciones (leer antes de tocar código)
@@ -989,6 +1428,12 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 - **Errores**: lanzar `AppError(msg, statusCode, code)` en servicios; deja pasar
   Prisma/Zod al `errorHandler` central.
 - **Decimal en JSON**: nunca devolver el objeto raw de Prisma; pasar por `plain()`.
+- **2 decimales en fichas técnicas**: al crear/editar una receta se redondea ANTES de
+  escribir (front: `round2` de `src/lib/format.ts`; servidor: `round2` de `utils.ts` en
+  `createRecipe`/`updateRecipe`/`resolveRecipeProduct`). NO requiere migración: la DB
+  ya acota los campos monetarios (`Decimal(12,2)`); para `quantity`/`costPerUnit`
+  (`Decimal(12,4)`) el redondeo a 2 ocurre en la app. NO tocar `round3` de kardex
+  (deducción de despacho) ni los ratios analítica a 1 dec (fuera de alcance).
 
 ---
 
@@ -1003,7 +1448,10 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 | `server/prisma/seed-empty.ts` | Seed vacío (tras el canónico: 0 operaciones, 13 mesas libres, secuencias en 0) |
 | `db/processes/` + `db/process-map.html` | DBML por proceso (01–09 + _all) y mapa visual de procesos |
 | `db/gen-process-dbml.mjs` + `db/gen-process-map.mjs` | Generadores del DBML fragmentado y del mapa HTML |
+| `src/lib/format.ts` | `round2()` para el front (estándar 2 decimales en fichas técnicas) |
 | `src/lib/replayQueue.ts` | Dispatcher del replay offline (`replayCall`, 14 ops E4 + 19 E5) |
+| `src/lib/realtime.ts` | Singleton socket.io-client mesas/órdenes (Fase D acotada) |
+| `server/src/lib/realtime.ts` | Socket.io server: auth JWT, rooms por empresa, `notifyOrderState/notifyTableState` |
 | `server/src/lib/utils.ts` | AppError, errorHandler (Zod/Prisma), round*, toNum, plain |
 | `server/src/lib/auth.ts` | JWT + requireAuth/requireRoles |
 | `server/src/lib/prisma.ts` | PrismaClient singleton (plano) |
@@ -1050,5 +1498,8 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
 - **E4 (replay de la cola) ✅**: el POS encola ante fallas, reconecta y drena
   `ts_pending_queue_v2` con idempotencia por `clientOpId` (replay automático al reconectar, al arrancar con
   sesión o con el botón "Forzar Sincronización"). Falta **Fase C** (ledger `ClientOp` deductivo para
-  conflictos multi-terminal) y la Fase D (Socket.io) para offline-first robusto en 5+ terminales.
+  conflictos multi-terminal).
+- **Fase D (mesas/órdenes en vivo) ✅ acotada**: 2.º navegador ve `ocupada/libre` sin F5
+  (rooms por empresa + resync al reconectar + punto en vivo en el Header). Pendiente:
+  cocina/barra en vivo y catálogos en vivo.
 - Repo con git (`main` + `origin/main`); verificar `git status` limpio antes de cada sesión.
