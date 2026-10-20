@@ -1,11 +1,12 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-10-17` (E1–E5 completas a nivel código;
-> apertura perezosa de mesa + tiempo real mesas/órdenes (Fase D acotada) verificados;
-> estandarización a 2 decimales en fichas técnicas verificada a nivel API/BD; smoke E2E
-> offline en navegador pendiente del usuario).
-> **Punto de retome: segunda ronda de pruebas UI desde cero (Paso 2 de `planactual.md`:
-> ciclo offline + replay + persistencia F5 de catálogos + refrendo en vivo 2 navegadores),
+> Bitácora de avance del proyecto. `2026-10-20` (trabajo del 15–19 oct consolidation:
+> Fase D realtime completa, ledger `operaciones_cliente`, regla Caja vs Bancos, voucher
+> gráfico por WhatsApp, estándar 2 decimales en fichas — **todo commiteado y pusheado**;
+> base de datos restaurada a vacío y verificada).
+> **Punto de retome: `progreso/planpendiente.md` → (1) pantalla de Cocina/Barra,
+> (2) smoke E2E offline en navegador (Paso 2), (3) Maestro de Productos/Menú,
+> (4) auth: validar sesión en `requireAuth` (bloqueador de producción),
 > luego Fase C y Fase F (Azure).**
 > Objetivo: transformar el demo React (SPA) en un sistema de producción:
 > **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
@@ -1405,6 +1406,40 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   `document.execCommand('copy')` sobre `<img>` oculto con data-URL); móvil → ventana nativa
   Compartir con la imagen; cancelar la ventana nativa → modal sigue usable; navegador sin
   ClipboardItem → descarga + wa.me.
+
+---
+
+### Consolidación P0 — commit + push + base vacía (✔ realizado 2026-10-20)
+
+> Hallazgo al retomar: **todo el trabajo del 15–19 oct estaba SIN commitear** (~2.600 líneas
+> en 30 archivos modificados + 7 archivos nuevos) y **8 commits sin pushear**. Riesgo real de
+> perder el trabajo completo. Además `progreso/planactual.md` estaba borrado (migrado a
+> `planpendiente.md`) y la BD tenía datos de prueba (4 pedidos / 4 tx / 10 kardex / 28 oplog).
+
+- **Backup previo**: `BACKUP DATABASE [TaytaSabroso] TO DISK=... WITH INIT, COMPRESSION` →
+  `tayta_sabroso_20261020.bak` (1.6 MB) copiado a `~/tayta_sabroso_backups/` (fuera del repo)
+  y verificado con `RESTORE VERIFYONLY` → *"The backup set on file 1 is valid."*
+  ⚠️ En Docker **no hay volumen montado**: hay que `mkdir -p /var/opt/mssql/backup` dentro
+  del contenedor y luego `docker cp` al host. La ruta `/var/opt/mssql/backup` de la bitácora
+  anterior era de la máquina Windows.
+- **3 commits** (reparto por capa, sin staging parcial — `POSContext.tsx` mezclaba realtime +
+  finance + cola + guard de cocina y `git add -p` sobre ese archivo es propenso a errores):
+  | # | Hash | Alcance |
+  |---|------|---------|
+  | 1 | `2051a0c` | backend: `server/**` (socket.io, oplog, sync.routes, regla caja/bancos, guard cocina, round2) |
+  | 2 | `5212c38` | frontend: `src/**` + `vite.config.ts` + `package.json` raíz (socket.io-client, proxy `/socket.io`) |
+  | 3 | `5c45953` | docs: bitácora + `planactual.md` → `planpendiente.md` + `.gitignore` (`.claude/`) |
+- **Push**: `4e5468e..5c45953` → `origin/main` (11 commits subidos, 0 pendientes).
+- **`.claude/settings.json` NO se commitea**: tiene `ANTHROPIC_AUTH_TOKEN` local → se añadió
+  `.claude/` a `.gitignore`. Recordatorio: los `.env` nunca están trackeados (`.env*` ignorado,
+  solo `.env.example`); el password de `sa` no sale del repo.
+- **Reset a base vacía**: `npx tsx prisma/seed.ts && npx tsx prisma/seed-empty.ts`.
+- **Verificación (todo ✔)**: `tsc --noEmit` 0 (raíz) · `npm run build` OK (raíz y server) ·
+  conteos = **0** en pedidos / detalle / transacciones / compras / kardex / turnos /
+  `operaciones_cliente` / sesiones; **13/13 mesas libres**; catálogos intactos
+  (2 empresas · 16 productos · 13 insumos · 7 recetas · 4 cuentas · 9 métodos · 4 impresoras) ·
+  `verify-sync.ts` sin duplicados por `clientOpId` · smoke API: login PIN `1004` → 200,
+  los 7 catálogos con los conteos esperados, las 5 operaciones de lectura en 0, oplog en 0.
 
 ---
 
