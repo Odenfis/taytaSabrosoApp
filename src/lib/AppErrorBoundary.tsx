@@ -33,8 +33,8 @@ export class AppErrorBoundary extends Component<Props, State> {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            background: '#171614',
-            color: '#f3ede4',
+            background: 'var(--color-panel-62)',
+            color: 'var(--color-ink-body-soft)',
             fontFamily: 'system-ui, sans-serif',
             padding: 24,
             textAlign: 'center',
@@ -48,9 +48,9 @@ export class AppErrorBoundary extends Component<Props, State> {
           <button
             onClick={this.onReload}
             style={{
-              background: '#342e2a',
-              color: '#f3ede4',
-              border: '1px solid #54433c',
+              background: 'var(--color-panel-63)',
+              color: 'var(--color-ink-body-soft)',
+              border: '1px solid var(--color-edge-outline)',
               borderRadius: 10,
               padding: '10px 22px',
               fontSize: 14,

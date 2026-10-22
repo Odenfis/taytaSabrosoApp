@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { AppError, plain, round2, toNum } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import { emitShiftChanged, emitTransactionChanged } from '../lib/realtime';
+import { AppError, plain, round2, toNum } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import { emitShiftChanged, emitTransactionChanged } from '../lib/realtime.js';
 
 function nowParts() {
   const now = new Date();

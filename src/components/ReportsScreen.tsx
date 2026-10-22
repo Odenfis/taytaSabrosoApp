@@ -48,22 +48,22 @@ export const ReportsScreen: React.FC = () => {
   return (
     <main
       id="reports-screen"
-      className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 bg-[#121212] select-none"
+      className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 bg-panel-4 select-none"
     >
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-[20px] md:text-[24px] font-bold text-[#ffb597] tracking-tight">
+          <h2 className="text-[20px] md:text-[24px] font-bold text-ink-brand tracking-tight">
             Reportes & Cierre de Caja
           </h2>
-          <p className="text-[13px] text-[#dac1b8]/80">
+          <p className="text-[13px] text-ink-muted-5">
             Resumen estadístico de ventas, ocupación y formas de pago ({activeShift}).
           </p>
         </div>
 
         <button
           onClick={handlePrintZClosure}
-          className="bg-[#ebc246] hover:bg-[#ffe08b] text-[#3d2f00] px-4 py-2.5 rounded-xl font-bold text-[14px] flex items-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
+          className="bg-surface-gold-2 hover:bg-surface-gold-soft text-ink-on-accent px-4 py-2.5 rounded-xl font-bold text-[14px] flex items-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
         >
           <span className="material-symbols-outlined text-[20px]">print</span>
           <span>Imprimir Cierre Z</span>
@@ -72,32 +72,32 @@ export const ReportsScreen: React.FC = () => {
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-4">
-          <span className="text-[12px] font-semibold text-[#dac1b8]/80">Venta Bruta</span>
-          <h3 className="text-[22px] font-black text-[#60d4fb] mt-1">S/ {totalIngresos.toFixed(2)}</h3>
-          <span className="text-[11px] text-emerald-400 mt-1 block">+15.4% vs promedio</span>
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4">
+          <span className="text-[12px] font-semibold text-ink-muted-5">Venta Bruta</span>
+          <h3 className="text-[22px] font-black text-ink-info mt-1">S/ {totalIngresos.toFixed(2)}</h3>
+          <span className="text-[11px] text-ink-success mt-1 block">+15.4% vs promedio</span>
         </div>
 
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-4">
-          <span className="text-[12px] font-semibold text-[#dac1b8]/80">Ticket Promedio</span>
-          <h3 className="text-[22px] font-black text-[#ebc246] mt-1">S/ 114.50</h3>
-          <span className="text-[11px] text-[#dac1b8]/70 mt-1 block">37 comandas cobradas</span>
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4">
+          <span className="text-[12px] font-semibold text-ink-muted-5">Ticket Promedio</span>
+          <h3 className="text-[22px] font-black text-ink-gold mt-1">S/ 114.50</h3>
+          <span className="text-[11px] text-ink-muted-3 mt-1 block">37 comandas cobradas</span>
         </div>
 
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-4">
-          <span className="text-[12px] font-semibold text-[#dac1b8]/80">Ocupación Mesas</span>
-          <h3 className="text-[22px] font-black text-[#ffb597] mt-1">
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4">
+          <span className="text-[12px] font-semibold text-ink-muted-5">Ocupación Mesas</span>
+          <h3 className="text-[22px] font-black text-ink-brand mt-1">
             {Math.round((tables.filter((t) => t.status !== 'libre').length / tables.length) * 100)}%
           </h3>
-          <span className="text-[11px] text-[#dac1b8]/70 mt-1 block">
+          <span className="text-[11px] text-ink-muted-3 mt-1 block">
             {tables.filter((t) => t.status !== 'libre').length} de {tables.length} mesas ocupadas
           </span>
         </div>
 
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-4">
-          <span className="text-[12px] font-semibold text-[#dac1b8]/80">Balance Neto Turno</span>
-          <h3 className="text-[22px] font-black text-white mt-1">S/ {saldoActual.toFixed(2)}</h3>
-          <span className="text-[11px] text-[#dac1b8]/70 mt-1 block">
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4">
+          <span className="text-[12px] font-semibold text-ink-muted-5">Balance Neto Turno</span>
+          <h3 className="text-[22px] font-black text-ink-strong mt-1">S/ {saldoActual.toFixed(2)}</h3>
+          <span className="text-[11px] text-ink-muted-3 mt-1 block">
             Egresos: S/ {totalEgresos.toFixed(2)}
           </span>
         </div>
@@ -106,56 +106,56 @@ export const ReportsScreen: React.FC = () => {
       {/* Charts & Breakdown Bento */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Payment Methods Distribution */}
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-5 space-y-4">
-          <h3 className="text-[16px] font-bold text-[#e5e2e1] flex items-center gap-2">
-            <span className="material-symbols-outlined text-[#ebc246]">pie_chart</span>
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
+          <h3 className="text-[16px] font-bold text-ink-body flex items-center gap-2">
+            <span className="material-symbols-outlined text-ink-gold">pie_chart</span>
             Distribución por Método de Pago
           </h3>
 
           <div className="space-y-3 pt-2">
             <div>
-              <div className="flex justify-between text-[13px] font-semibold mb-1 text-[#e5e2e1]">
+              <div className="flex justify-between text-[13px] font-semibold mb-1 text-ink-body">
                 <span className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#ebc246]"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-surface-gold-2"></span>
                   Efectivo en Caja
                 </span>
                 <span>S/ {paymentBreakdown.cash.amount.toFixed(2)} ({paymentBreakdown.cash.pct}%)</span>
               </div>
-              <div className="w-full h-2.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+              <div className="w-full h-2.5 bg-panel-3 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-[#ebc246] rounded-full"
+                  className="h-full bg-surface-gold-2 rounded-full"
                   style={{ width: `${paymentBreakdown.cash.pct}%` }}
                 ></div>
               </div>
             </div>
 
             <div>
-              <div className="flex justify-between text-[13px] font-semibold mb-1 text-[#e5e2e1]">
+              <div className="flex justify-between text-[13px] font-semibold mb-1 text-ink-body">
                 <span className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#60d4fb]"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-surface-info-2"></span>
                   Cuentas Bancarias
                 </span>
                 <span>S/ {paymentBreakdown.bank.amount.toFixed(2)} ({paymentBreakdown.bank.pct}%)</span>
               </div>
-              <div className="w-full h-2.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+              <div className="w-full h-2.5 bg-panel-3 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-[#60d4fb] rounded-full"
+                  className="h-full bg-surface-info-2 rounded-full"
                   style={{ width: `${paymentBreakdown.bank.pct}%` }}
                 ></div>
               </div>
             </div>
 
             <div>
-              <div className="flex justify-between text-[13px] font-semibold mb-1 text-[#e5e2e1]">
+              <div className="flex justify-between text-[13px] font-semibold mb-1 text-ink-body">
                 <span className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#ffb597]"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-surface-brand"></span>
                   Billeteras Digitales (Yape / Plin)
                 </span>
                 <span>S/ {paymentBreakdown.yape.amount.toFixed(2)} ({paymentBreakdown.yape.pct}%)</span>
               </div>
-              <div className="w-full h-2.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+              <div className="w-full h-2.5 bg-panel-3 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-[#ffb597] rounded-full"
+                  className="h-full bg-surface-brand rounded-full"
                   style={{ width: `${paymentBreakdown.yape.pct}%` }}
                 ></div>
               </div>
@@ -164,25 +164,25 @@ export const ReportsScreen: React.FC = () => {
         </div>
 
         {/* Top Platos Más Vendidos */}
-        <div className="bg-[#1c1b1b] border border-[#54433c]/60 rounded-2xl p-5 space-y-4">
-          <h3 className="text-[16px] font-bold text-[#e5e2e1] flex items-center gap-2">
-            <span className="material-symbols-outlined text-[#ffb597]">local_fire_department</span>
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
+          <h3 className="text-[16px] font-bold text-ink-body flex items-center gap-2">
+            <span className="material-symbols-outlined text-ink-brand">local_fire_department</span>
             Platos Más Vendidos del Turno
           </h3>
 
           <div className="space-y-3 pt-1">
             {topDishes.map((dish, i) => (
-              <div key={i} className="flex items-center justify-between py-1.5 border-b border-[#54433c]/20">
+              <div key={i} className="flex items-center justify-between py-1.5 border-b border-edge-outline-9">
                 <div className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-[#2a2a2a] text-[#dac1b8] text-[12px] font-bold flex items-center justify-center">
+                  <span className="w-6 h-6 rounded-full bg-panel-3 text-ink-muted-2 text-[12px] font-bold flex items-center justify-center">
                     {i + 1}
                   </span>
                   <div>
-                    <span className="text-[14px] font-semibold text-[#e5e2e1] block">{dish.name}</span>
-                    <span className="text-[11px] text-[#dac1b8]/70">{dish.count} órdenes preparadas</span>
+                    <span className="text-[14px] font-semibold text-ink-body block">{dish.name}</span>
+                    <span className="text-[11px] text-ink-muted-3">{dish.count} órdenes preparadas</span>
                   </div>
                 </div>
-                <span className="text-[14px] font-bold text-[#ebc246]">
+                <span className="text-[14px] font-bold text-ink-gold">
                   S/ {dish.revenue.toFixed(2)}
                 </span>
               </div>

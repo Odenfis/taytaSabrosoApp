@@ -1,5 +1,7 @@
+import { isInsumoOp, runInsumoRequest } from './insumoCatalog';
 import type { PendingOp } from '../types';
 import { apiClient, ApiError } from './api';
+import { isProductOp, productIdOf, signalProductQueue } from './productCatalog';
 
 // Dispatcher de replay de la cola offline (Fase E4).
 // Convierte una PendingOp guardada en localStorage en la llamada HTTP real del server,
@@ -12,7 +14,7 @@ import { apiClient, ApiError } from './api';
 //   - 'business' → otro 4xx de negocio → omitir con aviso al usuario.
 //   - 'retry'    → red/5xx/401 → conservar en la cola y detener el replay (reintento posterior).
 
-export type ReplayDisposition = 'ok' | 'already' | 'gone' | 'business' | 'retry';
+export type ReplayDisposition = 'ok' | 'already' | 'gone' | 'business' | 'retry' | 'conflict';
 
 export interface ReplayCallResult {
   disposition: ReplayDisposition;
@@ -20,6 +22,7 @@ export interface ReplayCallResult {
   message?: string;
   /** true solo cuando el reintento se debe a red caída (status 0), no a error 5xx del server. */
   network?: boolean;
+  unauthorized?: boolean;
 }
 
 type AnyPayload = Record<string, unknown>;
@@ -32,21 +35,40 @@ function pick(p: AnyPayload, keys: string[]): Record<string, unknown> {
   return out;
 }
 
-export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
+const productRequests = new Map<string, Promise<ReplayCallResult>>();
+const sendingProducts = new Set<string>();
+export const productIsSending = (id: string) => sendingProducts.has(id);
+export function replayCall(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
+  if (isInsumoOp(op)) return runInsumoRequest(op, () => replayOne(op, payload));
+  if (!isProductOp(op)) return replayOne(op, payload);
+  const existing = productRequests.get(op.clientOpId);
+  if (existing) return existing;
+  const id = productIdOf(op);
+  sendingProducts.add(id);
+  const request = replayOne(op, payload).finally(() => {
+    productRequests.delete(op.clientOpId); sendingProducts.delete(id); signalProductQueue();
+  });
+  productRequests.set(op.clientOpId, request);
+  signalProductQueue();
+  return request;
+}
+async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
   const tryRun = async (): Promise<unknown> => {
     switch (op.op) {
       case 'openOrder':
         return apiClient.post('/operations/orders/open', pick(payload, ['tableId', 'waiter', 'clientOpId']));
       case 'quickOrder':
         return apiClient.post('/operations/orders/quick-bar', pick(payload, ['companyId', 'waiter', 'clientOpId']));
+      case 'cancelOpening':
+        return apiClient.post('/operations/orders/cancel-opening', { openingClientOpId: payload.openingClientOpId });
       case 'addItem':
         return apiClient.post(`/operations/orders/${String(payload.orderId)}/items`, pick(payload, ['productId', 'quantity', 'notes']));
       case 'updateItemQuantity':
-        return apiClient.patch(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}/quantity`, { delta: payload.delta });
+        return apiClient.patch(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}/quantity`, { delta: payload.delta, clientOpId: op.clientOpId });
       case 'updateItemNotes':
         return apiClient.patch(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}/notes`, { notes: payload.notes });
       case 'removeItem':
-        return apiClient.del(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}`);
+        return apiClient.del(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}?clientOpId=${encodeURIComponent(op.clientOpId)}`);
       case 'sendToKitchen':
         return apiClient.post(`/operations/orders/${String(payload.orderId)}/send-to-kitchen`, pick(payload, ['clientOpId']));
       case 'markForBilling':
@@ -65,6 +87,10 @@ export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<Re
         return apiClient.post('/operations/kardex/adjustments', pick(payload, ['insumoId', 'quantity', 'type', 'reason', 'companyId', 'clientOpId']));
       // ---- Fase E5: mutaciones de catálogos (el payload lleva solo campos del server;
       // `tempId`/`clientOpId` se excluyen salvo que la ruta los acepte) ----
+      case 'createProduct':
+        return apiClient.post('/catalogs/products', { ...pick(payload, ['id', 'companyId', 'name', 'description', 'price', 'category', 'image', 'available']), clientOpId: op.clientOpId });
+      case 'updateProduct':
+        return apiClient.patch(`/catalogs/products/${String(payload.id)}`, { ...pick(payload, ['name', 'description', 'price', 'category', 'image', 'available', 'expectedVersion']), clientOpId: op.clientOpId });
       case 'createTable':
         return apiClient.post('/catalogs/tables', pick(payload, ['companyId', 'number', 'capacity', 'zone', 'notes']));
       case 'updateTable':
@@ -90,17 +116,17 @@ export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<Re
       case 'deletePrinter':
         return apiClient.del(`/catalogs/printers/${String(payload.id)}`);
       case 'createRecipe':
-        return apiClient.post('/catalogs/recipes', pick(payload, ['companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
+        return apiClient.post('/catalogs/recipes', pick(payload, ['id', 'companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
       case 'updateRecipe':
         return apiClient.patch(`/catalogs/recipes/${String(payload.id)}`, pick(payload, ['productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
       case 'deleteRecipe':
         return apiClient.del(`/catalogs/recipes/${String(payload.id)}`);
       case 'createInsumo':
-        return apiClient.post('/catalogs/insumos', pick(payload, ['companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']));
+        return apiClient.post('/catalogs/insumos', { ...pick(payload, ['id', 'companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']), clientOpId: op.clientOpId });
       case 'updateInsumo':
-        return apiClient.patch(`/catalogs/insumos/${String(payload.id)}`, pick(payload, ['companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']));
+        return apiClient.patch(`/catalogs/insumos/${String(payload.id)}`, { ...pick(payload, ['name', 'category', 'unit', 'minStock', 'costPerUnit', 'expectedVersion']), clientOpId: op.clientOpId });
       case 'deleteInsumo':
-        return apiClient.del(`/catalogs/insumos/${String(payload.id)}`);
+        return apiClient.del(`/catalogs/insumos/${String(payload.id)}${payload.expectedVersion ? `?expectedVersion=${Number(payload.expectedVersion)}` : ''}`);
       case 'saveRecipe': {
         // Upsert: intenta PATCH y si la receta no existe (404) la crea con POST.
         const id = String(payload.id);
@@ -110,7 +136,7 @@ export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<Re
         } catch (err) {
           if (err instanceof ApiError && err.status === 404) {
             return await apiClient.post('/catalogs/recipes', {
-              ...pick(payload, ['companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']),
+              ...pick(payload, ['id', 'companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']),
             });
           }
           throw err;
@@ -129,8 +155,10 @@ export async function replayCall(op: PendingOp, payload: AnyPayload): Promise<Re
   } catch (err) {
     if (err instanceof ApiError) {
       if (err.status === 0) return { disposition: 'retry', network: true };
-      if (err.status === 401 || err.isUnauthorized) return { disposition: 'retry', network: false, message: err.message };
+      if (err.status === 401 || err.isUnauthorized) return { disposition: 'retry', network: false, unauthorized: true, message: err.message };
       if (err.status >= 500) return { disposition: 'retry', network: false, message: err.message };
+      if (err.code.startsWith('INSUMO_')) return { disposition: 'conflict', message: err.message };
+      if (isProductOp(op) && err.code === 'PRODUCT_VERSION_CONFLICT') return { disposition: 'conflict', message: err.message };
       // 4xx
       if (err.code === 'ALREADY_REGULARIZED' || err.code === 'ALREADY_PAID') {
         return { disposition: 'already', message: err.message };

@@ -1,9 +1,10 @@
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
-import { AppError, plain } from '../lib/utils';
+import { AppError, plain } from '../lib/utils.js';
 import { Prisma } from '@prisma/client';
-import { hashToken, signAccessToken } from '../lib/auth';
-import { prisma } from '../lib/prisma';
+import { hashToken, signAccessToken } from '../lib/auth.js';
+import { prisma } from '../lib/prisma.js';
+import { disconnectSession } from '../lib/realtime.js';
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -55,6 +56,9 @@ export async function login(input: LoginInput) {
       terminalCode: deviceCode,
     },
   });
+  if (!device.isActive) {
+    throw new AppError('Esta terminal está inactiva.', 401, 'UNAUTHORIZED');
+  }
 
   const token = signAccessToken({
     sub: matchedUser.id,
@@ -91,9 +95,11 @@ export async function login(input: LoginInput) {
 }
 
 export async function logout(userId: string, token: string) {
+  const tokenHash = hashToken(token);
   await prisma.session.deleteMany({
-    where: { userId, tokenHash: hashToken(token) },
+    where: { userId, tokenHash },
   });
+  disconnectSession(tokenHash);
 }
 
 export async function getMe(userId: string) {

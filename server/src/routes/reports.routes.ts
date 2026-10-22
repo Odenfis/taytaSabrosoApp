@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../lib/auth';
-import { getCompanyAnalysis, getReportSummary } from '../services/analytics.service';
+import { requireAuth } from '../lib/auth.js';
+import { getCompanyAnalysis, getReportSummary } from '../services/analytics.service.js';
 
 const router = Router();
 router.use(requireAuth);

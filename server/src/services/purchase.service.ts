@@ -1,8 +1,9 @@
+import { notifyInventoryAfterCommit, inventoryTransaction, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
-import { AppError, plain, round2, toNum } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import { emitKardexChanged, emitPurchaseChanged, emitTransactionChanged } from '../lib/realtime';
+import { AppError, plain, round2, toNum } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import { emitKardexChanged, emitPurchaseChanged, emitTransactionChanged } from '../lib/realtime.js';
 
 function nowParts() {
   const now = new Date();
@@ -36,7 +37,7 @@ export interface CreatePurchaseInput {
 
 // Registra compra + movimientos Kardex ENTRADA_COMPRA + costo promedio ponderado + libro de caja.
 export async function createPurchase(input: CreatePurchaseInput) {
-  return prisma.$transaction(async (tx) => {
+  return inventoryTransaction(async (tx) => {
     const { items, ...data } = input;
     const { time, date, utc } = nowParts();
 
@@ -47,6 +48,12 @@ export async function createPurchase(input: CreatePurchaseInput) {
         include: { items: true },
       });
       if (existing) return existing;
+    }
+
+    const selected = await requireActiveInsumos(tx, items.map((i) => i.insumoId), data.companyId);
+    for (const item of items) {
+      const insumo = selected.find((i) => i.id === item.insumoId);
+      if (insumo && insumo.unit !== item.unit) throw new AppError('La unidad de compra no coincide con el insumo.', 409, 'INSUMO_UNIT_MISMATCH');
     }
 
     const purchase = await tx.purchase.create({
@@ -120,7 +127,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
       });
 
       // Notifica en tiempo real la entrada de compra al kardex de la empresa.
-      emitKardexChanged(purchase.companyId, {
+      notifyInventoryAfterCommit(tx, () => emitKardexChanged(purchase.companyId, {
         insumoId: item.insumoId ?? null,
         insumoName: item.insumoName,
         companyId: purchase.companyId,
@@ -133,7 +140,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         stockAfter: toNum(stockAfter),
         referenceDoc: `Compra Factura #${purchase.invoiceNumber || purchase.provisionalNoteNumber} (${purchase.supplierName})`,
         updatedAt: utc.toISOString(),
-      });
+      }));
 
       if (existingInsumo) {
         // Costo promedio ponderado (mismo algoritmo que la demo)
@@ -150,6 +157,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         await tx.insumo.update({
           where: { id: existingInsumo.id },
           data: {
+            version: { increment: 1 },
             currentStock: stockAfter,
             costPerUnit: weightedCost,
             lastPurchaseDate: `${date} ${time}`,
@@ -181,7 +189,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         },
       });
       // Aviso realtime Libro de Caja: egreso de gaveta por pago a proveedor.
-      emitTransactionChanged(purchase.companyId, {
+      notifyInventoryAfterCommit(tx, () => emitTransactionChanged(purchase.companyId, {
         transactionId: paymentTx.id,
         companyId: purchase.companyId,
         type: 'Pago Proveedor',
@@ -193,7 +201,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         shift: currentShift,
         tableNumber: null,
         updatedAt: utc.toISOString(),
-      });
+      }));
     } else if (purchase.bankAccountId) {
       const bankAcc = await tx.bankAccount.findUnique({ where: { id: purchase.bankAccountId } });
       if (bankAcc) {
@@ -221,7 +229,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         },
       });
       // Aviso realtime Libro de Caja: egreso bancario por pago a proveedor.
-      emitTransactionChanged(purchase.companyId, {
+      notifyInventoryAfterCommit(tx, () => emitTransactionChanged(purchase.companyId, {
         transactionId: paymentTx.id,
         companyId: purchase.companyId,
         type: 'Pago Proveedor',
@@ -233,7 +241,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         shift: currentShift,
         tableNumber: null,
         updatedAt: utc.toISOString(),
-      });
+      }));
     }
 
     const enriched = await tx.purchase.findUnique({
@@ -242,7 +250,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
     });
 
     // Notifica en tiempo real la compra creada (entrada de Kardex) a los terminales de la empresa.
-    emitPurchaseChanged(purchase.companyId, {
+    notifyInventoryAfterCommit(tx, () => emitPurchaseChanged(purchase.companyId, {
       purchaseId: purchase.id,
       companyId: purchase.companyId,
       documentStatus: purchase.documentStatus,
@@ -253,7 +261,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
       total: toNum(purchase.total),
       category: purchase.category,
       updatedAt: utc.toISOString(),
-    });
+    }));
 
     return enriched;
   }).then((p) => plain(p));
@@ -264,7 +272,7 @@ export async function regularizePurchase(
   purchaseId: string,
   input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string }
 ) {
-  return prisma.$transaction(async (tx) => {
+  return inventoryTransaction(async (tx) => {
     const purchase = await tx.purchase.findFirst({ where: { id: purchaseId, isDeleted: false } });
     if (!purchase) throw new AppError('Compra no encontrada.', 404, 'NOT_FOUND');
     if (purchase.documentStatus === 'regularizado') {
@@ -308,7 +316,7 @@ export async function regularizePurchase(
     });
 
     // Notifica en tiempo real la compra regularizada (factura formal) a los terminales de la empresa.
-    emitPurchaseChanged(updated.companyId, {
+    notifyInventoryAfterCommit(tx, () => emitPurchaseChanged(updated.companyId, {
       purchaseId: updated.id,
       companyId: updated.companyId,
       documentStatus: updated.documentStatus,
@@ -319,11 +327,11 @@ export async function regularizePurchase(
       total: toNum(updated.total),
       category: updated.category,
       updatedAt: utc.toISOString(),
-    });
+    }));
 
     // Aviso realtime Libro de Caja: la regularización re-etiqueta las transacciones
     // del vale provisional con la factura formal (importes no cambian, sí el detalle).
-    emitTransactionChanged(updated.companyId, {
+    notifyInventoryAfterCommit(tx, () => emitTransactionChanged(updated.companyId, {
       companyId: updated.companyId,
       type: 'Pago Proveedor',
       amount: toNum(updated.total),
@@ -334,7 +342,7 @@ export async function regularizePurchase(
       shift: 'Día',
       tableNumber: null,
       updatedAt: utc.toISOString(),
-    });
+    }));
 
     return updated;
   }).then((p) => plain(p));

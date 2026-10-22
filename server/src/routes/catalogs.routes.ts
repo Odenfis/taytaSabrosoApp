@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../lib/auth';
-import { AppError } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import * as master from '../services/master.service';
-import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog';
+import { requireAuth } from '../lib/auth.js';
+import { AppError } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import * as master from '../services/master.service.js';
+import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
+import { createInsumoSchema, updateInsumoSchema } from '../services/insumo.service.js';
+import { createProductSchema, updateProductSchema } from '../services/product.service.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -114,18 +116,7 @@ router.get('/products', async (req, res, next) => {
 router.post('/products', async (req, res, next) => {
   const op = oplog(req, 'producto', 'crear_producto');
   try {
-    const body = z
-      .object({
-        companyId: z.string().min(1),
-        name: z.string().min(1),
-        description: z.string().default(''),
-        price: z.number().nonnegative(),
-        category: z.string().min(1),
-        image: z.string().default(''),
-        available: z.boolean().optional(),
-        hasRecipe: z.boolean().optional(),
-      })
-      .parse(req.body);
+    const body = createProductSchema.parse(req.body);
     const created = await master.createProduct(body);
     op.ok(created);
     res.status(201).json(created);
@@ -139,17 +130,7 @@ router.patch('/products/:id', async (req, res, next) => {
   const op = oplog(req, 'producto', 'actualizar_producto');
   try {
     const { id } = idParam.parse(req.params);
-    const body = z
-      .object({
-        name: z.string().min(1).optional(),
-        description: z.string().optional(),
-        price: z.number().nonnegative().optional(),
-        category: z.string().optional(),
-        image: z.string().optional(),
-        available: z.boolean().optional(),
-        hasRecipe: z.boolean().optional(),
-      })
-      .parse(req.body);
+    const body = updateProductSchema.parse(req.body);
     const created = await master.updateProduct(id, body);
     op.ok(created);
     res.json(created);
@@ -178,7 +159,7 @@ router.get('/insumos', async (req, res, next) => {
     const q = z
       .object({ companyId: z.string().optional(), category: z.string().optional() })
       .parse(req.query);
-    res.json(await master.listInsumos(q.companyId, q.category));
+    res.json(await master.listInsumos(q.companyId, q.category, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId));
   } catch (err) {
     next(err);
   }
@@ -187,19 +168,8 @@ router.get('/insumos', async (req, res, next) => {
 router.post('/insumos', async (req, res, next) => {
   const op = oplog(req, 'insumo', 'crear_insumo');
   try {
-    const body = z
-      .object({
-        companyId: z.string().nullable().optional(), // null = 'ambas'
-        name: z.string().min(1),
-        category: z.string().min(1),
-        unit: z.string().min(1),
-        currentStock: z.number().nonnegative(),
-        minStock: z.number().nonnegative().default(0),
-        costPerUnit: z.number().nonnegative(),
-        lastPurchaseDate: z.string().optional(),
-      })
-      .parse(req.body);
-    const created = await master.createInsumo(body);
+    const body = createInsumoSchema.parse(req.body);
+    const created = await master.createInsumo(body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -212,19 +182,8 @@ router.patch('/insumos/:id', async (req, res, next) => {
   const op = oplog(req, 'insumo', 'actualizar_insumo');
   try {
     const { id } = idParam.parse(req.params);
-    const body = z
-      .object({
-        companyId: z.string().nullable().optional(),
-        name: z.string().optional(),
-        category: z.string().optional(),
-        unit: z.string().optional(),
-        currentStock: z.number().nonnegative().optional(),
-        minStock: z.number().nonnegative().optional(),
-        costPerUnit: z.number().nonnegative().optional(),
-        lastPurchaseDate: z.string().nullable().optional(),
-      })
-      .parse(req.body);
-    const created = await master.updateInsumo(id, body);
+    const body = updateInsumoSchema.parse(req.body);
+    const created = await master.updateInsumo(id, body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -237,7 +196,8 @@ router.delete('/insumos/:id', async (req, res, next) => {
   const op = oplog(req, 'insumo', 'eliminar_insumo');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deleteInsumo(id);
+    const query = z.object({ expectedVersion: z.coerce.number().int().positive().optional() }).parse(req.query);
+    const created = await master.deleteInsumo(id, query.expectedVersion, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -270,8 +230,9 @@ router.post('/recipes', async (req, res, next) => {
   try {
     const body = z
       .object({
+        id: z.string().min(1).max(36).optional(),
         companyId: z.string().min(1),
-        productId: z.string().optional(),
+        productId: z.string().nullable().optional(),
         productName: z.string().min(1),
         category: z.string().min(1),
         portions: z.number().int().positive().optional(),

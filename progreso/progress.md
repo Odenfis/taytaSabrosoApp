@@ -1,15 +1,312 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
-> Bitácora de avance del proyecto. `2026-10-20` (trabajo del 15–19 oct consolidation:
-> Fase D realtime completa, ledger `operaciones_cliente`, regla Caja vs Bancos, voucher
-> gráfico por WhatsApp, estándar 2 decimales en fichas — **todo commiteado y pusheado**;
-> base de datos restaurada a vacío y verificada).
-> **Punto de retome: `progreso/planpendiente.md` → (1) pantalla de Cocina/Barra,
-> (2) smoke E2E offline en navegador (Paso 2), (3) Maestro de Productos/Menú,
-> (4) auth: validar sesión en `requireAuth` (bloqueador de producción),
-> luego Fase C y Fase F (Azure).**
-> Objetivo: transformar el demo React (SPA) en un sistema de producción:
-> **SQL Server (Azure) + Express + offline-first + multi-empresa en una sola BD.**
+> Actualizado `2026-10-21`: **Modo Claro/Oscuro/Sistema implementado**, conservando los cambios previos de Kardex y cobro.
+> Última validación: **50 pruebas cliente aprobadas**, TypeScript y build frontend correctos.
+> Revisión visual con componentes reales y contexto de prueba sin escrituras operativas; no equivale a una prueba integral contra SQL.
+> El login local devolvió HTTP 500 durante la revisión del tema. Persistencia real de operaciones y prueba física de impresión pendientes.
+> Cambios locales conservados; esta entrada no afirma commit/push. Las entradas siguientes conservan resultados históricos de sus respectivas ejecuciones.
+
+## Modo claro integral — 2026-10-21
+
+### Arquitectura y alcance implementado
+
+- `public/theme-init.js` se ejecuta desde `index.html` antes de React y comparte un único almacén con `src/context/ThemeContext.tsx`. Aplica `data-theme`, `color-scheme` y la clase oscura sobre `<html>`, incluidos los portales. Preferencia ausente/inválida: oscuro. Única clave persistida por este almacén: `ts_ui_theme_v1`.
+- Claro, Oscuro y Sistema disponibles antes del login, en el pie de la barra lateral (menú compacto también en pantallas estrechas) y en la nueva pestaña Apariencia de Configuración. Impresoras sigue siendo la pestaña inicial.
+- Sistema escucha `prefers-color-scheme` únicamente mientras está seleccionado. El evento `storage` sincroniza pestañas. Fallos de almacenamiento mantienen la preferencia en memoria. No se recarga ni se cambia la clave de las pantallas para aplicar el tema; cerrar sesión no borra la preferencia.
+- El cambio visual desactiva transiciones durante dos cuadros para evitar mezclas transitorias de texto y fondo poco legibles. No bloquea los formularios ni sustituye el árbol de la aplicación.
+- `src/index.css` concentra las paletas. Familias: superficies (`surface-*`, `panel*`), textos (`ink-*`, `on-surface*`), bordes (`edge-*`, `outline*`), selección, foco, estados de éxito/advertencia/peligro/información y sombras. Las variantes numéricas conservan diferencias de tono/opacidad del tema oscuro original; al añadir UI se debe reutilizar la función semántica adecuada, no un hexadecimal ni una variante elegida solo por parecido.
+- Claro usa fondo cálido `#F7F4F0`, panel blanco, texto `#292320`, terracota `#823B19` y dorado legible `#805B00`. El dorado luminoso se mantiene como acento decorativo. Los textos sobre acciones sólidas tienen tokens separados de títulos y selecciones suaves.
+- Migración visual de login/carga/error general, navegación, mesas, comanda/notas, cobro, Kardex/insumos, compras, productos, recetas, cuentas/métodos, caja, ratios, reportes, configuración e impresoras; también modales globales, confirmaciones y avisos presentes en esos componentes.
+- Logo y fotografías conservan sus colores. Si falla la imagen del login, aparece el nombre e icono existentes. No se añadieron dependencias ni cambios de API, esquema, autenticación, cálculos, permisos o sincronización para el tema. Se trabajó sobre las modificaciones locales existentes; se guardó una copia previa en `/tmp/theme-baseline` para comparar el alcance de esta intervención.
+
+### Excepciones visuales intencionales
+
+- Papel de `ReceiptModal.tsx` y `PrinterTestModal.tsx`: blanco, negros/grises fijos, contenido y reglas de 80 mm conservados. Solo se tematiza el marco exterior y sus controles.
+- Colores originales de imágenes/logo y colores de marca sobre fondos sólidos permanecen separados de los textos adaptables. Gradientes y sombras tienen variables propias; no se aplicó inversión ni filtros a la aplicación.
+- La auditoría automatizada de colores permite explícitamente las regiones de papel; los valores de paleta se centralizan en CSS. Esta auditoría evita reintroducir colores directos en componentes, pero no sustituye una revisión visual.
+
+### Comprobaciones realizadas
+
+| Comprobación | Resultado y alcance |
+|---|---|
+| Preferencia y arranque | Pruebas del inicializador real: ausente, válida, inválida, almacenamiento inaccesible, sistema, cambios de SO simulados y eventos entre pestañas. |
+| Persistencia | Login real: elegir claro y recargar conserva la preferencia. Sincronización entre dos pestañas de la vista de prueba comprobada. |
+| Automatización | 8 pruebas de tema; 50 pruebas cliente totales, incluidas las existentes de cobro e inventario. Contraste de paleta, cambio atómico, clave de almacenamiento y excepciones de papel cubiertos. |
+| Pantallas | Capturas claras/oscuras de mesas, Kardex, compras, productos, recetas, ratios, movimientos, bancos, reportes y configuración con componentes reales y contexto simulado. |
+| Capas y formularios | Menú portal de Kardex, edición de insumo, notas, cobro, turno, offline, recibo y prueba de impresión revisados en ambos temas. |
+| Estado conservado | Efectivo S/200, voucher `TEMA-123`, nota editada y nombre de insumo sin guardar permanecen al cambiar tema. Se cancelaron formularios de prueba. |
+| Empresas y tamaños | Vistas El Tayta, Sabroso y consolidada; selector compacto a 390 px y mesas a 820 px mediante iframe. No se afirma cobertura exhaustiva de todos los estados en cada tamaño. |
+| Legibilidad | Auditoría de texto renderizado de las diez pantallas principales en claro sin fallos detectados tras ajustes. Excluye iconos, deshabilitados y fondos con gradientes; no es certificación integral WCAG. |
+| Recibo | Texto del comprobante idéntico antes/después de cambiar tema; papel blanco y texto oscuro. No se ejecutó impresión física ni comprobación del diálogo nativo de impresión. |
+| Verificación de código | `npm run lint`, `npm run build`, `npm test`, `git diff --check`. Vite conserva advertencia de bundle superior a 500 kB. |
+
+Las vistas posteriores al login se comprobaron mediante una aplicación temporal que importa los componentes reales y reemplaza únicamente el contexto POS por datos ficticios y manejadores sin escritura. No se registraron ventas, movimientos ni stock en una base operativa. Las capturas son evidencia de presentación e interacción local, **no sustituyen las pruebas integrales de operación**.
+
+### Evidencia y pendientes explícitos
+
+Capturas en [evidencias/temas](evidencias/temas/): [login claro](evidencias/temas/login-claro.png), [mesas claro](evidencias/temas/mesas-claro.png), [mesas oscuro](evidencias/temas/mesas-oscuro.png), [apariencia](evidencias/temas/apariencia-claro.png), [selector a 390 px](evidencias/temas/selector-390-claro.png), [Kardex](evidencias/temas/kardex-claro.png), [recibo claro](evidencias/temas/recibo-claro.png) y [recibo oscuro](evidencias/temas/recibo-oscuro.png). El directorio incluye las demás pantallas y modales revisados.
+
+- Resolver el HTTP 500 del login local antes de realizar una sesión integral con catálogo/órdenes reales de una base temporal identificada. No se investigó ni modificó el backend como parte del tema.
+- Pendiente: completar la matriz exhaustiva de todos los formularios y estados vacíos/carga/error/conflicto/deshabilitado, navegación por teclado en cada modal y todos los anchos. Se revisaron muestras representativas, no todas las combinaciones.
+- Pendiente: prueba integral de cobro/liberación, inventario y cola offline durante cambios de tema, con inspección de tráfico y persistencia. El almacén de tema no importa API ni contexto de negocio; esto y las pruebas locales no constituyen por sí solos una garantía E2E.
+- Pendiente: impresión nativa/física de 80 mm y cambios reales de preferencia del sistema operativo (estos últimos están simulados en pruebas automatizadas).
+- No se repitieron suites servidor/SQL para esta adaptación visual. No se afirma ausencia absoluta de regresiones por compilar.
+- La revisión visual posterior de Kardex verificó el portal y edición en el contexto de prueba; las limitaciones operativas anotadas en su entrada histórica siguen vigentes.
+
+## Métodos de cobro: selección, campos y validación — 2026-10-21
+
+### Problema y corrección
+
+- La pantalla iniciaba con el texto `Efectivo` y sin ID seleccionado, mientras el catálogo mostraba `Efectivo en Caja`: ninguna tarjeta quedaba marcada. Al pulsarla, la comparación literal dejaba de reconocer efectivo y mostraba voucher en lugar del cálculo de vuelto.
+- `src/components/PaymentScreen.tsx` mantiene una selección por ID y deriva del mismo método el nombre, categoría, cuenta bancaria, referencia requerida y datos enviados a `completePayment`.
+- El catálogo visible incluye únicamente métodos activos/no eliminados de la empresa de la mesa y compartidos (`ambas`), independientemente del filtro global. Se retiró el fallback a la primera mesa cuando no existe la seleccionada.
+- La selección inicial prioriza la categoría `Efectivo` y, si no existe, el primer método disponible. Espera un catálogo inicialmente vacío. Un refresco conserva una selección válida; si desaparece o se desactiva, la selección queda vacía y exige elección explícita, sin cambiar silenciosamente a otro método.
+- Sin métodos disponibles se muestra un aviso, se bloquea confirmar y se conserva el acceso a administrar métodos. Se eliminaron las tres opciones genéricas de respaldo, según decisión del usuario.
+- El panel de efectivo depende de la categoría, no del nombre. El voucher se muestra y exige solo si `requiresReferenceNumber` lo indica; el destino bancario corresponde al método seleccionado. Las tarjetas comunican selección mediante `aria-pressed`.
+- Cambiar de método limpia la referencia y conserva el importe de efectivo dentro de la misma orden. Cambiar de mesa/orden reinicia selección, referencia e importe; la reconciliación evita presentar datos de la orden anterior.
+- Campo de efectivo vacío equivale al total exacto; cero explícito, importes negativos, inválidos o insuficientes bloquean el cobro. La misma validación controla el botón y su manejador; los errores se muestran junto a la confirmación.
+- Se envían nombre e ID seleccionados, importe recibido en efectivo o total para otros métodos, y referencia únicamente cuando corresponde. El vuelto mantiene dos decimales.
+- `src/lib/paymentSelection.ts` concentra filtrado, reconciliación, resolución por ID y preparación/validación del cobro para poder probarlos sin registrar operaciones.
+- En `src/context/POSContext.tsx`, un ID explícito tiene prioridad exclusiva al resolver la cuenta: no se sustituye por otro método homónimo. Un ID explícito no válido devuelve `null` antes de actualizar saldos, transacciones o liberar mesa. Las llamadas antiguas sin ID conservan búsqueda por nombre, limitada a métodos disponibles de la empresa y compartidos.
+- Se conservaron distribución, colores, iconos, tamaños y estilos existentes; únicamente se añadieron avisos de validación y apariencia deshabilitada. No se modificaron API pública, esquema, migraciones, impuestos, sincronización ni comportamiento de Pago Dividido.
+
+### Validación realizada y límites
+
+- `tests/paymentSelection.test.ts`: cinco pruebas nuevas cubren selección por categoría/nombres personalizados, carga tardía, actualización/invalidez, empresa/compartidos/inactivos/eliminados, IDs y cuentas con nombres duplicados, efectivo vacío/cero/negativo/inválido/insuficiente/exacto/vuelto, referencias configurables y datos del cobro.
+- `npm run lint`, `npm run build`, `npm test` y `git diff --check`: correctos; **42 pruebas cliente aprobadas**. Vite conserva el aviso de bundle superior a 500 kB; no impide compilar.
+- El login local funcionó durante esta revisión, pero al terminar de cargar el catálogo todas las mesas estaban libres. La comprobación visual se hizo en una vista temporal que renderiza el `PaymentScreen` real con contexto ficticio y sustituye `completePayment` por captura de argumentos, sin escrituras de venta en la base operativa.
+- Navegador: efectivo marcado inicialmente; pulsarlo mantiene cálculo de vuelto; S/ 150.00 sobre S/ 113.28 produce S/ 36.72. Se recorrieron Plin, POS, transferencia y Yape; cambiar desde Plin a POS limpió el voucher y volvió a bloquear confirmar. Cero mostró saldo faltante y bloqueó el botón. Volver a efectivo conservó los S/ 150.00.
+- Confirmación simulada: Yape envió `113.28`, ID `yape` y referencia `YAPE-123`; efectivo envió `150`, ID `cash` y referencia omitida. Estas comprobaciones verifican los argumentos del componente, **no un cobro persistido ni la liberación real de una mesa**.
+- Revisión visual en escritorio y vista estrecha de 390 px mediante iframe. Evidencia: [Efectivo seleccionado y vuelto correcto](evidencias/cobro-efectivo-corregido.png).
+- Pendiente: prueba integral con orden de prueba y persistencia real de cobro/cuenta/liberación, además de validación interactiva de cambios de mesa y actualizaciones del catálogo. Estos últimos casos tienen cobertura de lógica y revisión de código, no una sesión E2E completa. No se repitieron suites servidor/SQL.
+
+## Kardex: menú minimalista de acciones — 2026-10-21
+
+- `src/components/KardexScreen.tsx`: se reemplazaron el icono de ajuste y el `<details>` nativo «Acciones» por un único botón de 36 × 36 px con `more_horiz`, alineado a la derecha, con hover y foco visibles usando la paleta actual.
+- Menú con Ajuste / Merma, Editar insumo y Eliminar insumo; eliminación separada y en rojo discreto. Renderizado mediante portal en `document.body` para evitar recortes del contenedor de tabla y cambios de altura de fila; posición limitada a la ventana, hacia arriba cuando falta espacio inferior.
+- Solo un menú abierto; cierre al seleccionar, Escape, clic fuera, desplazamiento externo, redimensionamiento o cambio de búsqueda/categoría/empresa/pestaña. Navegación con flechas, Inicio/Fin y Tab; Escape devuelve el foco al botón.
+- Nombre accesible por insumo, `aria-haspopup`, `aria-expanded` y vínculo con el menú. Ajuste recibe foco en su selector; edición conserva el autofocus existente; eliminación recibe foco en Cancelar.
+- Se reutilizaron los manejadores, condiciones de bloqueo por sincronización/conflicto/baja pendiente y confirmación de eliminación. Los avisos de pendientes, errores y Revisar permanecen en la fila. Sin dependencias nuevas ni cambios globales de estilos, API o inventario.
+- Validación al implementar: TypeScript y build correctos, 37 pruebas cliente aprobadas y diff sin errores de espacios. La comprobación de tipos inicial también estaba correcta antes del cambio.
+- **Revisión visual/funcional del menú pendiente**: el intento de navegador de esa etapa quedó bloqueado por error 500 en el login de prueba. La posterior revisión de cobro no valida retroactivamente Kardex. Falta comprobar primera/última fila, una única fila, ancho estrecho, ausencia de recorte, teclado y apertura de los tres modales en navegador.
+- Ambos cambios se aplicaron preservando el trabajo local previo; no se realizó commit ni push.
+
+---
+
+
+## Kardex & Stock: edición y baja de insumos — 2026-10-21
+
+- Acciones por fila: editar/eliminar, conservando Ajuste / Merma. Formulario común de alta/edición, campos precargados, cierre con cambios y errores visibles.
+- Nombre, categoría y mínimo editables (cero válido). Unidad/costo inicial solo sin stock ni referencias; código/empresa/stock/última compra protegidos.
+- Baja lógica con versión esperada, stock cero y sin fichas activas; diálogo explica impedimentos y conserva historial. Compras, recetas y ajustes rechazan nuevas referencias a insumos eliminados.
+- Bloqueos coordinados con compras, ingredientes, ajustes, despacho y devolución; versiones de stock actualizadas y avisos posteriores al commit. Renombrar actualiza fichas activas sin alterar sus costos ni documentos históricos.
+- UUID de alta estable, códigos concurrentes, cola durable y acumulación de ediciones. REST completo tras realtime corrige código/mínimo inventados. Conflictos se conservan y permiten revisar/reintentar; dependencias rechazadas no se descartan silenciosamente.
+- 37 pruebas cliente + 28 servidor + 18 escenarios SQL insumos + 15 pedidos + 13 productos = 111 comprobaciones aprobadas. TypeScript y builds aprobados.
+- Navegador: alta/edición/F5/baja, bloqueo por stock/ficha, campos protegidos, alta offline/F5 sin duplicado y dos terminales con conflicto resuelto conservando el mínimo de la otra terminal. Evidencias `progreso/evidencias/insumos-*.png`.
+- Sin nueva migración, seeds ni cambios de negocio en la base operativa. Bases temporales eliminadas. Tablet/LAN y cortes físicos siguen pendientes.
+- Contratos, decisiones y límites: `progreso/insumos-edicion-baja.md`. No se declara reconstrucción histórica de recetas ni restauración de insumos dados de baja.
+
+---
+
+## Reset solicitado a base vacía — 2026-10-21
+
+- Solicitud explícita del usuario de repetir la limpieza anterior.
+- Destino verificado por SQL: servidor local `sql2025`, base `TaytaSabroso`.
+- Aplicada la migración pendiente `0004_empty_orders` con `prisma migrate deploy`, antes de ejecutar los scripts actualizados.
+- Ejecutados en orden `seed.ts` y `seed-empty.ts`; ambos completados.
+- Verificación independiente posterior: 0 pedidos/detalles, compras/detalles, transacciones, Kardex, historial de turnos, operaciones cliente, sesiones y recibos de pedidos.
+- 13/13 mesas libres sin pedido vinculado; ambas secuencias de pedidos en 0.
+- Catálogos demo restaurados: 2 empresas, 16 productos, 13 insumos, 7 fichas, 4 cuentas, 9 métodos de pago y 4 impresoras. Existencias/saldos regresaron a los valores demo; se retiraron los datos de prueba agregados.
+- El código implementado permanece. El reset SQL no elimina colas/cachés de navegadores; descartar pendientes anteriores antes de volver a operar y volver a iniciar sesión.
+
+---
+
+## Corrección de pedidos vacíos — 2026-10-21
+
+- Último producto retirado por Eliminar o cantidad cero: borrador nuevo sin despacho/pago se elimina físicamente; despachado se conserva `anulado`, eliminado lógicamente y con totales cero. Cobrados protegidos y tickets sin reutilización.
+- Respuesta final corregida: no devuelve la copia anterior al borrado. Cliente/cola/realtime retiran la orden sin afectar una mesa reabierta; anulación deja de representarse como cobro.
+- Migración `0004_empty_orders`: fecha del primer despacho, indicador conservador para historial antiguo y recibos de operaciones fuera de `pedidos`. Serialización SQL, reintentos acotados y notificaciones posteriores al commit.
+- Apertura/flush y cancelación coordinados: aportes iniciales idempotentes por terminal, cancelación durable antes de liberar localmente y protección de adiciones de otros equipos. Apertura, eliminación y cantidad se persisten antes de la mutación optimista.
+- 28 pruebas cliente, 26 servidor y 15 escenarios SQL/API/realtime sobre BD temporal aprobados; TypeScript y builds aprobados. Navegador: agregar/quitar/F5 sin reaparición y vaciado después de despacho. Evidencia: `progreso/evidencias/pedidos-mesa-libre.png`.
+- Revisión de vacíos y limpieza selectiva preparadas por separado. **Durante la implementación inicial no se modificó la base operativa**; la migración y el reset posterior solicitado constan arriba. Bases de prueba eliminadas.
+- Instrucciones, contratos y límites en `progreso/pedidos-vacios.md`. La migración quedó aplicada durante el reset posterior solicitado. Cocina/Barra continúa como siguiente bloque funcional.
+
+---
+
+
+## Reset solicitado a base vacía — 2026-10-20
+
+- Autorización explícita del usuario para repetir el procedimiento documentado.
+- Destino verificado: SQL Server local, base `TaytaSabroso`.
+- Ejecutados secuencialmente `seed.ts` y `seed-empty.ts`, ambos completados.
+- Verificación SQL posterior: 0 pedidos/detalles, compras/detalles, transacciones,
+  Kardex, historial de turnos, operaciones cliente y sesiones.
+- 13/13 mesas libres sin pedido vinculado; ambas secuencias en 0.
+- Catálogos canónicos: 2 empresas, 16 productos, 13 insumos, 7 fichas,
+  4 cuentas bancarias, 9 métodos de pago y 4 impresoras.
+- Los catálogos, existencias y saldos se restauraron al seed demo; los productos/fichas
+  agregados durante pruebas se eliminaron. El código y las mejoras implementadas permanecen.
+- Se indicó cerrar las pestañas durante el reset. La cola/caché del navegador no se
+  modificó desde SQL; debe descartarse cualquier pendiente anterior antes de volver a operar.
+
+---
+
+## Corrección de selección URL y navegación Productos ↔ Fichas — 2026-10-20
+
+- El fondo del modal de Productos ahora evalúa el inicio/fin del gesto de puntero.
+  Arrastrar una selección desde un campo hacia fuera no cierra el formulario.
+  Un clic de fondo requiere comenzar/terminar allí, mismo puntero y desplazamiento mínimo.
+- Cerrar, Cancelar, Escape o clic válido en el fondo solicitan confirmación si hay cambios;
+  Seguir editando conserva el borrador y Descartar permite cerrarlo.
+- Productos ofrece Crear ficha / Ver ficha por vínculo UUID y empresa.
+  Crear precarga producto, precio, categoría y empresa. Ver filtra todas sus fichas activas.
+- Fichas ofrece Ver producto en el maestro, que abre la edición del producto exacto.
+- Alta de ficha distingue Usar producto existente / Crear producto nuevo; el selector
+  identifica productos con ficha. Nombres repetidos en la empresa requieren revisar o
+  confirmar la creación separada. UUID de ficha/producto se conserva durante intentos del formulario.
+- Al editar una ficha, empresa fija y selector de producto protegido. Cambiar producto
+  vinculado habilita explícitamente la selección dentro de la misma empresa.
+- Sin cambios de esquema ni servicios de negocio.
+- Validación: TypeScript y build frontend; 20 pruebas cliente aprobadas, incluidas dos
+  regresiones del gesto de selección. 13 escenarios SQL/API sobre base temporal aprobados.
+- Navegador sobre BD aislada: arrastre de URL hacia el fondo conserva modal, confirmación
+  de descarte, visualización de dos fichas del mismo producto, retorno al producto exacto,
+  precarga desde producto sin ficha, aviso de nombre repetido, creación desde Fichas y
+  presencia única en Productos; empresa y vínculo bloqueados en edición.
+- La prueba visual de precarga para El Sabroso se canceló: el fixture no tiene insumos
+  de esa empresa. La creación completa se verificó en El Tayta con su insumo de prueba.
+- Evidencia: `progreso/evidencias/productos-fichas-vinculo.png`.
+  Base temporal eliminada al terminar. Pendientes físicos/LAN del plan general continúan vigentes.
+
+---
+
+## Maestro de Productos — 2026-10-20
+
+### Implementación terminada
+
+- Pantalla Productos antes de Fichas & Recetas, con lista compacta, miniatura/fallback,
+  búsqueda, categoría/disponibilidad, empresa en Ambas, creación y edición en el mismo modal.
+  Empresa fija al editar; precio positivo con dos decimales, límites SQL, imagen HTTP(S)
+  opcional y errores dentro del formulario. Disponible sustituye cualquier baja desde este módulo.
+- Altas con UUID persistido antes del envío; reintentos de POST con el mismo UUID no duplican.
+  PATCH acepta `expectedVersion`; cambios de Productos y Fichas incrementan versión.
+  El formulario conserva la versión con la que se abrió, aunque llegue un aviso realtime.
+  Una asignación ya aplicada se reconoce al repetir PATCH después de perder la respuesta.
+- Conflicto 409 identificable, cambio local conservado y diálogo Revisar: servidor o cambios
+  propios sobre la versión actual. La concurrencia SQL también se traduce a conflicto.
+- Cola existente con escritura verificada para Productos/Fichas; no anuncia éxito si
+  falla localStorage. Ediciones sucesivas de un producto se acumulan; recuperación directa
+  desde la cola si la caché React no llegó a escribirse. Altas de Productos se procesan
+  antes de operaciones dependientes. 401 conserva la cola y solicita autenticación.
+- Producto y todas sus fichas activas se actualizan en una transacción. Recalcula porcentaje
+  de costo y conserva ingredientes, cantidades, costos, porciones y preparación al editar
+  el maestro. Guardar desde Fichas conserva imagen, descripción y disponibilidad.
+  Se mantiene el UUID al vincular; empresa de producto/ficha validada. Ficha seleccionada
+  se refresca desde el estado actualizado.
+- Eventos de productos/fichas posteriores al commit; cliente consulta REST completo y
+  superpone cambios pendientes. Respuestas antiguas no revierten versiones nuevas.
+- POS filtra por empresa de mesa incluso en Ambas e incluye Brasas. API y cliente rechazan
+  nuevas adiciones/incrementos de productos no disponibles o de otra empresa.
+  Ítems históricos conservan nombre/precio. Productos sin receta no consumen insumos.
+  Resolución por producto/empresa; fallback por nombre solo para fichas antiguas sin vínculo,
+  dentro de la misma empresa y sin ambigüedad.
+- Sin migraciones ni inventario directo de productos de reventa.
+
+### Pruebas automatizadas y API/SQL
+
+| Nivel | Evidencia |
+|---|---|
+| TypeScript | `npm run lint` aprobado |
+| Artefactos | `npm run build` y `npm run build --prefix server` aprobados |
+| Cliente | 18 pruebas: sesiones/401, persistencia fallida, UUID, coalescencia, reconstrucción tras recarga, overlays, validaciones, conflictos y doble replay |
+| Servidor | 26 pruebas: regresiones HTTP/Socket.IO/sesiones y contratos de productos/recetas |
+| SQL aislado | 13 escenarios con SQL Server real y HTTP autenticado; alta/reintento, venta sin consumo, vínculo sin duplicado, coherencia de varias fichas, historial, PATCH repetido, conflicto, concurrencia, rollback por ratio fuera de rango, preservación de metadatos, empresa y disponibilidad |
+| Arranque compilado | `npm run smoke:built` aprobado: SQL, health, HTML, API y 401 |
+
+`server/scripts/test-products-sql.mjs` crea una base aleatoria
+`tayta_products_test_<uuid>`, aplica el esquema únicamente allí y la elimina al terminar.
+Las ejecuciones completadas eliminaron sus bases de prueba; no se ejecutaron seeds ni
+mutaciones de negocio de prueba en la base actual. El modo `--browser` sirve el build
+en 4310 sobre esa misma BD aislada; escribir `fin` cierra el servidor y limpia la BD.
+El build conserva la advertencia de bundle JS mayor a 500 kB; no es error de compilación.
+
+### Validación en navegador realizada
+
+- Viewports 1280×720 (escritorio) y 752×898 (ancho tablet): navegación, lista y modal.
+  Tabla con desplazamiento horizontal en ancho estrecho.
+- Crear Gaseosa sin receta, guardar y recargar: aparece una vez, con Sin ficha.
+- Editar producto con dos fichas: ambas muestran nuevo nombre/precio y 13.33%,
+  conservando su insumo y preparación.
+- Alta offline simulada y edición acumulada, seguida de F5 con red recuperada:
+  un solo Producto offline F5, precio final 9.50 y estado Guardado.
+- Dos orígenes de navegador (localhost y 127.0.0.1), con identidades distintas:
+  edición simultánea produce conflicto; Revisar muestra ambos precios;
+  Aplicar mis cambios actualiza la segunda terminal sin recargar.
+- Disponibilidad cambiada en una terminal se refleja en la otra sin recarga.
+- Búsqueda sin coincidencias muestra estado vacío; Ambas identifica la empresa de cada fila.
+- Evidencia: `progreso/evidencias/productos-escritorio.png` y `productos-tablet.png`.
+
+### Validaciones pendientes (no se presentan como aprobadas)
+
+- Tablet física/LAN, corte real durante replay y F5 sin conexión al servidor.
+- Reingreso visual tras 401 con alta pendiente (la conservación de cola sí tiene prueba automática).
+- Ciclo completo de alta desde maestro → venta → despacho → cobro en navegador y reconciliación
+  SQL; venta sin receta y protección de disponibilidad ya se probaron en servicios/API aislados.
+- El ledger general sigue siendo pasivo: este cierre no declara idempotencia transaccional de
+  todas las mutaciones de negocio ni cierre del smoke E2E global.
+
+---
+
+## Cierre del primer bloque de producción — 2026-10-20
+
+### Implementación
+
+- Autenticador único en `server/src/lib/auth.ts`: JWT HS256 con expiración obligatoria,
+  sesión existente por hash, usuario/dispositivo coincidentes y activos. Token inválido,
+  vencido o revocado → 401; errores de SQL/configuración no se convierten en 401.
+- JWT con `jti` aleatorio para evitar colisiones al ingresar simultáneamente.
+- Logout elimina la sesión y desconecta todos sus sockets, conservando otras sesiones.
+  Cada socket vence según el menor vencimiento de JWT/sesión; revalida al conectarse y
+  al solicitar salas, restringidas a las empresas permitidas por la asignación del usuario.
+  Fallo de infraestructura → `AUTH_UNAVAILABLE`; el cliente conserva el token y reintenta.
+- Terminal: `ts_terminal_code_v1`, código de 29 caracteres persistido por perfil/origen
+  del navegador. No cambia al cerrar sesión; limpiar datos o cambiar perfil/origen genera otra
+  identidad. Bloquea el login si no puede persistirla. No modifica la terminal demo existente.
+- Front: los 401 muestran login con aviso y conservan la cola; el replay se detiene sin
+  retirar la operación rechazada. Una respuesta tardía de una sesión anterior no invalida
+  la sesión nueva. Las mutaciones optimistas que reciben 401 se conservan en cola.
+- Logout distingue confirmación remota de cierre solo local. Login no adjunta un token
+  vencido anterior. El aviso es visible en LoginScreen.
+- Build NodeNext: imports internos `.js`, entrada `server/dist/index.js` y HTML en
+  `server/dist/public`. La compilación limpia `dist` y excluye seeds.
+- Arranque valida DATABASE_URL, PORT, JWT_SECRET y CORS_ORIGIN; en producción exige
+  secreto propio de al menos 32 caracteres y orígenes explícitos. Conecta a SQL antes
+  de escuchar y cierra sockets/BD al detenerse. No requiere migraciones.
+
+### Evidencia de verificación
+
+| Nivel | Resultado |
+|---|---|
+| Tipos | `npm run lint` aprobado |
+| Compilación | `npm run build` y `npm run build --prefix server` aprobados |
+| Regresión servidor | `npm test --prefix server`: 22 pruebas aprobadas; HTTP/Socket.IO reales con repositorio en memoria, sin conexión SQL |
+| Regresión cliente | `npm test`: 7 pruebas aprobadas de identidad, almacenamiento, 401/replay, reingreso y respuesta tardía |
+| Runtime compilado + SQL | `npm run smoke:built --prefix server`: aprobado; proceso temporal, conexión real, `/health`, landing HTML, `/api`, 401 sin token/alterado |
+| Navegador | Refrendo visual login/logout/reautenticación con cola pendiente; no se presenta como E2E aprobado |
+
+Las pruebas no ejecutaron seeds, migraciones ni mutaciones de negocio en la base actual.
+El smoke compilado es de solo lectura. Permanece el aviso de bundle frontend >500 kB.
+
+### Límites y siguientes etapas
+
+- Este bloque entrega la API ejecutable y sesiones revocables; no instala servicios Windows
+  ni despliega Azure. Tampoco completa el motor de sincronización.
+- Azure recibirá el detalle de negocio completo cuando se implemente su sincronización;
+  «consulta consolidada» limita las acciones remotas de v1, no la información almacenada.
+- Cocina sigue pendiente: separar preparación/pago, preservar servidos en nuevos despachos
+  y consultar también pedidos cobrados con preparación pendiente.
+- Persisten los riesgos de idempotencia de ítems/catálogos y de fallos de almacenamiento
+  en la cola. La revisión completa de roles/empresa y credenciales es previa al piloto.
 
 ---
 

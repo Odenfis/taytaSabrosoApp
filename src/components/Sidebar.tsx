@@ -1,3 +1,4 @@
+import { ThemeSelector } from './ThemeSelector';
 import React from 'react';
 import { usePOS } from '../context/POSContext';
 import { ScreenType, CompanyId } from '../types';
@@ -30,9 +31,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
       label: 'Kardex & Stock',
       icon: 'inventory_2',
       badge: lowStockCount > 0 ? `${lowStockCount}` : undefined,
-      badgeColor: 'bg-rose-500 text-white',
+      badgeColor: 'bg-surface-danger-5 text-ink-on-solid',
     },
     { id: 'compras', label: 'Compras & Facturas', icon: 'shopping_cart_checkout' },
+    { id: 'productos', label: 'Productos', icon: 'restaurant_menu' },
     { id: 'recetas', label: 'Fichas & Recetas', icon: 'menu_book' },
     {
       id: 'ratios',
@@ -46,10 +48,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
           : 'OK',
       badgeColor:
         expenseAnalysis.status === 'critico'
-          ? 'bg-red-500 text-white animate-pulse'
+          ? 'bg-surface-danger-6 text-ink-on-solid animate-pulse'
           : expenseAnalysis.status === 'alerta'
-          ? 'bg-amber-500 text-black'
-          : 'bg-emerald-600 text-white',
+          ? 'bg-surface-warning-4 text-ink-on-light'
+          : 'bg-surface-success-2 text-ink-on-solid',
     },
     { id: 'movimientos', label: 'Libro de Caja', icon: 'receipt_long' },
     { id: 'bancos', label: 'Cuentas & Bancos', icon: 'account_balance' },
@@ -65,40 +67,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
   return (
     <aside
       id="pos-sidebar"
-      className="fixed left-0 top-0 h-full w-24 md:w-64 flex flex-col bg-[#161515] border-r border-[#54433c]/60 z-50 transition-all select-none"
+      className="fixed left-0 top-0 h-full w-24 md:w-64 flex flex-col bg-panel-2 border-r border-edge-outline-2 z-50 transition-all select-none"
     >
       <div className="h-full flex flex-col pt-4 pb-3">
         {/* Brand Header: Tayta & Sabroso Unified Brand */}
         <div className="px-3 md:px-5 mb-4 flex flex-col items-center md:items-start gap-2.5">
           <div className="flex items-center gap-3 w-full">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#823b19] via-[#4d2511] to-[#201511] border border-[#ffb597]/40 p-1 flex items-center justify-center shadow-lg overflow-hidden shrink-0 group">
-              <span className="material-symbols-outlined text-[#ffb597] text-[26px]">restaurant_menu</span>
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-surface-brand-solid-5 via-surface-tinted-5 to-panel-47 border border-edge-brand-3 p-1 flex items-center justify-center shadow-lg overflow-hidden shrink-0 group">
+              <span className="material-symbols-outlined text-ink-brand text-[26px]">restaurant_menu</span>
             </div>
             <div className="hidden md:block min-w-0">
               <div className="flex items-center gap-1.5">
-                <h1 className="text-[17px] font-black text-[#ffb597] tracking-tight leading-tight truncate">
+                <h1 className="text-[17px] font-black text-ink-brand tracking-tight leading-tight truncate">
                   Tayta &amp; Sabroso
                 </h1>
               </div>
-              <p className="text-[11px] font-semibold text-[#dac1b8]/70 tracking-wider uppercase">
+              <p className="text-[11px] font-semibold text-ink-muted-3 tracking-wider uppercase">
                 Holding Gastronómico
               </p>
             </div>
           </div>
 
           {/* Company Switcher Pill */}
-          <div className="hidden md:flex flex-col w-full gap-1 pt-2 border-t border-[#54433c]/40">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[#dac1b8]/60">
+          <div className="hidden md:flex flex-col w-full gap-1 pt-2 border-t border-edge-outline-5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
               Empresa Activa
             </span>
-            <div className="grid grid-cols-3 gap-1 bg-[#101010] p-1 rounded-xl border border-[#54433c]/50">
+            <div className="grid grid-cols-3 gap-1 bg-panel-20 p-1 rounded-xl border border-edge-outline-3">
               <button
                 id="btn-switch-tayta"
                 onClick={() => setActiveCompanyId('el-tayta')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'el-tayta'
-                    ? 'bg-[#823b19] text-[#ffdbcd] shadow-md'
-                    : 'text-[#dac1b8]/70 hover:text-[#ffb597] hover:bg-[#202020]'
+                    ? 'bg-surface-brand-solid text-ink-on-brand shadow-md'
+                    : 'text-ink-muted-3 hover:text-ink-brand hover:bg-panel-38'
                 }`}
                 title="El Tayta (Criollo & Marino)"
               >
@@ -109,8 +111,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 onClick={() => setActiveCompanyId('el-sabroso')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'el-sabroso'
-                    ? 'bg-[#ebc246] text-[#352800] shadow-md'
-                    : 'text-[#dac1b8]/70 hover:text-[#ebc246] hover:bg-[#202020]'
+                    ? 'bg-surface-gold-2 text-ink-foreground shadow-md'
+                    : 'text-ink-muted-3 hover:text-ink-gold hover:bg-panel-38'
                 }`}
                 title="El Sabroso (Brasas & Parrillas)"
               >
@@ -121,8 +123,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 onClick={() => setActiveCompanyId('todas')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'todas'
-                    ? 'bg-[#403a38] text-white shadow-md'
-                    : 'text-[#dac1b8]/70 hover:text-white hover:bg-[#202020]'
+                    ? 'bg-panel-48 text-ink-strong shadow-md'
+                    : 'text-ink-muted-3 hover:text-ink-strong hover:bg-panel-38'
                 }`}
                 title="Consolidado (Ambas empresas)"
               >
@@ -143,14 +145,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 onClick={() => handleNavClick(item.id)}
                 className={`flex items-center justify-between p-2.5 md:p-3 mx-0.5 rounded-xl text-left transition-all duration-150 relative ${
                   isActive
-                    ? 'bg-[#823b19] text-[#ffdbcd] font-bold shadow-md scale-[0.99]'
-                    : 'text-[#dac1b8] hover:bg-[#222121] hover:text-[#e5e2e1]'
+                    ? 'bg-surface-brand-solid text-ink-on-brand font-bold shadow-md scale-[0.99]'
+                    : 'text-ink-muted-2 hover:bg-panel-49 hover:text-ink-body'
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <span
                     className={`material-symbols-outlined text-[22px] shrink-0 ${
-                      isActive ? 'fill text-[#ffdbcd]' : 'text-[#dac1b8]'
+                      isActive ? 'fill text-ink-on-brand' : 'text-ink-muted-2'
                     }`}
                   >
                     {item.icon}
@@ -163,7 +165,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 {item.badge && (
                   <span
                     className={`hidden md:inline-flex text-[10px] font-black px-1.5 py-0.5 rounded-md ${
-                      item.badgeColor || 'bg-[#b08c09] text-black'
+                      item.badgeColor || 'bg-surface-gold-solid text-ink-on-light'
                     }`}
                   >
                     {item.badge}
@@ -175,32 +177,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
         </nav>
 
         {/* Bottom User Info & Financial Ratio Status Indicator */}
-        <div className="px-2.5 pt-3 border-t border-[#54433c]/40 mt-auto flex flex-col gap-2">
+        <div className="px-2.5 pt-3 border-t border-edge-outline-5 mt-auto flex flex-col gap-2">
+          <ThemeSelector compact />
           {/* Quick Expense Ratio mini-card on desktop */}
           <div
             onClick={() => setCurrentScreen('ratios')}
-            className="hidden md:flex items-center justify-between bg-[#1f1d1d] hover:bg-[#282626] cursor-pointer p-2 rounded-xl border border-[#54433c]/40 transition-colors"
+            className="hidden md:flex items-center justify-between bg-panel-50 hover:bg-panel-51 cursor-pointer p-2 rounded-xl border border-edge-outline-5 transition-colors"
             title="Ver Control de Gastos y Ratios Financieros"
           >
             <div className="flex items-center gap-2">
               <span
                 className={`w-2.5 h-2.5 rounded-full ${
                   expenseAnalysis.status === 'critico'
-                    ? 'bg-rose-500 animate-ping'
+                    ? 'bg-surface-danger-5 animate-ping'
                     : expenseAnalysis.status === 'alerta'
-                    ? 'bg-amber-400'
-                    : 'bg-emerald-400'
+                    ? 'bg-surface-warning'
+                    : 'bg-surface-success'
                 }`}
               />
-              <span className="text-[11px] font-bold text-[#e5e2e1]">Food Cost %:</span>
+              <span className="text-[11px] font-bold text-ink-body">Food Cost %:</span>
             </div>
             <span
               className={`text-[12px] font-black ${
                 expenseAnalysis.status === 'critico'
-                  ? 'text-rose-400'
+                  ? 'text-ink-danger-3'
                   : expenseAnalysis.status === 'alerta'
-                  ? 'text-amber-400'
-                  : 'text-emerald-400'
+                  ? 'text-ink-warning-3'
+                  : 'text-ink-success'
               }`}
             >
               {expenseAnalysis.foodCostPctReal}%
@@ -212,35 +215,35 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
             id="btn-sidebar-shift"
             type="button"
             onClick={() => setIsShiftModalOpen(true)}
-            className="w-full bg-[#201f1f] hover:bg-[#2c2a2a] border border-[#54433c]/60 hover:border-[#ffb597]/50 rounded-xl p-2 flex items-center justify-between text-left transition-all group cursor-pointer"
+            className="w-full bg-panel-31 hover:bg-panel-52 border border-edge-outline-2 hover:border-edge-brand-6 rounded-xl p-2 flex items-center justify-between text-left transition-all group cursor-pointer"
             title="Arqueo y Cierre de Turno"
           >
             <div className="flex items-center gap-2">
-              <span className={`material-symbols-outlined text-[18px] ${activeShift === 'Día' ? 'text-amber-400' : 'text-indigo-400'}`}>
+              <span className={`material-symbols-outlined text-[18px] ${activeShift === 'Día' ? 'text-ink-warning-3' : 'text-ink-accent'}`}>
                 {activeShift === 'Día' ? 'wb_sunny' : 'bedtime'}
               </span>
               <div className="hidden md:block">
-                <span className="text-[10px] text-[#dac1b8]/60 uppercase font-bold block leading-none">Turno Activo</span>
-                <span className="text-[12px] font-bold text-white leading-tight">Turno {activeShift}</span>
+                <span className="text-[10px] text-ink-muted uppercase font-bold block leading-none">Turno Activo</span>
+                <span className="text-[12px] font-bold text-ink-strong leading-tight">Turno {activeShift}</span>
               </div>
             </div>
-            <span className="hidden md:block material-symbols-outlined text-[16px] text-[#dac1b8]/50 group-hover:text-[#ffb597]">
+            <span className="hidden md:block material-symbols-outlined text-[16px] text-ink-muted-4 group-hover:text-ink-brand">
               sync_alt
             </span>
           </button>
 
           {currentUser && (
-            <div className="bg-[#1f1d1d] border border-[#54433c]/50 rounded-xl p-2 flex items-center justify-between">
+            <div className="bg-panel-50 border border-edge-outline-3 rounded-xl p-2 flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="w-7 h-7 rounded-full bg-[#823b19] text-[#ffdbcd] flex items-center justify-center font-bold text-[12px] shrink-0 border border-[#a28c84]/40">
+                <div className="w-7 h-7 rounded-full bg-surface-brand-solid text-ink-on-brand flex items-center justify-center font-bold text-[12px] shrink-0 border border-edge-outline-strong">
                   {currentUser.name.charAt(0)}
                 </div>
                 <div className="hidden md:block min-w-0">
-                  <p className="text-[12px] font-semibold text-[#e5e2e1] truncate leading-tight">
+                  <p className="text-[12px] font-semibold text-ink-body truncate leading-tight">
                     {currentUser.name}
                   </p>
-                  <p className="text-[10px] text-[#dac1b8]/70 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block"></span>
+                  <p className="text-[10px] text-ink-muted-3 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-surface-success-3 inline-block"></span>
                     {currentUser.role}
                   </p>
                 </div>
@@ -250,7 +253,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 id="btn-logout"
                 onClick={logout}
                 title="Cerrar sesión"
-                className="hidden md:flex p-1 text-[#dac1b8] hover:text-[#ffb4ab] hover:bg-[#353535] rounded-lg transition-colors"
+                className="hidden md:flex p-1 text-ink-muted-2 hover:text-ink-danger hover:bg-panel-17 rounded-lg transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px]">logout</span>
               </button>

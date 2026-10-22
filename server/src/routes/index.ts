@@ -1,9 +1,9 @@
 import { Router } from 'express';
-import authRoutes from './auth.routes';
-import catalogsRoutes from './catalogs.routes';
-import operationsRoutes from './operations.routes';
-import reportsRoutes from './reports.routes';
-import syncRoutes from './sync.routes';
+import authRoutes from './auth.routes.js';
+import catalogsRoutes from './catalogs.routes.js';
+import operationsRoutes from './operations.routes.js';
+import reportsRoutes from './reports.routes.js';
+import syncRoutes from './sync.routes.js';
 
 const router = Router();
 

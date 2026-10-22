@@ -1,12 +1,17 @@
 import { Router } from 'express';
-import { login, logout, getMe } from '../services/auth.service';
-import { requireAuth } from '../lib/auth';
+import { login, logout, getMe } from '../services/auth.service.js';
+import { requireAuth } from '../lib/auth.js';
+import { z } from 'zod';
 
 const router = Router();
 
 router.post('/login', async (req, res, next) => {
   try {
-    const { pin, deviceCode, terminalName } = req.body ?? {};
+    const { pin, deviceCode, terminalName } = z.object({
+      pin: z.string().trim().min(1).max(100),
+      deviceCode: z.string().trim().min(1).max(30).optional(),
+      terminalName: z.string().trim().min(1).max(100).optional(),
+    }).parse(req.body);
     const result = await login({ pin, deviceCode, terminalName });
     res.json(result);
   } catch (err) {

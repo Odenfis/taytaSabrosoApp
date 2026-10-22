@@ -4,8 +4,10 @@
 // Los eventos son avisos; la verdad sigue en REST (el front reconcilia con GET).
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
-import { prisma } from './prisma';
-import { verifyAccessToken } from './auth';
+import { prisma } from './prisma.js';
+import { authenticateAccessToken } from './auth.js';
+import { AppError } from './utils.js';
+import { getCorsOrigins } from './config.js';
 
 export interface TableChangedPayload {
   tableId: string;
@@ -13,6 +15,7 @@ export interface TableChangedPayload {
   status: string;
   currentOrderId: string | null;
   orderStatus?: string | null;
+  sourceOrderId?: string;
   ticketNumber?: string | null;
   total?: number | null;
   itemsCount?: number | null;
@@ -25,6 +28,7 @@ export interface OrderChangedPayload {
   tableId: string | null;
   companyId: string;
   status: string;
+  isDeleted?: boolean;
   total?: number | null;
   itemsCount?: number | null;
   updatedAt: string;
@@ -288,10 +292,12 @@ interface JoinMsg {
 export async function notifyOrderState(orderId: string): Promise<void> {
   try {
     if (!io) return;
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: { items: true },
-    });
+    let order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
+    if (!order) {
+      const receipt = await prisma.orderOperationResult.findUnique({ where: { id: `cancelled:${orderId}` } });
+      if (!receipt) return;
+      order = JSON.parse(receipt.result);
+    }
     if (!order) return;
     const table = order.tableId
       ? await prisma.table.findFirst({ where: { id: order.tableId, isDeleted: false } })
@@ -309,7 +315,8 @@ export async function notifyOrderState(orderId: string): Promise<void> {
         companyId,
         status: table.status ?? 'libre',
         currentOrderId: table.currentOrderId ?? null,
-        orderStatus: order.isDeleted ? 'cobrado' : order.status,
+        orderStatus: order.isDeleted ? 'anulado' : order.status,
+        sourceOrderId: order.id,
         ticketNumber: order.ticketNumber != null ? String(order.ticketNumber) : null,
         total: toNum(order.total),
         itemsCount,
@@ -321,7 +328,8 @@ export async function notifyOrderState(orderId: string): Promise<void> {
       orderId: order.id,
       tableId: order.tableId,
       companyId,
-      status: order.isDeleted ? 'cobrado' : order.status,
+      status: order.isDeleted ? 'anulado' : order.status,
+      isDeleted: order.isDeleted,
       total: toNum(order.total),
       itemsCount,
       updatedAt: now,
@@ -349,8 +357,15 @@ export async function notifyTableState(tableId: string): Promise<void> {
 }
 
 export function initRealtime(httpServer: HttpServer): Server {
-  const corsOrigin = process.env.CORS_ORIGIN?.split(',') ?? true;
-  io = new Server(httpServer, { cors: { origin: corsOrigin as never } });
+  const origins = getCorsOrigins();
+  io = new Server(httpServer, {
+    cors: { origin: origins },
+    // WebSocket no aplica CORS del navegador; validar también su handshake.
+    allowRequest: (req, callback) => {
+      const origin = req.headers.origin;
+      callback(null, origin === undefined || origins.includes(origin));
+    },
+  });
 
   io.use(async (socket: Socket, next) => {
     try {
@@ -359,31 +374,81 @@ export function initRealtime(httpServer: HttpServer): Server {
         (typeof socket.handshake.headers.authorization === 'string'
           ? socket.handshake.headers.authorization.replace(/^Bearer\s+/i, '')
           : undefined);
-      if (!raw) return next(new Error('UNAUTHORIZED'));
-      const payload = verifyAccessToken(raw);
-      const user = await prisma.user.findFirst({
-        where: { id: payload.sub, isActive: true, isDeleted: false },
-      });
-      if (!user) return next(new Error('UNAUTHORIZED'));
-      socket.data.userId = user.id;
-      socket.data.deviceId = payload.deviceId;
+      if (typeof raw !== 'string' || !raw) {
+        throw new AppError('Falta la sesión.', 401, 'UNAUTHORIZED');
+      }
+      const session = await authenticateAccessToken(raw);
+      socket.data.token = raw;
+      socket.data.tokenHash = session.tokenHash;
+      socket.data.expiresAt = session.expiresAt;
+      socket.data.userId = session.user.id;
+      socket.data.deviceId = session.deviceId;
       next();
-    } catch {
-      next(new Error('UNAUTHORIZED'));
+    } catch (err) {
+      const code = authErrorCode(err);
+      next(Object.assign(new Error(code), { data: { code } }));
     }
   });
 
   io.on('connection', (socket: Socket) => {
-    socket.on('join-company', (msg: JoinMsg) => {
-      const id = msg?.companyId;
-      const rooms = id === 'todas' ? [roomOf('el-tayta'), roomOf('el-sabroso')] : id ? [roomOf(id)] : [];
-      // Salir de rooms previos de empresa para no mezclar.
-      for (const r of socket.rooms) {
-        if (r.startsWith('company:') && !rooms.includes(r)) socket.leave(r);
+    void socket.join(sessionRoom(socket.data.tokenHash));
+    const expiryTimer = setTimeout(
+      () => endSocketSession(socket, 'UNAUTHORIZED'),
+      Math.max(0, socket.data.expiresAt - Date.now())
+    );
+    expiryTimer.unref();
+    socket.once('disconnect', () => clearTimeout(expiryTimer));
+
+    // Revalidar después del handshake cierra la carrera handshake → logout → conexión.
+    void authenticateAccessToken(socket.data.token).catch((err) => {
+      endSocketSession(socket, authErrorCode(err));
+    });
+
+    let joinRequest = 0;
+    socket.on('join-company', async (msg: JoinMsg) => {
+      const request = ++joinRequest;
+      try {
+        const session = await authenticateAccessToken(socket.data.token);
+        const id = msg?.companyId;
+        const assigned = session.user.assignedCompanyId ?? session.user.companyId;
+        const companies = await prisma.company.findMany({
+          where: assigned ? { id: assigned } : {},
+          select: { id: true },
+        });
+        if (!socket.connected || request !== joinRequest) return;
+        const permitted = companies.map((company) => company.id);
+        const ids = id === 'todas' ? permitted : typeof id === 'string' && permitted.includes(id) ? [id] : [];
+        const rooms = ids.map(roomOf);
+        for (const room of socket.rooms) {
+          if (room.startsWith('company:') && !rooms.includes(room)) await socket.leave(room);
+        }
+        if (id && !ids.length) {
+          socket.emit('company:error', { code: 'FORBIDDEN' });
+          return;
+        }
+        if (socket.connected && request === joinRequest) await socket.join(rooms);
+      } catch (err) {
+        endSocketSession(socket, authErrorCode(err));
       }
-      for (const r of rooms) socket.join(r);
     });
   });
 
   return io;
+}
+
+const sessionRoom = (tokenHash: string) => `session:${tokenHash}`;
+
+function authErrorCode(err: unknown): 'UNAUTHORIZED' | 'AUTH_UNAVAILABLE' {
+  return err instanceof AppError && err.statusCode === 401 ? 'UNAUTHORIZED' : 'AUTH_UNAVAILABLE';
+}
+
+function endSocketSession(socket: Socket, code: 'UNAUTHORIZED' | 'AUTH_UNAVAILABLE') {
+  socket.emit('session:error', { code });
+  socket.disconnect(true);
+}
+
+export function disconnectSession(tokenHash: string): void {
+  const room = sessionRoom(tokenHash);
+  io?.to(room).emit('session:error', { code: 'UNAUTHORIZED' });
+  io?.in(room).disconnectSockets(true);
 }

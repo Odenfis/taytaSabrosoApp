@@ -15,17 +15,17 @@ export const OfflineModal: React.FC = () => {
   return (
     <div
       id="offline-resilience-modal"
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-surface-scrim backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="bg-[#1c1b1b] border border-[#54433c] rounded-2xl w-full max-w-xl flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-panel border border-edge-outline rounded-2xl w-full max-w-xl flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-[#54433c]/60 flex items-center justify-between bg-[#161515]">
+        <div className="p-4 sm:p-5 border-b border-edge-outline-2 flex items-center justify-between bg-panel-2">
           <div className="flex items-center gap-3">
             <div
               className={`w-10 h-10 rounded-xl flex items-center justify-center border ${
                 offlineState.isOnline
-                  ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400'
-                  : 'bg-amber-950/50 border-amber-500/40 text-amber-400'
+                  ? 'bg-surface-success-strong-6 border-edge-success text-ink-success'
+                  : 'bg-surface-warning-strong-8 border-edge-warning-3 text-ink-warning-3'
               }`}
             >
               <span className="material-symbols-outlined text-[24px]">
@@ -33,17 +33,17 @@ export const OfflineModal: React.FC = () => {
               </span>
             </div>
             <div>
-              <h2 className="text-[17px] font-bold text-white">
+              <h2 className="text-[17px] font-bold text-ink-strong">
                 Resiliencia &amp; Modo Offline (Sin Conexión)
               </h2>
-              <p className="text-[12px] text-[#dac1b8]/70">
+              <p className="text-[12px] text-ink-muted-3">
                 Arquitectura de operación local continua para restaurantes
               </p>
             </div>
           </div>
           <button
             onClick={() => setIsOfflineModalOpen(false)}
-            className="text-[#dac1b8]/60 hover:text-white p-1 rounded-lg hover:bg-[#2a2a2a]"
+            className="text-ink-muted hover:text-ink-strong p-1 rounded-lg hover:bg-panel-3"
           >
             <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
@@ -55,8 +55,8 @@ export const OfflineModal: React.FC = () => {
           <div
             className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
               offlineState.isOnline
-                ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
-                : 'bg-amber-950/30 border-amber-500/40 text-amber-300'
+                ? 'bg-surface-success-strong-7 border-edge-success-2 text-ink-success-2'
+                : 'bg-surface-warning-strong-9 border-edge-warning-3 text-ink-warning-2'
             }`}
           >
             <div className="space-y-1">
@@ -77,8 +77,8 @@ export const OfflineModal: React.FC = () => {
               onClick={toggleSimulatedOffline}
               className={`px-3 py-1.5 rounded-xl text-[12px] font-bold border shrink-0 transition-all ${
                 offlineState.isOnline
-                  ? 'bg-amber-950/60 border-amber-500/50 text-amber-300 hover:bg-amber-900/60'
-                  : 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
+                  ? 'bg-surface-warning-strong-7 border-edge-warning-2 text-ink-warning-2 hover:bg-surface-warning-strong-10'
+                  : 'bg-surface-success-strong-5 border-edge-success-3 text-ink-success-2 hover:bg-surface-success-strong-8'
               }`}
             >
               {offlineState.isOnline ? 'Simular Corte de Red' : 'Restablecer Conexión'}
@@ -87,23 +87,23 @@ export const OfflineModal: React.FC = () => {
 
           {/* Metrics Grid */}
           <div className="grid grid-cols-2 gap-3 text-center">
-            <div className="bg-[#141313] border border-[#54433c]/40 p-3 rounded-xl">
-              <span className="text-[11px] text-[#dac1b8]/60 font-semibold">Comandas Pendientes de Subida</span>
-              <p className="text-[20px] font-black text-white mt-0.5">{offlineState.pendingSyncCount}</p>
+            <div className="bg-panel-29 border border-edge-outline-5 p-3 rounded-xl">
+              <span className="text-[11px] text-ink-muted font-semibold">Comandas Pendientes de Subida</span>
+              <p className="text-[20px] font-black text-ink-strong mt-0.5">{offlineState.pendingSyncCount}</p>
             </div>
-            <div className="bg-[#141313] border border-[#54433c]/40 p-3 rounded-xl">
-              <span className="text-[11px] text-[#dac1b8]/60 font-semibold">Última Sincronización</span>
-              <p className="text-[16px] font-bold text-[#ebc246] mt-1">{offlineState.lastSyncTime}</p>
+            <div className="bg-panel-29 border border-edge-outline-5 p-3 rounded-xl">
+              <span className="text-[11px] text-ink-muted font-semibold">Última Sincronización</span>
+              <p className="text-[16px] font-bold text-ink-gold mt-1">{offlineState.lastSyncTime}</p>
             </div>
           </div>
 
           {/* Technical Strategy Card for Client */}
-          <div className="bg-[#141313] border border-[#54433c]/50 rounded-xl p-3.5 space-y-2">
-            <h4 className="text-[13px] font-bold text-[#ffdbcd] flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[16px] text-[#ebc246]">verified</span>
+          <div className="bg-panel-29 border border-edge-outline-3 rounded-xl p-3.5 space-y-2">
+            <h4 className="text-[13px] font-bold text-ink-heading-brand flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-ink-gold">verified</span>
               Estrategia Arquitectónica Offline-First
             </h4>
-            <ul className="text-[12px] text-[#dac1b8]/80 space-y-1.5 pl-4 list-disc">
+            <ul className="text-[12px] text-ink-muted-5 space-y-1.5 pl-4 list-disc">
               <li>
                 <strong>Almacenamiento Local (IndexedDB &amp; LocalStorage):</strong> Las comandas, cobros, mesas y compras se persisten localmente con claves únicas (UUID), garantizando que ningún mozo o cajero se detenga ante cortes de fibra o wifi.
               </li>
@@ -118,18 +118,18 @@ export const OfflineModal: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <div className="p-4 bg-[#161515] border-t border-[#54433c]/50 flex items-center justify-between">
-          <span className="text-[11px] text-[#dac1b8]/60">PWA Offline Storage Engine</span>
+        <div className="p-4 bg-panel-2 border-t border-edge-outline-3 flex items-center justify-between">
+          <span className="text-[11px] text-ink-muted">PWA Offline Storage Engine</span>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsOfflineModalOpen(false)}
-              className="px-3.5 py-1.5 rounded-xl text-[12px] font-bold text-[#dac1b8] hover:bg-[#2a2a2a]"
+              className="px-3.5 py-1.5 rounded-xl text-[12px] font-bold text-ink-muted-2 hover:bg-panel-3"
             >
               Cerrar
             </button>
             <button
               onClick={syncOfflineQueue}
-              className="px-4 py-1.5 rounded-xl bg-[#823b19] hover:bg-[#9a451e] text-[#ffdbcd] text-[12px] font-bold flex items-center gap-1.5 shadow-md"
+              className="px-4 py-1.5 rounded-xl bg-surface-brand-solid hover:bg-surface-brand-hover-alt text-ink-on-brand text-[12px] font-bold flex items-center gap-1.5 shadow-md"
             >
               <span className="material-symbols-outlined text-[16px]">cloud_sync</span>
               Sincronizar Lote Ahora

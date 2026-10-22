@@ -64,21 +64,21 @@ export const ReceiptModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-[#1e1e1e] border border-[#54433c] rounded-2xl w-full max-w-md p-6 shadow-[0_16px_50px_rgba(0,0,0,0.8)] space-y-6 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-surface-scrim backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-panel-15 border border-edge-outline rounded-2xl w-full max-w-md p-6 shadow-ui-3 space-y-6 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-[#54433c]/60">
+        <div className="flex items-center justify-between pb-3 border-b border-edge-outline-2">
           <div className="flex items-center gap-2">
             {isPaid ? (
               <>
-                <span className="material-symbols-outlined text-emerald-400">check_circle</span>
-                <h2 className="text-[18px] font-bold text-[#e5e2e1]">Pago Completado con Éxito</h2>
+                <span className="material-symbols-outlined text-ink-success">check_circle</span>
+                <h2 className="text-[18px] font-bold text-ink-body">Pago Completado con Éxito</h2>
               </>
             ) : (
               <>
-                <span className="material-symbols-outlined text-[#ebc246]">receipt_long</span>
-                <h2 className="text-[18px] font-bold text-[#e5e2e1]">Boleta de la Cuenta</h2>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#0b3d20] bg-[#ebc246] px-2 py-0.5 rounded-full">
+                <span className="material-symbols-outlined text-ink-gold">receipt_long</span>
+                <h2 className="text-[18px] font-bold text-ink-body">Boleta de la Cuenta</h2>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-ink-on-accent-2 bg-surface-gold-2 px-2 py-0.5 rounded-full">
                   Pendiente de pago
                 </span>
               </>
@@ -86,7 +86,7 @@ export const ReceiptModal: React.FC = () => {
           </div>
           <button
             onClick={handleClose}
-            className="text-[#dac1b8] hover:text-[#e5e2e1] p-1.5 rounded-lg hover:bg-[#2a2a2a]"
+            className="text-ink-muted-2 hover:text-ink-body p-1.5 rounded-lg hover:bg-panel-3"
           >
             <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
@@ -180,10 +180,10 @@ export const ReceiptModal: React.FC = () => {
           </div>
 
           {/* Footer note */}
-          <div className="text-center pt-3 border-t border-dashed border-zinc-400 text-[10px] text-zinc-500 space-y-0.5">
+          <div className="text-center pt-3 border-t border-dashed border-edge-neutral text-[10px] text-ink-neutral-2 space-y-0.5">
             {isPaid ? (
               <>
-                <p className="font-bold text-emerald-700 text-[11px]">PAGO REGISTRADO</p>
+                <p className="font-bold text-ink-success-3 text-[11px]">PAGO REGISTRADO</p>
                 <p>¡Gracias por su preferencia!</p>
                 <p>Representación impresa de la Boleta de Venta Electrónica</p>
               </>
@@ -202,7 +202,7 @@ export const ReceiptModal: React.FC = () => {
             type="button"
             onClick={handleShareWhatsApp}
             disabled={isSharing}
-            className={`w-full bg-[#25D366] text-[#0b3d20] py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-colors shadow-md active:scale-95 cursor-pointer ${isSharing ? 'opacity-60 cursor-wait' : 'hover:bg-[#1eb856]'}`}
+            className={`w-full bg-surface-success-solid text-ink-on-accent-2 py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-colors shadow-md active:scale-95 cursor-pointer ${isSharing ? 'opacity-60 cursor-wait' : 'hover:bg-surface-success-hover'}`}
           >
             <WhatsAppIcon />
             <span>Compartir por WhatsApp</span>
@@ -211,7 +211,7 @@ export const ReceiptModal: React.FC = () => {
             <button
               type="button"
               onClick={handlePrint}
-              className="flex-1 bg-[#2a2a2a] hover:bg-[#353535] text-[#e5e2e1] py-3 rounded-xl text-[14px] font-semibold flex items-center justify-center gap-2 transition-colors border border-[#54433c] cursor-pointer"
+              className="flex-1 bg-panel-3 hover:bg-panel-17 text-ink-body py-3 rounded-xl text-[14px] font-semibold flex items-center justify-center gap-2 transition-colors border border-edge-outline cursor-pointer"
             >
               <span className="material-symbols-outlined text-[20px]">print</span>
               <span>Imprimir</span>
@@ -220,7 +220,7 @@ export const ReceiptModal: React.FC = () => {
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 bg-[#823b19] hover:bg-[#944926] text-white py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
+                className="flex-1 bg-surface-brand-solid hover:bg-surface-brand-hover text-ink-on-solid py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[20px]">table_restaurant</span>
                 <span>Volver a Mesas</span>
@@ -229,7 +229,7 @@ export const ReceiptModal: React.FC = () => {
               <button
                 type="button"
                 onClick={handleClose}
-                className="flex-1 bg-[#823b19] hover:bg-[#944926] text-white py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
+                className="flex-1 bg-surface-brand-solid hover:bg-surface-brand-hover text-ink-on-solid py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[20px]">arrow_forward</span>
                 <span>Continuar al pago</span>

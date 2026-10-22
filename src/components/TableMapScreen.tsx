@@ -56,21 +56,21 @@ export const TableMapScreen: React.FC = () => {
   return (
     <main
       id="table-map-canvas"
-      className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-5 bg-[#121212] select-none custom-scrollbar"
+      className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-5 bg-panel-4 select-none custom-scrollbar"
     >
       {/* Top Banner with Company Info and Quick Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#191817] p-3.5 rounded-2xl border border-[#54433c]/50">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-panel-5 p-3.5 rounded-2xl border border-edge-outline-3">
         <div className="flex items-center gap-2.5">
-          <div className="w-10 h-10 rounded-xl bg-[#282625] border border-[#54433c] flex items-center justify-center text-[#ffb597]">
+          <div className="w-10 h-10 rounded-xl bg-panel-6 border border-edge-outline flex items-center justify-center text-ink-brand">
             <span className="material-symbols-outlined">table_restaurant</span>
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-[17px] font-black text-white tracking-tight">
+              <h2 className="text-[17px] font-black text-ink-strong tracking-tight">
                 Salón &amp; Mesas: {activeCompany.name}
               </h2>
             </div>
-            <p className="text-[12px] text-[#dac1b8]/70">
+            <p className="text-[12px] text-ink-muted-3">
               Haz clic en una mesa libre para abrir comanda o en una mesa ocupada para gestionarla.
             </p>
           </div>
@@ -79,7 +79,7 @@ export const TableMapScreen: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => openQuickOrder('Barra')}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#2a2827] hover:bg-[#383533] text-[#dac1b8] hover:text-white border border-[#54433c]/60 text-[12px] font-bold transition-all"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-panel-7 hover:bg-panel-8 text-ink-muted-2 hover:text-ink-strong border border-edge-outline-2 text-[12px] font-bold transition-all"
           >
             <span className="material-symbols-outlined text-[16px]">local_bar</span>
             <span>Venta Barra</span>
@@ -87,7 +87,7 @@ export const TableMapScreen: React.FC = () => {
 
           <button
             onClick={() => setIsNewTableModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#823b19] hover:bg-[#9a471f] text-[#ffdbcd] text-[12px] font-bold transition-all shadow-md"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-brand-solid hover:bg-surface-brand-hover-bright text-ink-on-brand text-[12px] font-bold transition-all shadow-md"
           >
             <span className="material-symbols-outlined text-[16px]">add</span>
             <span>Nueva Mesa</span>
@@ -113,16 +113,16 @@ export const TableMapScreen: React.FC = () => {
                 onClick={() => setSelectedZone(zone.id)}
                 className={`px-3.5 py-2 rounded-xl text-[13px] font-semibold whitespace-nowrap flex items-center gap-2 transition-all ${
                   isSelected
-                    ? 'bg-[#823b19] text-[#ffdbcd] shadow-md font-bold'
-                    : 'bg-[#201f1e] text-[#dac1b8] border border-[#54433c]/50 hover:bg-[#2a2928]'
+                    ? 'bg-surface-brand-solid text-ink-on-brand shadow-md font-bold'
+                    : 'bg-panel-9 text-ink-muted-2 border border-edge-outline-3 hover:bg-panel-10'
                 }`}
               >
                 <span>{zone.label}</span>
                 <span
                   className={`text-[11px] px-1.5 py-0.2 rounded-full font-bold ${
                     isSelected
-                      ? 'bg-[#3d2f00]/30 text-white'
-                      : 'bg-[#151414] text-[#dac1b8]/70'
+                      ? 'bg-selection-counter text-ink-on-solid'
+                      : 'bg-panel-12 text-ink-muted-3'
                   }`}
                 >
                   {zoneCount}
@@ -133,41 +133,41 @@ export const TableMapScreen: React.FC = () => {
         </div>
 
         {/* Status Legend & Quick Filter */}
-        <div className="flex items-center gap-2 text-[12px] font-medium bg-[#1c1b1b] p-1.5 px-3 rounded-xl border border-[#54433c]/60 w-full lg:w-auto overflow-x-auto">
+        <div className="flex items-center gap-2 text-[12px] font-medium bg-panel p-1.5 px-3 rounded-xl border border-edge-outline-2 w-full lg:w-auto overflow-x-auto">
           <button
             onClick={() => setStatusFilter(statusFilter === 'libre' ? 'all' : 'libre')}
             className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors whitespace-nowrap ${
-              statusFilter === 'libre' ? 'bg-[#60d4fb]/20 ring-1 ring-[#60d4fb]' : 'hover:bg-[#2a2a2a]'
+              statusFilter === 'libre' ? 'bg-surface-info ring-1 ring-edge-info' : 'hover:bg-panel-3'
             }`}
           >
-            <div className="w-2.5 h-2.5 rounded-full bg-[#60d4fb]"></div>
-            <span className="text-[#e5e2e1]">Libre ({counts.libres})</span>
+            <div className="w-2.5 h-2.5 rounded-full bg-surface-info-2"></div>
+            <span className="text-ink-body">Libre ({counts.libres})</span>
           </button>
 
           <button
             onClick={() => setStatusFilter(statusFilter === 'ocupada' ? 'all' : 'ocupada')}
             className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors whitespace-nowrap ${
-              statusFilter === 'ocupada' ? 'bg-[#ffb4ab]/20 ring-1 ring-[#ffb4ab]' : 'hover:bg-[#2a2a2a]'
+              statusFilter === 'ocupada' ? 'bg-surface-danger ring-1 ring-edge-danger' : 'hover:bg-panel-3'
             }`}
           >
-            <div className="w-2.5 h-2.5 rounded-full bg-[#ffb4ab]"></div>
-            <span className="text-[#e5e2e1]">Ocupada ({counts.ocupadas})</span>
+            <div className="w-2.5 h-2.5 rounded-full bg-surface-danger-2"></div>
+            <span className="text-ink-body">Ocupada ({counts.ocupadas})</span>
           </button>
 
           <button
             onClick={() => setStatusFilter(statusFilter === 'por_cobrar' ? 'all' : 'por_cobrar')}
             className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-colors whitespace-nowrap ${
-              statusFilter === 'por_cobrar' ? 'bg-[#ebc246]/20 ring-1 ring-[#ebc246]' : 'hover:bg-[#2a2a2a]'
+              statusFilter === 'por_cobrar' ? 'bg-surface-gold ring-1 ring-edge-gold' : 'hover:bg-panel-3'
             }`}
           >
-            <div className="w-2.5 h-2.5 rounded-full bg-[#ebc246]"></div>
-            <span className="text-[#e5e2e1]">Por Cobrar ({counts.porCobrar})</span>
+            <div className="w-2.5 h-2.5 rounded-full bg-surface-gold-2"></div>
+            <span className="text-ink-body">Por Cobrar ({counts.porCobrar})</span>
           </button>
 
           {statusFilter !== 'all' && (
             <button
               onClick={() => setStatusFilter('all')}
-              className="text-[#dac1b8] hover:text-[#e5e2e1] text-[11px] underline ml-1"
+              className="text-ink-muted-2 hover:text-ink-body text-[11px] underline ml-1"
             >
               Ver Todas
             </button>
@@ -188,28 +188,28 @@ export const TableMapScreen: React.FC = () => {
               key={table.id}
               id={`table-card-${table.id}`}
               onClick={() => selectAndOpenTable(table.id)}
-              className={`aspect-square bg-[#20201f] border rounded-2xl flex flex-col items-center justify-between p-3.5 relative overflow-hidden transition-all duration-150 active:scale-95 group text-center cursor-pointer ${
+              className={`aspect-square bg-panel-13 border rounded-2xl flex flex-col items-center justify-between p-3.5 relative overflow-hidden transition-all duration-150 active:scale-95 group text-center cursor-pointer ${
                 isFree
-                  ? 'border-[#54433c]/80 hover:bg-[#2a2a2a] hover:border-[#60d4fb]/50 shadow-sm'
+                  ? 'border-edge-outline-4 hover:bg-panel-3 hover:border-edge-info-2 shadow-sm'
                   : isOccupied
-                  ? 'border-[#ffb4ab]/80 hover:bg-[#2a2a2a] shadow-[0px_6px_20px_rgba(255,180,171,0.15)] ring-1 ring-[#ffb4ab]/30'
-                  : 'border-[#ebc246] hover:bg-[#2a2a2a] shadow-[0px_6px_20px_rgba(235,194,70,0.2)] ring-1 ring-[#ebc246]/40'
+                  ? 'border-edge-danger-2 hover:bg-panel-3 shadow-ui-1 ring-1 ring-edge-danger-3'
+                  : 'border-edge-gold-2 hover:bg-panel-3 shadow-ui-2 ring-1 ring-edge-gold-3'
               }`}
             >
               {/* Status Indicator Stripe */}
               <div
                 className={`absolute top-0 left-0 w-full ${
                   isFree
-                    ? 'h-1 bg-[#60d4fb]'
+                    ? 'h-1 bg-surface-info-2'
                     : isOccupied
-                    ? 'h-1.5 bg-[#ffb4ab]'
-                    : 'h-2 bg-[#ebc246]'
+                    ? 'h-1.5 bg-surface-danger-2'
+                    : 'h-2 bg-surface-gold-2'
                 }`}
               />
 
               {/* Table Header Row */}
               <div className="w-full flex justify-between items-start pt-1">
-                <span className="text-[10px] font-bold text-[#dac1b8]/70 uppercase tracking-wider">
+                <span className="text-[10px] font-bold text-ink-muted-3 uppercase tracking-wider">
                   {table.zone.includes('Barra') ? 'BARRA' : 'MESA'}
                 </span>
 
@@ -217,15 +217,15 @@ export const TableMapScreen: React.FC = () => {
                   <span
                     className={`text-[9px] font-black px-1.5 py-0.2 rounded ${
                       table.companyId === 'el-tayta'
-                        ? 'bg-[#823b19] text-[#ffdbcd]'
-                        : 'bg-[#ebc246] text-[#352800]'
+                        ? 'bg-surface-brand-solid text-ink-on-brand'
+                        : 'bg-surface-gold-2 text-ink-foreground'
                     }`}
                   >
                     {table.companyId === 'el-tayta' ? 'Tayta' : 'Sabroso'}
                   </span>
                 )}
 
-                <div className="flex items-center gap-0.5 text-[#dac1b8] text-[11px] bg-[#1c1b1b] px-1.5 py-0.5 rounded-full border border-[#54433c]/40">
+                <div className="flex items-center gap-0.5 text-ink-muted-2 text-[11px] bg-panel px-1.5 py-0.5 rounded-full border border-edge-outline-5">
                   <span className="material-symbols-outlined text-[13px]">group</span>
                   <span>{table.capacity}</span>
                 </div>
@@ -233,21 +233,21 @@ export const TableMapScreen: React.FC = () => {
 
               {/* Center Table Big Display */}
               <div className="flex flex-col items-center justify-center my-auto">
-                <span className="text-[32px] md:text-[36px] font-black text-[#e5e2e1] tracking-tight leading-none group-hover:text-[#ffb597] transition-colors">
+                <span className="text-[32px] md:text-[36px] font-black text-ink-body tracking-tight leading-none group-hover:text-ink-brand transition-colors">
                   {table.number}
                 </span>
 
                 {isFree ? (
-                  <span className="text-[11px] font-semibold text-[#60d4fb] mt-1.5 bg-[#60d4fb]/10 px-2 py-0.5 rounded-full border border-[#60d4fb]/30">
+                  <span className="text-[11px] font-semibold text-ink-info mt-1.5 bg-surface-info-3 px-2 py-0.5 rounded-full border border-edge-info-3">
                     Libre
                   </span>
                 ) : isOccupied ? (
-                  <div className="flex items-center gap-1 text-[11px] font-bold text-[#ffb4ab] mt-1 bg-[#ffb4ab]/10 px-2 py-0.5 rounded-full border border-[#ffb4ab]/30">
+                  <div className="flex items-center gap-1 text-[11px] font-bold text-ink-danger mt-1 bg-surface-danger-3 px-2 py-0.5 rounded-full border border-edge-danger-4">
                     <span className="material-symbols-outlined text-[12px]">timer</span>
                     <span>{table.minutesElapsed || 35}m</span>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1 text-[11px] font-bold text-[#ebc246] mt-1 bg-[#ebc246]/10 px-2 py-0.5 rounded-full border border-[#ebc246]/30">
+                  <div className="flex items-center gap-1 text-[11px] font-bold text-ink-gold mt-1 bg-surface-gold-3 px-2 py-0.5 rounded-full border border-edge-gold-4">
                     <span className="material-symbols-outlined text-[12px]">payments</span>
                     <span>Por Cobrar</span>
                   </div>
@@ -255,18 +255,18 @@ export const TableMapScreen: React.FC = () => {
               </div>
 
               {/* Bottom Footer: Amount and Items */}
-              <div className="w-full pt-2 border-t border-[#54433c]/40 flex justify-between items-center text-[11px]">
+              <div className="w-full pt-2 border-t border-edge-outline-5 flex justify-between items-center text-[11px]">
                 {order && order.total > 0 ? (
                   <>
-                    <span className="text-[#dac1b8]/70 font-medium">
+                    <span className="text-ink-muted-3 font-medium">
                       {order.items.reduce((s, i) => s + i.quantity, 0)} ítems
                     </span>
-                    <span className="font-bold text-[#ebc246] text-[13px] font-mono">
+                    <span className="font-bold text-ink-gold text-[13px] font-mono">
                       S/ {order.total.toFixed(2)}
                     </span>
                   </>
                 ) : (
-                  <span className="text-[#dac1b8]/50 text-[11px] w-full text-center">
+                  <span className="text-ink-muted-4 text-[11px] w-full text-center">
                     Disponible
                   </span>
                 )}

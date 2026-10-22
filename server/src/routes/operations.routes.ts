@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../lib/auth';
+import { requireAuth } from '../lib/auth.js';
 import {
   openOrderForTable,
+  cancelOrderOpening,
+  syncOpeningItems,
   createQuickBarOrder,
   getOrder,
   addItemToOrder,
@@ -13,17 +15,17 @@ import {
   markTableForBilling,
   payTable,
   listActiveOrders,
-} from '../services/order.service';
-import { createPurchase, regularizePurchase, listPurchases } from '../services/purchase.service';
-import { addKardexAdjustment, listKardex } from '../services/kardex.service';
+} from '../services/order.service.js';
+import { createPurchase, regularizePurchase, listPurchases } from '../services/purchase.service.js';
+import { addKardexAdjustment, listKardex } from '../services/kardex.service.js';
 import {
   switchCompanyShift,
   listShiftRecords,
   listTransactions,
   createManualTransaction,
-} from '../services/shift.service';
-import { notifyOrderState, notifyTableState } from '../lib/realtime';
-import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog';
+} from '../services/shift.service.js';
+import { notifyOrderState, notifyTableState } from '../lib/realtime.js';
+import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
 
 const router = Router();
@@ -65,6 +67,28 @@ router.post('/orders/open', async (req, res, next) => {
     op.fail(err);
     next(err);
   }
+});
+
+router.post('/orders/opening-items', async (req, res, next) => {
+  try {
+    const body = z.object({ openingClientOpId: z.string().min(1).max(36), items: z.array(z.object({
+      productId: z.string().min(1), quantity: z.number().positive(), notes: z.string().optional(),
+    })) }).parse(req.body);
+    const order = await syncOpeningItems(body.openingClientOpId, body.items);
+    res.json(order);
+    void notifyOrderState(order.id).catch(() => undefined);
+  } catch (err) { next(err); }
+});
+
+router.post('/orders/cancel-opening', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'cancelar_apertura');
+  try {
+    const body = z.object({ openingClientOpId: z.string().min(1).max(36) }).parse(req.body);
+    const order = await cancelOrderOpening(body.openingClientOpId);
+    op.ok(order);
+    res.json(order);
+    if (order.id) void notifyOrderState(order.id).catch(() => undefined);
+  } catch (err) { op.fail(err); next(err); }
 });
 
 router.post('/orders/quick-bar', async (req, res, next) => {
@@ -119,8 +143,8 @@ router.patch('/orders/:id/items/:itemId/quantity', async (req, res, next) => {
     const params = z
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
-    const body = z.object({ delta: z.number().finite() }).parse(req.body);
-    const order = await updateItemQuantity(params.id, params.itemId, body.delta);
+    const body = z.object({ delta: z.number().finite(), clientOpId: z.string().max(36).optional() }).parse(req.body);
+    const order = await updateItemQuantity(params.id, params.itemId, body.delta, body.clientOpId);
     op.ok(order);
     res.json(order);
     void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);
@@ -152,7 +176,8 @@ router.delete('/orders/:id/items/:itemId', async (req, res, next) => {
     const params = z
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
-    const order = await removeItemFromOrder(params.id, params.itemId);
+    const query = z.object({ clientOpId: z.string().max(36).optional() }).parse(req.query);
+    const order = await removeItemFromOrder(params.id, params.itemId, query.clientOpId);
     op.ok(order);
     res.json(order);
     void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);

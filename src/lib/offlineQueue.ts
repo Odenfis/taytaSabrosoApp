@@ -16,10 +16,12 @@ export function loadQueue(): PendingOp[] {
   }
 }
 
-export function saveQueue(queue: PendingOp[]): void {
+export function saveQueue(queue: PendingOp[], strict = false): void {
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    if (strict && localStorage.getItem(QUEUE_KEY) !== JSON.stringify(queue)) throw new Error('Storage unavailable');
   } catch {
+    if (strict) throw new Error('No se pudo guardar el cambio en este equipo. Revise el almacenamiento del navegador y vuelva a intentar.');
     // Cuota llena u otro error de storage: no romper la app.
   }
 }

@@ -45,6 +45,8 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
         return 'Kardex & Control de Stock';
       case 'compras':
         return 'Gestión de Compras & Proveedores';
+      case 'productos':
+        return 'Maestro de Productos';
       case 'recetas':
         return 'Fichas Técnicas & Recetas (BOM)';
       case 'ratios':
@@ -67,13 +69,13 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
   return (
     <header
       id="top-app-bar"
-      className="fixed top-0 right-0 w-[calc(100%-6rem)] md:w-[calc(100%-16rem)] h-16 bg-[#131313] border-b border-[#54433c]/60 z-40 flex justify-between items-center px-3 md:px-6 shadow-sm"
+      className="fixed top-0 right-0 w-[calc(100%-6rem)] md:w-[calc(100%-16rem)] h-16 bg-panel-35 border-b border-edge-outline-2 z-40 flex justify-between items-center px-3 md:px-6 shadow-sm"
     >
       <div className="flex items-center gap-2 md:gap-3 min-w-0">
         {onToggleMobileMenu && (
           <button
             onClick={onToggleMobileMenu}
-            className="md:hidden text-[#dac1b8] hover:text-[#e5e2e1] p-1.5 hover:bg-[#2a2a2a] rounded-lg transition-colors"
+            className="md:hidden text-ink-muted-2 hover:text-ink-body p-1.5 hover:bg-panel-3 rounded-lg transition-colors"
           >
             <span className="material-symbols-outlined text-[22px]">menu</span>
           </button>
@@ -81,7 +83,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
 
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-[17px] md:text-[21px] font-bold text-[#ffb597] tracking-tight truncate">
+            <h1 className="text-[17px] md:text-[21px] font-bold text-ink-brand tracking-tight truncate">
               {getScreenTitle()}
             </h1>
           </div>
@@ -90,16 +92,16 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
 
       <div className="flex items-center gap-2 md:gap-3">
         {/* Multi-Company Selector Pill */}
-        <div className="flex items-center bg-[#1c1b1b] p-1 rounded-xl border border-[#54433c]/50">
+        <div className="flex items-center bg-panel p-1 rounded-xl border border-edge-outline-3">
           <button
             onClick={() => setActiveCompanyId('el-tayta')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'el-tayta'
-                ? 'bg-[#823b19] text-[#ffdbcd] shadow-sm'
-                : 'text-[#dac1b8]/70 hover:text-white'
+                ? 'bg-surface-brand-solid text-ink-on-brand shadow-sm'
+                : 'text-ink-muted-3 hover:text-ink-strong'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-[#ffb597]" />
+            <span className="w-2 h-2 rounded-full bg-surface-brand" />
             <span className="hidden sm:inline">El Tayta</span>
             <span className="sm:hidden">Tayta</span>
           </button>
@@ -108,11 +110,11 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             onClick={() => setActiveCompanyId('el-sabroso')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'el-sabroso'
-                ? 'bg-[#ebc246] text-[#352800] shadow-sm'
-                : 'text-[#dac1b8]/70 hover:text-white'
+                ? 'bg-surface-gold-2 text-ink-foreground shadow-sm'
+                : 'text-ink-muted-3 hover:text-ink-strong'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-[#ebc246]" />
+            <span className="w-2 h-2 rounded-full bg-surface-gold-2" />
             <span className="hidden sm:inline">El Sabroso</span>
             <span className="sm:hidden">Sabroso</span>
           </button>
@@ -121,11 +123,11 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             onClick={() => setActiveCompanyId('todas')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'todas'
-                ? 'bg-[#3b3836] text-white shadow-sm'
-                : 'text-[#dac1b8]/70 hover:text-white'
+                ? 'bg-panel-27 text-ink-strong shadow-sm'
+                : 'text-ink-muted-3 hover:text-ink-strong'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-[#a39e9b]" />
+            <span className="w-2 h-2 rounded-full bg-surface-muted-alt" />
             <span>Ambas</span>
           </button>
         </div>
@@ -135,20 +137,20 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           onClick={() => setCurrentScreen('ratios')}
           className={`hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-xl text-[12px] font-bold border transition-colors ${
             expenseAnalysis.status === 'critico'
-              ? 'bg-rose-950/40 border-rose-600/60 text-rose-300 hover:bg-rose-900/50'
+              ? 'bg-surface-danger-strong-5 border-edge-danger-8 text-ink-danger-2 hover:bg-surface-danger-strong-6'
               : expenseAnalysis.status === 'alerta'
-              ? 'bg-amber-950/40 border-amber-600/60 text-amber-300 hover:bg-amber-900/50'
-              : 'bg-emerald-950/30 border-emerald-600/50 text-emerald-300 hover:bg-emerald-900/40'
+              ? 'bg-surface-warning-strong-3 border-edge-warning-6 text-ink-warning-2 hover:bg-surface-warning-strong-11'
+              : 'bg-surface-success-strong-3 border-edge-success-5 text-ink-success-2 hover:bg-surface-success-strong-9'
           }`}
           title="Ver diagnóstico de control de gastos"
         >
           <span
             className={`w-2 h-2 rounded-full ${
               expenseAnalysis.status === 'critico'
-                ? 'bg-rose-500 animate-pulse'
+                ? 'bg-surface-danger-5 animate-pulse'
                 : expenseAnalysis.status === 'alerta'
-                ? 'bg-amber-400'
-                : 'bg-emerald-400'
+                ? 'bg-surface-warning'
+                : 'bg-surface-success'
             }`}
           />
           <span>Food Cost: {expenseAnalysis.foodCostPctReal}%</span>
@@ -158,8 +160,8 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
         </button>
 
         {/* Live Clock */}
-        <div className="text-[13px] font-medium text-[#dac1b8] hidden xl:flex items-center gap-1.5 bg-[#1c1b1b] px-3 py-1.5 rounded-lg border border-[#54433c]/40">
-          <span className="material-symbols-outlined text-[15px] text-[#ebc246]">schedule</span>
+        <div className="text-[13px] font-medium text-ink-muted-2 hidden xl:flex items-center gap-1.5 bg-panel px-3 py-1.5 rounded-lg border border-edge-outline-5">
+          <span className="material-symbols-outlined text-[15px] text-ink-gold">schedule</span>
           <span>{time || '12:45 PM'}</span>
         </div>
 
@@ -170,12 +172,12 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           id="btn-sync-status"
           className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-colors ${
             offlineState.isSimulatedOffline
-              ? 'bg-amber-950/40 border-amber-600/50 text-amber-300'
+              ? 'bg-surface-warning-strong-3 border-edge-warning-7 text-ink-warning-2'
               : offlineState.pendingSyncCount > 0
-              ? 'bg-orange-950/40 border-orange-600/50 text-orange-300'
+              ? 'bg-surface-warning-strong-12 border-edge-warning-8 text-ink-warning-4'
               : !offlineState.isOnline
-              ? 'bg-rose-950/40 border-rose-600/50 text-rose-300'
-              : 'bg-emerald-950/30 border-emerald-600/40 text-emerald-300'
+              ? 'bg-surface-danger-strong-5 border-edge-danger-9 text-ink-danger-2'
+              : 'bg-surface-success-strong-3 border-edge-success-6 text-ink-success-2'
           }`}
           title={
             lastSyncResult
@@ -186,12 +188,12 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           <span
             className={`w-2 h-2 rounded-full ${
               offlineState.isSimulatedOffline
-                ? 'bg-amber-400'
+                ? 'bg-surface-warning'
                 : offlineState.pendingSyncCount > 0
-                ? 'bg-orange-400 animate-pulse'
+                ? 'bg-surface-warning-3 animate-pulse'
                 : !offlineState.isOnline
-                ? 'bg-rose-500 animate-pulse'
-                : 'bg-emerald-400'
+                ? 'bg-surface-danger-5 animate-pulse'
+                : 'bg-surface-success'
             }`}
           />
           {offlineState.isSimulatedOffline ? (
@@ -202,7 +204,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             <span>Online</span>
           )}
           {offlineState.pendingSyncCount > 0 && (
-            <span className="bg-[#131313]/70 px-1.5 py-0.5 rounded-md text-[10px]">
+            <span className="bg-panel-40 px-1.5 py-0.5 rounded-md text-[10px]">
               {offlineState.pendingSyncCount} en cola
             </span>
           )}
@@ -210,10 +212,10 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             title={`Tiempo real: ${realtimeStatus}`}
             className={`w-2 h-2 rounded-full ${
               realtimeStatus === 'connected'
-                ? 'bg-emerald-400'
+                ? 'bg-surface-success'
                 : realtimeStatus === 'connecting'
-                ? 'bg-amber-400 animate-pulse'
-                : 'bg-[#54433c]'
+                ? 'bg-surface-warning animate-pulse'
+                : 'bg-surface-outline'
             }`}
           />
         </button>
@@ -222,19 +224,19 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           <button
             id="btn-notifications-toggle"
             onClick={() => setShowNotifications(!showNotifications)}
-            className="relative text-[#dac1b8] hover:text-[#e5e2e1] hover:bg-[#2a2a2a] rounded-full p-2 transition-colors"
+            className="relative text-ink-muted-2 hover:text-ink-body hover:bg-panel-3 rounded-full p-2 transition-colors"
             title="Notificaciones"
           >
             <span className="material-symbols-outlined text-[22px]">notifications</span>
             {notifications.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-[#ebc246] ring-2 ring-[#131313]" />
+              <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-surface-gold-2 ring-2 ring-edge-edge-2" />
             )}
           </button>
 
           {/* User quick profile */}
           <button
             onClick={logout}
-            className="text-[#dac1b8] hover:text-[#e5e2e1] hover:bg-[#2a2a2a] rounded-full p-2 transition-colors"
+            className="text-ink-muted-2 hover:text-ink-body hover:bg-panel-3 rounded-full p-2 transition-colors"
             title="Cuenta / Cerrar Sesión"
           >
             <span className="material-symbols-outlined text-[22px]">account_circle</span>
@@ -244,18 +246,18 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           {showNotifications && (
             <div
               id="notifications-drawer"
-              className="absolute right-0 top-12 w-80 sm:w-96 bg-[#20201f] border border-[#54433c] rounded-2xl shadow-[0_12px_32px_rgba(0,0,0,0.7)] p-4 z-50 animate-in fade-in zoom-in-95 duration-150"
+              className="absolute right-0 top-12 w-80 sm:w-96 bg-panel-13 border border-edge-outline rounded-2xl shadow-ui-7 p-4 z-50 animate-in fade-in zoom-in-95 duration-150"
             >
-              <div className="flex items-center justify-between pb-3 border-b border-[#54433c]/50 mb-3">
+              <div className="flex items-center justify-between pb-3 border-b border-edge-outline-3 mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[#ebc246] text-[20px]">
+                  <span className="material-symbols-outlined text-ink-gold text-[20px]">
                     notifications_active
                   </span>
-                  <h3 className="text-[15px] font-bold text-[#e5e2e1]">Notificaciones de Turno</h3>
+                  <h3 className="text-[15px] font-bold text-ink-body">Notificaciones de Turno</h3>
                 </div>
                 <button
                   onClick={() => setShowNotifications(false)}
-                  className="text-[#dac1b8] hover:text-[#e5e2e1] p-1 rounded-lg hover:bg-[#2a2a2a]"
+                  className="text-ink-muted-2 hover:text-ink-body p-1 rounded-lg hover:bg-panel-3"
                 >
                   <span className="material-symbols-outlined text-[18px]">close</span>
                 </button>
@@ -263,34 +265,34 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
 
               <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
                 {notifications.length === 0 ? (
-                  <p className="text-[13px] text-[#dac1b8]/70 text-center py-6">
+                  <p className="text-[13px] text-ink-muted-3 text-center py-6">
                     No hay notificaciones recientes.
                   </p>
                 ) : (
                   notifications.map((notif) => (
                     <div
                       key={notif.id}
-                      className="bg-[#1c1b1b] border border-[#54433c]/40 rounded-xl p-3 flex items-start justify-between gap-2 text-left"
+                      className="bg-panel border border-edge-outline-5 rounded-xl p-3 flex items-start justify-between gap-2 text-left"
                     >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span
                             className={`w-2 h-2 rounded-full ${
                               notif.type === 'success'
-                                ? 'bg-emerald-400'
+                                ? 'bg-surface-success'
                                 : notif.type === 'warning'
-                                ? 'bg-[#ebc246]'
-                                : 'bg-[#60d4fb]'
+                                ? 'bg-surface-gold-2'
+                                : 'bg-surface-info-2'
                             }`}
                           />
-                          <p className="text-[13px] font-semibold text-[#e5e2e1]">{notif.title}</p>
-                          <span className="text-[11px] text-[#dac1b8]/60 ml-auto">{notif.time}</span>
+                          <p className="text-[13px] font-semibold text-ink-body">{notif.title}</p>
+                          <span className="text-[11px] text-ink-muted ml-auto">{notif.time}</span>
                         </div>
-                        <p className="text-[12px] text-[#dac1b8]/80 leading-snug">{notif.message}</p>
+                        <p className="text-[12px] text-ink-muted-5 leading-snug">{notif.message}</p>
                       </div>
                       <button
                         onClick={() => dismissNotification(notif.id)}
-                        className="text-[#dac1b8]/50 hover:text-[#e5e2e1] p-1 shrink-0"
+                        className="text-ink-muted-4 hover:text-ink-body p-1 shrink-0"
                       >
                         <span className="material-symbols-outlined text-[14px]">close</span>
                       </button>

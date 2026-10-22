@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import type { Prisma } from '@prisma/client';
-import { prisma } from './prisma';
-import { AppError } from './utils';
+import { prisma } from './prisma.js';
+import { AppError } from './utils.js';
 
 const CARGA_MAX_CHARS = 20000;
 

@@ -1,3 +1,4 @@
+import { resolvePaymentMethod } from '../lib/paymentSelection';
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, ReactNode } from 'react';
 import {
   User,
@@ -34,10 +35,18 @@ import {
   CatalogEntity,
   CatalogSyncMeta,
   PendingOpEntity,
+  PendingOp,
   ProductCategory,
 } from '../types';
-import { apiClient, ApiError, getAuthToken, storeAuthToken, clearAuthToken } from '../lib/api';
+import { apiClient, ApiError, getAuthToken, storeAuthToken, clearAuthToken, AUTH_REQUIRED_EVENT } from '../lib/api';
+import { getTerminalIdentity } from '../lib/terminal';
+import { type InsumoDraft, isInventoryDependencyIssue, isInsumoOp, insumoIdOf, insumoPending, stageInsumo, stageInsumoDelete, overlayInsumos,
+  persistInsumoQueue, markInsumoIssue, insumoIsSending, INSUMO_QUEUE_EVENT } from '../lib/insumoCatalog';
+import { releaseOrderTable, settleOpening, stageOrderOperation } from '../lib/orderLifecycle';
 import { isCashMovement } from '../lib/finance';
+import { matchingRecipe } from '../lib/recipeMatch';
+import { type ProductDraft, stageProduct, productPending, isProductOp, productIdOf, persistProductQueue,
+  markProductIssue, overlayProducts, overlayRecipes, uuid, validateProduct, PRODUCT_QUEUE_EVENT } from '../lib/productCatalog';
 import {
   mapTable,
   mapProduct,
@@ -81,6 +90,7 @@ import {
 import {
   replayCall,
   ReplayDisposition,
+  productIsSending,
 } from '../lib/replayQueue';
 import {
   connectRealtime,
@@ -120,6 +130,7 @@ interface POSContextType {
   authToken: AuthToken | null;
   isAuthenticating: boolean;
   isSessionInitializing: boolean;
+  authNotice: string | null;
   login: (pin: string) => Promise<boolean>;
   logout: () => void;
   // Sync de catálogos (Fase E2) — metadatos para delta-sync posterior (Fase C)
@@ -133,6 +144,8 @@ interface POSContextType {
   setActiveCompanyId: (companyId: CompanyId | 'todas') => void;
   activeCompany: Company;
   // Navigation
+  catalogTarget: { productId: string; action: 'createRecipe' | 'viewRecipe' | 'editProduct' } | null;
+  setCatalogTarget: (target: { productId: string; action: 'createRecipe' | 'viewRecipe' | 'editProduct' } | null) => void;
   currentScreen: ScreenType;
   setCurrentScreen: (screen: ScreenType) => void;
   selectedTableId: string | null;
@@ -141,6 +154,10 @@ interface POSContextType {
   tables: Table[];
   filteredTables: Table[];
   products: Product[];
+  productPendingOps: PendingOp[];
+  productIsSending: (id: string) => boolean;
+  saveProduct: (draft: ProductDraft, id?: string, expectedVersion?: number) => Promise<'saved' | 'queued'>;
+  resolveProductConflict: (id: string, choice: 'server' | 'local') => Promise<void>;
   filteredProducts: Product[];
   orders: Record<string, Order>;
   transactions: Transaction[];
@@ -231,8 +248,12 @@ interface POSContextType {
     type: 'AJUSTE_MERMA' | 'ENTRADA_COMPRA',
     reason: string
   ) => void;
-  saveRecipe: (recipe: Recipe) => void;
-  addInsumo: (insumo: Omit<Insumo, 'id' | 'code'>) => void;
+  saveRecipe: (recipe: Recipe) => Promise<'saved' | 'queued'>;
+  addInsumo: (insumo: Omit<Insumo, 'id' | 'code'>) => Promise<'saved' | 'queued'>;
+  saveInsumo: (draft: InsumoDraft, original?: Insumo, id?: string) => Promise<'saved' | 'queued'>;
+  deleteInsumo: (insumo: Insumo) => Promise<'saved' | 'queued'>;
+  resolveInsumoConflict: (id: string, choice: 'server' | 'local') => Promise<void>;
+  discardInventoryDependency: (clientOpId: string) => Promise<void>;
   // Impresoras (Multi-Printer)
   printers: ThermalPrinterConfig[];
   thermalPrinters: ThermalPrinterConfig[];
@@ -302,6 +323,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [authToken, setAuthToken] = useState<AuthToken | null>(() => getAuthToken());
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isSessionInitializing, setIsSessionInitializing] = useState(true);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [isCatalogsLoading, setIsCatalogsLoading] = useState(false);
   const [isOperationsLoading, setIsOperationsLoading] = useState(false);
   // Tiempo real (Fase D acotada): estado del socket mesas/órdenes.
@@ -320,6 +342,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return (saved as CompanyId | 'todas') || 'el-tayta';
   });
 
+  const [catalogTarget, setCatalogTarget] = useState<{ productId: string; action: 'createRecipe' | 'viewRecipe' | 'editProduct' } | null>(null);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('mesas');
   const [selectedTableId, setSelectedTableId] = useState<string | null>('t-02');
 
@@ -328,8 +351,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [products, setProducts] = useState<Product[]>(() => {
-    return safeParse(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
+    return overlayProducts(safeParse(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS), []);
   });
+
+  const [productPendingOps, setProductPendingOps] = useState<PendingOp[]>(productPending);
+  const productSyncRequestedRef = useRef(false);
+  useEffect(() => {
+    const update = () => { setProductPendingOps(productPending()); syncPendingCount(); };
+    window.addEventListener(PRODUCT_QUEUE_EVENT, update);
+    window.addEventListener('storage', update);
+    return () => { window.removeEventListener(PRODUCT_QUEUE_EVENT, update); window.removeEventListener('storage', update); };
+  }, []);
 
   const [orders, setOrders] = useState<Record<string, Order>>(() => {
     return safeParse(STORAGE_KEYS.ORDERS, INITIAL_ORDERS);
@@ -344,7 +376,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [recipes, setRecipes] = useState<Recipe[]>(() => {
-    return safeParse(STORAGE_KEYS.RECIPES, INITIAL_RECIPES);
+    return overlayRecipes(safeParse(STORAGE_KEYS.RECIPES, INITIAL_RECIPES), []);
   });
 
   const [purchases, setPurchases] = useState<Purchase[]>(() => {
@@ -540,17 +572,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
     settle(results[1], (dtos) => {
       const items = dtos.map(mapProduct);
-      setProducts(items);
+      setProducts((prev) => overlayProducts(items, prev));
       metaUpdates.products = extractMeta('products', items);
     });
     settle(results[2], (dtos) => {
       const items = dtos.map(mapInsumo);
-      setInsumos((prev) => withTemps(items, prev));
+      setInsumos((prev) => overlayInsumos(withTemps(items, prev), prev));
       metaUpdates.insumos = extractMeta('insumos', items);
     });
     settle(results[3], (dtos) => {
       const items = dtos.map(mapRecipe);
-      setRecipes((prev) => withTemps(items, prev));
+      setRecipes((prev) => overlayRecipes(withTemps(items, prev), prev));
       metaUpdates.recipes = extractMeta('recipes', items);
     });
     settle(results[4], (dtos) => {
@@ -601,6 +633,58 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Ítems agregados a una orden temporal (apertura en curso) para flushear al server al resolver.
   const tmpOrderItemsRef = useRef<Record<string, OrderItem[]>>({});
+  const activeOrderRequestsRef = useRef(new Set<string>());
+  const closedOrderIdsRef = useRef(new Set<string>());
+
+  const reconcileOrderResult = (dto: OrderDTO) => {
+    if (dto.isDeleted || dto.status === 'anulado') {
+      closedOrderIdsRef.current.add(dto.id);
+      setOrders((prev) => { const next = { ...prev }; delete next[dto.id]; return next; });
+      setTables((prev) => prev.map((t) => releaseOrderTable(t, dto.id)));
+      return;
+    }
+    if (closedOrderIdsRef.current.has(dto.id)) return;
+    setOrders((prev) => ({ ...prev, [dto.id]: mapOrder(dto) }));
+    // Una cancelación optimista puede encontrar productos agregados desde otro equipo.
+    setTables((prev) => prev.map((t) => t.id === dto.tableId && !t.currentOrderId && dto.items.length
+      ? { ...t, currentOrderId: dto.id, status: 'ocupada', waiter: dto.waiter } : t));
+  };
+
+  const finishOpening = async (dto: OrderDTO, tmpOrderId: string, tmpTableId?: string): Promise<OrderDTO | null> => {
+    const desiredItems = () => tmpOrderItemsRef.current[tmpOrderId] ?? ordersRef.current[tmpOrderId]?.items ?? [];
+    const openingClientOpId = tmpOrderOpRef.current[tmpOrderId] ?? loadQueue().find((op) => (op.payload as Record<string, unknown>)?.tmpOrderId === tmpOrderId)?.clientOpId ?? dto.clientOpId;
+    if (!openingClientOpId) throw new Error('La apertura no tiene identificador.');
+    const settled = await settleOpening(openingClientOpId, desiredItems);
+    if (settled.cancelled || !settled.order) {
+      if (settled.order) reconcileOrderResult(settled.order);
+      setOrders((prev) => { const next = { ...prev }; delete next[tmpOrderId]; return next; });
+      setTables((prev) => prev.map((t) => releaseOrderTable(t, tmpOrderId)));
+      delete tmpOrderItemsRef.current[tmpOrderId];
+      delete tmpOrderOpRef.current[tmpOrderId];
+      return null;
+    }
+    const result = settled.order;
+    if (closedOrderIdsRef.current.has(result.id)) return null;
+    const serverOrder = mapOrder(result);
+    setOrders((prev) => { const next = { ...prev }; delete next[tmpOrderId]; next[serverOrder.id] = serverOrder; return next; });
+    setTables((prev) => {
+      if (tmpTableId) {
+        // No quitar una mesa temporal que ya se reutilizó para otra comanda.
+        const local = prev.find((t) => t.id === tmpTableId);
+        const rest = local?.currentOrderId === tmpOrderId ? prev.filter((t) => t.id !== tmpTableId) : prev;
+        if (rest.some((t) => t.id === serverOrder.tableId)) return rest.map((t) => t.id === serverOrder.tableId && (!t.currentOrderId || t.currentOrderId === serverOrder.id)
+          ? { ...t, status: 'ocupada', currentOrderId: serverOrder.id, waiter: serverOrder.waiter } : t);
+        return [...rest, { id: serverOrder.tableId, companyId: serverOrder.companyId, number: serverOrder.tableNumber, capacity: 1,
+          zone: serverOrder.zone, status: 'ocupada', currentOrderId: serverOrder.id, waiter: serverOrder.waiter } as Table];
+      }
+      return prev.map((t) => t.currentOrderId === tmpOrderId ? { ...t, currentOrderId: serverOrder.id } : t);
+    });
+    if (tmpTableId) setSelectedTableId((current) => current === tmpTableId ? serverOrder.tableId : current);
+    delete tmpOrderItemsRef.current[tmpOrderId];
+    delete tmpOrderOpRef.current[tmpOrderId];
+    return result;
+  };
+
   // clientOpId de la op `openOrder`/`quickOrder` encolada por cada orden temporal
   // (para poder retirarla de la cola si la comanda se abandona offline).
   const tmpOrderOpRef = useRef<Record<string, string>>({});
@@ -636,7 +720,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const refreshInsumos = async (): Promise<void> => {
     try {
       const dtos = await apiClient.get<InsumoDTO[]>('/catalogs/insumos');
-      setInsumos(dtos.map(mapInsumo));
+      setInsumos((prev) => overlayInsumos(dtos.map(mapInsumo), prev));
     } catch {
       /* conservar lo local */
     }
@@ -686,7 +770,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     settle(results[0], (dtos) => {
-      const items = dtos.map(mapOrder);
+      const items = dtos.filter((dto) => !closedOrderIdsRef.current.has(dto.id)).map(mapOrder);
       const merged = Object.fromEntries(items.map((o) => [o.id, o]));
       // Fase E4-b: no sobrescribir órdenes temporales que la cola aún referencia.
       const { orderTmpIds } = getPendingTmpIds();
@@ -721,9 +805,76 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // de ts_pending_queue_v2 al API al reconectar. Idempotente por clientOpId del lado server.
   // NOTA: el guard de "modo offline simulado" vive en los disparadores (no aquí) para que
   // el toggle a online funcione aunque el estado React aún no se aplicó.
+  const catalogRefreshGeneration = useRef(0);
+  const refreshProductCatalog = async () => {
+    const generation = ++catalogRefreshGeneration.current;
+    const [productDTOs, recipeDTOs] = await Promise.all([
+      apiClient.get<ProductDTO[]>('/catalogs/products'), apiClient.get<RecipeDTO[]>('/catalogs/recipes'),
+    ]);
+    if (generation !== catalogRefreshGeneration.current) return;
+    setProducts((prev) => overlayProducts(productDTOs.map(mapProduct), prev));
+    setRecipes((prev) => overlayRecipes(recipeDTOs.map(mapRecipe), prev));
+  };
+  const refreshProductCatalogRef = useRef(refreshProductCatalog);
+  refreshProductCatalogRef.current = refreshProductCatalog;
+
+  const syncProductOperation = async (op: PendingOp): Promise<'saved' | 'queued'> => {
+    if (op.conflict || op.error) return 'queued';
+    const result = await replayCall(op, op.payload as Record<string, unknown>);
+    if (result.disposition === 'ok') {
+      persistProductQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
+      const server = mapProduct(result.data as ProductDTO);
+      setProducts((prev) => overlayProducts([...prev.filter((p) => p.id !== server.id), server], prev));
+      await refreshProductCatalogRef.current().catch(() => undefined);
+      return 'saved';
+    }
+    if (result.disposition === 'conflict' || result.disposition === 'business' || result.disposition === 'gone') {
+      markProductIssue(op, result.message ?? 'No se pudo guardar este producto. Revise sus datos.', result.disposition === 'conflict');
+    }
+    return 'queued';
+  };
+
+  const saveProduct = async (draft: ProductDraft, id?: string, expectedVersion?: number): Promise<'saved' | 'queued'> => {
+    if (id && productIsSending(id)) throw new Error('El producto se está sincronizando. Espere un momento.');
+    const current = id ? products.find((p) => p.id === id) : undefined;
+    if (current && current.companyId !== draft.companyId) throw new Error('No se puede cambiar la empresa de un producto existente.');
+    const op = stageProduct(draft, current && expectedVersion !== undefined ? { ...current, version: expectedVersion } : current, id);
+    setProducts((prev) => overlayProducts(prev, prev));
+    setRecipes((prev) => overlayRecipes(prev, prev));
+    if (offlineState.isSimulatedOffline || !getAuthToken()) return 'queued';
+    if (isReplayingRef.current) { productSyncRequestedRef.current = true; return 'queued'; }
+    if (loadQueue()[0]?.clientOpId !== op.clientOpId) { replayRef.current(); return 'queued'; }
+    const outcome = await syncProductOperation(op);
+    const pending = productPending().find((item) => item.clientOpId === op.clientOpId);
+    if (pending?.error) throw new Error(pending.error);
+    if (outcome === 'saved' && queueCount()) replayRef.current();
+    return outcome;
+  };
+
+  const resolveProductConflict = async (id: string, choice: 'server' | 'local') => {
+    if (offlineState.isSimulatedOffline) throw new Error('Restablezca la conexión para revisar el producto.');
+    if (productIsSending(id)) throw new Error('Espere a que termine la sincronización.');
+    const all = await apiClient.get<ProductDTO[]>('/catalogs/products');
+    const server = all.map(mapProduct).find((p) => p.id === id);
+    if (!server) throw new Error('El producto fue retirado del servidor. Revise su uso antes de descartar el cambio.');
+    const queue = loadQueue();
+    const op = queue.find((item) => isProductOp(item) && productIdOf(item) === id);
+    if (!op) { await refreshProductCatalog(); return; }
+    if (server.companyId !== (op.payload as ProductDraft).companyId) throw new Error('La empresa del producto no coincide.');
+    const next = choice === 'server' ? queue.filter((item) => item.clientOpId !== op.clientOpId)
+      : queue.map((item) => item.clientOpId !== op.clientOpId ? item : { ...item, op: 'updateProduct',
+        clientOpId: newUuid(), error: undefined, conflict: undefined,
+        payload: { ...(item.payload as object), expectedVersion: server.version } });
+    persistProductQueue(next);
+    setProducts((prev) => overlayProducts(all.map(mapProduct), prev));
+    await refreshProductCatalog();
+    replayRef.current();
+  };
+
   const replayOfflineQueue = async (): Promise<void> => {
     if (isReplayingRef.current) return;
-    const queue = loadQueue();
+    // Las altas deben existir antes de que una apertura haga flush de sus ítems.
+    const queue = loadQueue().sort((a, b) => Number(['createProduct', 'createInsumo'].includes(b.op)) - Number(['createProduct', 'createInsumo'].includes(a.op)));
     if (queue.length === 0) {
       syncPendingCount();
       return;
@@ -738,63 +889,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     let dropped = 0;
     let stuck = 0;
     let stuckNetwork = false;
-
-    const flushTmpItems = async (serverOrderId: string, tmpOrderId: string): Promise<Order> => {
-      const tmpOrder = orders[tmpOrderId];
-      const refreshed = serverOrderId;
-      if (tmpOrder && tmpOrder.items.length > 0) {
-        for (const it of tmpOrder.items) {
-          await apiClient.post(`/operations/orders/${refreshed}/items`, {
-            productId: it.productId,
-            quantity: it.quantity,
-            notes: it.notes || undefined,
-          });
-        }
-      }
-      const dto = await apiClient.get<OrderDTO>(`/operations/orders/${refreshed}`);
-      return mapOrder(dto);
-    };
-
-    const migrateTmpOrder = (serverOrder: Order, tmpOrderId: string, tmpTableId?: string) => {
-      setOrders((prev) => {
-        const next = { ...prev };
-        delete next[tmpOrderId];
-        next[serverOrder.id] = serverOrder;
-        return next;
-      });
-      setTables((prev) => {
-        if (tmpTableId) {
-          const rest = prev.filter((t) => t.id !== tmpTableId);
-          const existing = rest.find((t) => t.id === serverOrder.tableId);
-          if (existing) {
-            return rest.map((t) =>
-              t.id === existing.id ? { ...t, status: 'ocupada', currentOrderId: serverOrder.id, waiter: serverOrder.waiter } : t
-            );
-          }
-          return [
-            ...rest,
-            {
-              id: serverOrder.tableId,
-              companyId: serverOrder.companyId as CompanyId,
-              number: serverOrder.tableNumber,
-              capacity: 2,
-              zone: serverOrder.zone,
-              status: 'ocupada',
-              currentOrderId: serverOrder.id,
-              waiter: serverOrder.waiter,
-            } as Table,
-          ];
-        }
-        return prev.map((t) =>
-          t.currentOrderId === tmpOrderId ? { ...t, currentOrderId: serverOrder.id } : t
-        );
-      });
-      setSelectedTableId((prevId) =>
-        prevId !== null && (prevId === tmpOrderId || prevId === tmpTableId) ? serverOrder.tableId : prevId
-      );
-      delete tmpOrderItemsRef.current[tmpOrderId];
-      delete tmpOrderOpRef.current[tmpOrderId];
-    };
+    let needsAuthentication = false;
 
     // Fase E5: reconcilia un alta de catálogo aplicada en el replay (reemplaza el id
     // temporal por el id real del server). Para recetas conserva ingredientes locales
@@ -865,6 +960,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     for (const opItem of queue) {
+      if (activeOrderRequestsRef.current.has(opItem.clientOpId) || !loadQueue().some((op) => op.clientOpId === opItem.clientOpId)) continue;
+      if (isInsumoOp(opItem)) {
+        if (await syncInsumoOperation(opItem) === 'saved') synced++;
+        else { stuck++; needsAuthentication = !getAuthToken(); break; }
+        continue;
+      }
+      if (isProductOp(opItem)) {
+        const fresh = loadQueue().find((op) => op.clientOpId === opItem.clientOpId);
+        if (!fresh) continue;
+        if (await syncProductOperation(fresh) === 'saved') synced++;
+        else { stuck++; needsAuthentication = !getAuthToken(); break; }
+        continue;
+      }
+      if (opItem.conflict || opItem.error) { stuck++; break; }
       const payload = { ...((opItem.payload ?? {}) as Record<string, unknown>) };
       if (typeof payload.orderId === 'string' && tmpToOrder.has(payload.orderId)) {
         payload.orderId = tmpToOrder.get(payload.orderId);
@@ -885,9 +994,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (opItem.op === 'openOrder' || opItem.op === 'quickOrder') {
         const tmpOrderId = payload.tmpOrderId as string;
         const tmpTableId = (payload.tmpTableId as string) ?? undefined;
-        const tmpOrder = tmpOrderId ? orders[tmpOrderId] : undefined;
+        const tmpOrder = tmpOrderId ? ordersRef.current[tmpOrderId] : undefined;
         if (!tmpOrder) {
-          // La comanda temporal se abandonó offline (mesa liberada al vaciarla) → no crear orden fantasma.
+          // La apertura pudo llegar al servidor aunque se perdiera su respuesta.
+          const cancelled = await replayCall({ ...opItem, op: 'cancelOpening' }, { openingClientOpId: opItem.clientOpId });
+          if (cancelled.disposition === 'retry') { stuck++; needsAuthentication = cancelled.unauthorized === true; break; }
+          if (cancelled.disposition === 'ok' && (cancelled.data as OrderDTO)?.id) reconcileOrderResult(cancelled.data as OrderDTO);
           deadTmpOrder.add(tmpOrderId);
           if (tmpTableId) deadTmpTable.add(tmpTableId);
           removeByClientOpId(opItem.clientOpId);
@@ -898,6 +1010,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (result.disposition === 'retry') {
           stuck += 1;
           stuckNetwork = stuckNetwork || result.network === true;
+          needsAuthentication = result.unauthorized === true;
           break;
         }
         if (result.disposition !== 'ok') {
@@ -911,8 +1024,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const serverOrder = mapOrder(result.data as OrderDTO);
         tmpToOrder.set(tmpOrderId, serverOrder.id);
         if (tmpTableId) tmpToTable.set(tmpTableId, serverOrder.tableId);
-        const reconciled = await flushTmpItems(serverOrder.id, tmpOrderId);
-        migrateTmpOrder(reconciled, tmpOrderId, tmpTableId);
+        await finishOpening(result.data as OrderDTO, tmpOrderId, tmpTableId);
         removeByClientOpId(opItem.clientOpId);
         synced += 1;
         setLastSyncResult({ ok: true, ts: Date.now(), op: opItem.op });
@@ -920,7 +1032,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       const result = await replayCall(opItem, payload);
+      if (result.disposition === 'conflict') {
+        markInsumoIssue(opItem, result.message ?? 'Revise el insumo vinculado a esta operación.');
+        addNotification('Operación pendiente de revisión', result.message ?? opItem.op, 'warning');
+        stuck++; break;
+      }
       if (result.disposition === 'ok') {
+        if ((result.data as OrderDTO)?.id && (opItem.entity === 'orderItem' || opItem.op === 'cancelOpening')) reconcileOrderResult(result.data as OrderDTO);
         if (opItem.entity === 'catalog') {
           reconcileCatalogCreate(
             opItem.op,
@@ -934,6 +1052,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } else if (result.disposition === 'retry') {
         stuck += 1;
         stuckNetwork = stuckNetwork || result.network === true;
+        needsAuthentication = result.unauthorized === true;
         break;
       } else if (result.disposition === 'business') {
         removeByClientOpId(opItem.clientOpId);
@@ -948,6 +1067,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     syncPendingCount();
     const remaining = queueCount();
     setLastSyncResult({ ok: stuck === 0, ts: Date.now(), op: 'replayQueue' });
+    if (needsAuthentication) return; // No retirar pendientes ni refrescar sin sesión.
     if (stuck > 0) {
       if (stuckNetwork) setOfflineState((prev) => ({ ...prev, isOnline: false }));
       addNotification(
@@ -975,6 +1095,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (err) {
       syncPendingCount();
       setLastSyncResult({ ok: false, ts: Date.now(), op: 'replayQueue' });
+      if (err instanceof ApiError && err.isUnauthorized) return;
       addNotification(
         'Sincronización interrumpida',
         'Hubo un problema al sincronizar; las operaciones siguen en cola y se reintentarán al reconectar.',
@@ -982,6 +1103,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       );
     } finally {
       isReplayingRef.current = false;
+      if (productSyncRequestedRef.current) {
+        productSyncRequestedRef.current = false;
+        if (!offlineState.isSimulatedOffline && getAuthToken()) queueMicrotask(() => replayRef.current());
+      }
     }
   };
 
@@ -1003,7 +1128,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     endpointOp: () => Promise<void>;
     rollback?: () => void;
   }): Promise<'ok' | 'queued' | 'rejected'> => {
-    if (offlineState.isSimulatedOffline) {
+    if (offlineState.isSimulatedOffline || (['order', 'orderItem'].includes(params.entity) && productPending().length > 0)) {
       enqueueOp({
         clientOpId: params.clientOpId,
         entity: params.entity,
@@ -1012,8 +1137,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         createdAt: new Date().toISOString(),
       });
       syncPendingCount();
+      if (!offlineState.isSimulatedOffline && getAuthToken()) queueMicrotask(() => replayRef.current());
       return 'queued';
     }
+    activeOrderRequestsRef.current.add(params.clientOpId);
     try {
       await params.endpointOp();
       setLastSyncResult({ ok: true, ts: Date.now(), op: params.op });
@@ -1022,13 +1149,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         if (err.status === 401 && err.isUnauthorized) {
           setLastSyncResult({ ok: false, ts: Date.now(), op: params.op });
-          addNotification(
-            'Sesión expirada',
-            'Su sesión venció. Por favor, vuelva a iniciar sesión.',
-            'warning'
-          );
-          logout();
-          return 'rejected';
+          enqueueOp({
+            clientOpId: params.clientOpId,
+            entity: params.entity,
+            op: params.op,
+            payload: params.queuePayload,
+            createdAt: new Date().toISOString(),
+          });
+          syncPendingCount();
+          return 'queued';
+        }
+        if (err.code.startsWith('INSUMO_')) {
+          const op: PendingOp = { clientOpId: params.clientOpId, entity: params.entity, op: params.op, payload: params.queuePayload,
+            createdAt: new Date().toISOString(), error: err.message, conflict: true };
+          persistInsumoQueue([...loadQueue().filter((item) => item.clientOpId !== op.clientOpId), op]);
+          syncPendingCount();
+          addNotification('Operación pendiente de revisión', err.message, 'warning');
+          return 'queued';
         }
         params.rollback?.();
         setLastSyncResult({ ok: false, ts: Date.now(), op: params.op });
@@ -1052,8 +1189,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         );
         return 'queued';
       }
+    } finally {
+      activeOrderRequestsRef.current.delete(params.clientOpId);
     }
   };
+
+  // Los 401 de HTTP y Socket.IO comparten este flujo; no envía un logout redundante.
+  useEffect(() => {
+    const onAuthenticationRequired = (event: Event) => {
+      disconnectRealtime();
+      setRealtimeStatus('disconnected');
+      setAuthToken(null);
+      setCurrentUser(null);
+      setCurrentScreen('mesas');
+      setSelectedTableId(null);
+      setAuthNotice((event as CustomEvent<{ message: string }>).detail.message);
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthenticationRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthenticationRequired);
+  }, []);
 
   // Restauración de sesión al montar: valida contra GET /api/auth/me si hay token.
   useEffect(() => {
@@ -1131,6 +1285,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!e || !e.tableId) return;
     if (offlineState.isSimulatedOffline) return;
     const local = tablesRef.current.find((t) => t.id === e.tableId);
+    if (e.status === 'libre' && e.sourceOrderId && local?.currentOrderId && local.currentOrderId !== e.sourceOrderId) return;
     if (!local) {
       // Mesa creada por otro terminal (barra quick-bar): agregarla si aplica.
       if (e.companyId !== activeCompanyId && activeCompanyId !== 'todas') return;
@@ -1177,13 +1332,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (e.currentOrderId && !e.currentOrderId.startsWith('order-tmp-') && !ordersRef.current[e.currentOrderId]) {
       void apiClient
         .get<OrderDTO>(`/operations/orders/${e.currentOrderId}`)
-        .then((dto) => setOrders((prev) => ({ ...prev, [dto.id]: mapOrder(dto) })))
+        .then(reconcileOrderResult)
         .catch(() => undefined);
     }
   };
   orderHandlerRef.current = (e) => {
     if (!e || !e.orderId || e.orderId.startsWith('order-tmp-')) return;
     if (offlineState.isSimulatedOffline) return;
+    if (e.isDeleted || e.status === 'anulado') {
+      closedOrderIdsRef.current.add(e.orderId);
+      setOrders((prev) => { const next = { ...prev }; delete next[e.orderId]; return next; });
+      // La mesa se reconcilia con table:changed, que contiene su vínculo actual.
+      return;
+    }
+    if (closedOrderIdsRef.current.has(e.orderId)) return;
     const selectedId = selectedTableIdRef.current;
     const selectedOrderId = selectedId
       ? tablesRef.current.find((t) => t.id === selectedId)?.currentOrderId
@@ -1195,7 +1357,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (watching || tablePointsHere) {
       void apiClient
         .get<OrderDTO>(`/operations/orders/${e.orderId}`)
-        .then((dto) => setOrders((prev) => ({ ...prev, [dto.id]: mapOrder(dto) })))
+        .then(reconcileOrderResult)
         .catch(() => undefined);
     }
   };
@@ -1284,61 +1446,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     void refreshInsumos();
   };
 
-  // Replica recetas / fichas técnicas en tiempo real: creación, edición o eliminación.
+  // Los eventos son invalidaciones: REST devuelve ingredientes, vínculos y precios completos.
   recipeHandlerRef.current = (e) => {
-    if (!e || !e.recipeId) return;
-    if (offlineState.isSimulatedOffline) return;
-    setRecipes((prev) => {
-      if (e.action === 'delete') {
-        return prev.filter((r) => r.id !== e.recipeId);
-      }
-      const mapped: Recipe = {
-        id: e.recipeId,
-        companyId: toCompanyId(e.companyId),
-        productId: e.recipeId,
-        productName: e.productName,
-        category: e.category,
-        portions: 1,
-        salePrice: 0,
-        ingredients: [],
-        totalCost: 0,
-        theoreticalFoodCostPct: 0,
-        updatedAt: e.updatedAt,
-      };
-      const exists = prev.find((r) => r.id === e.recipeId);
-      if (exists) {
-        return prev.map((r) => (r.id === e.recipeId ? { ...r, ...mapped } : r));
-      }
-      return [mapped, ...prev];
-    });
+    if (!e?.recipeId || offlineState.isSimulatedOffline) return;
+    void refreshProductCatalogRef.current().catch(() => undefined);
   };
 
   // Replica insumos en tiempo real: creación, edición o eliminación.
   insumoHandlerRef.current = (e) => {
-    if (!e || !e.insumoId) return;
-    if (offlineState.isSimulatedOffline) return;
-    const mapped: Insumo = {
-      id: e.insumoId,
-      companyId: (e.companyId as Insumo['companyId']) || 'ambas',
-      code: `INS-${e.insumoId.slice(-6)}`,
-      name: e.name,
-      category: e.category as Insumo['category'],
-      unit: e.unit as Insumo['unit'],
-      currentStock: e.currentStock,
-      minStock: 5,
-      costPerUnit: e.costPerUnit,
-      lastPurchaseDate: 'Hoy',
-    };
-    setInsumos((prev) => {
-      if (e.action === 'delete') {
-        return prev.filter((i) => i.id !== e.insumoId);
-      }
-      const exists = prev.find((i) => i.id === e.insumoId);
-      if (exists) {
-        return prev.map((i) => (i.id === e.insumoId ? mapped : i));
-      }
-      return [mapped, ...prev];
-    });
+    if (!e?.insumoId || offlineState.isSimulatedOffline) return;
+    void refreshInsumos();
   };
 
   // Replica métodos de pago en tiempo real: creación, edición o eliminación.
@@ -1399,29 +1516,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  // Replica productos en tiempo real: creación (desde fichas técnicas), edición o eliminación.
   productHandlerRef.current = (e) => {
-    if (!e || !e.productId) return;
-    if (offlineState.isSimulatedOffline) return;
-    const mapped: Product = {
-      id: e.productId,
-      companyId: e.companyId as Product['companyId'],
-      name: e.name,
-      description: '',
-      price: e.price,
-      category: e.category as ProductCategory,
-      image: '',
-      available: true,
-      hasRecipe: e.hasRecipe,
-      updatedAt: e.updatedAt,
-    };
-    setProducts((prev) => {
-      if (e.action === 'delete') return prev.filter((p) => p.id !== e.productId);
-      const exists = prev.find((p) => p.id === e.productId);
-      if (exists) return prev.map((p) => (p.id === e.productId ? mapped : p));
-      return [mapped, ...prev];
-    });
-    // Si una orden abierta usa este producto, refresca su visibilidad en la mesa activa.
+    if (!e?.productId || offlineState.isSimulatedOffline) return;
+    void refreshProductCatalogRef.current().catch(() => undefined);
   };
 
   // Libro de Caja en vivo (Fase D extendida): venta cobrada, transacción manual,
@@ -1578,12 +1675,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const res = await apiClient.post<LoginResponse>('/auth/login', {
         pin,
-        deviceCode: 'TERM-CENTRAL-01',
-        terminalName: 'Terminal Central 01',
+        ...getTerminalIdentity(),
       });
       storeAuthToken({ token: res.token, expiresAt: res.expiresAt });
       setAuthToken({ token: res.token, expiresAt: res.expiresAt });
       setCurrentUser(res.user);
+      setAuthNotice(null);
       setCompanies(res.companies);
       setCompanyShifts(mapCompanyShifts(res.companyShifts));
       setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
@@ -1625,11 +1722,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
     const auth = getAuthToken();
-    if (auth) {
-      apiClient.post<unknown>('/auth/logout').catch(() => undefined);
-    }
+    // Captura/inicia la petición antes de borrar el token local.
+    const revocation = auth ? apiClient.post<{ ok: boolean }>('/auth/logout') : null;
     disconnectRealtime();
     setRealtimeStatus('disconnected');
     clearAuthToken();
@@ -1637,7 +1733,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCurrentUser(null);
     setCurrentScreen('mesas');
     setSelectedTableId(null);
-    addNotification('Sesión cerrada', 'Se invalidó el token en el servidor.', 'info');
+    setAuthNotice('Sesión cerrada en este equipo. Confirmando el cierre en el servidor…');
+    try {
+      const result = await revocation;
+      if (!getAuthToken()) setAuthNotice(result?.ok
+        ? 'Sesión cerrada e invalidada en el servidor.'
+        : 'Sesión cerrada en este equipo.');
+    } catch (err) {
+      if (!getAuthToken()) setAuthNotice(err instanceof ApiError && err.isUnauthorized
+        ? 'Sesión cerrada. El servidor ya no acepta esta sesión.'
+        : 'Sesión cerrada en este equipo. No se pudo confirmar la revocación en el servidor.');
+    }
   };
 
   // Active Company Definition
@@ -1716,9 +1822,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     order.items.forEach((item) => {
       // Find matching recipe for the product
-      const recipe = recipes.find(
-        (r) => r.productId === item.productId || r.productName === item.name
-      );
+      const recipe = matchingRecipe<Recipe>(recipes, order.companyId, item);
       if (recipe && recipe.ingredients.length > 0) {
         recipe.ingredients.forEach((ing) => {
           const qtyNeeded = +(ing.quantity * item.quantity).toFixed(3);
@@ -1835,6 +1939,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Add Item to Order
   const addItemToOrder = (tableId: string, product: Product, notes: string = '') => {
+    const targetTable = tables.find((t) => t.id === tableId);
+    const currentProduct = products.find((p) => p.id === product.id);
+    if (!currentProduct?.available || currentProduct.isDeleted || currentProduct.companyId !== targetTable?.companyId) {
+      addNotification('Producto no disponible', 'El producto no está disponible para esta mesa.', 'warning');
+      return;
+    }
+    product = currentProduct;
     const table = tables.find((t) => t.id === tableId);
     if (!table) return;
 
@@ -1882,6 +1993,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const createdOrder = recalculateOrder({ ...baseOrder, items: [firstItem] });
       orderId = tmpOrderId;
       currentOrder = createdOrder;
+      const openingOp: PendingOp = { clientOpId: tmpClientOpId, entity: 'order', op: isExpressTmp ? 'quickOrder' : 'openOrder',
+        payload: isExpressTmp ? { companyId: table.companyId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId }
+          : { tableId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId }, createdAt: new Date().toISOString() };
+      try { stageOrderOperation(openingOp); }
+      catch (error) { addNotification('No se pudo guardar el pedido', (error as Error).message, 'warning'); return; }
+      syncPendingCount();
       setOrders((prev) => ({ ...prev, [tmpOrderId]: createdOrder }));
       setTables((prev) =>
         prev.map((t) =>
@@ -1911,46 +2028,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               waiter: waiterName,
               clientOpId: tmpClientOpId,
             });
-            const serverOrder = mapOrder(res);
-            const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
-            delete tmpOrderItemsRef.current[tmpOrderId];
-            delete tmpOrderOpRef.current[tmpOrderId];
-            setOrders((prev) => {
-              const next = { ...prev };
-              delete next[tmpOrderId];
-              next[serverOrder.id] = serverOrder;
-              return next;
-            });
-            setTables((prev) => {
-              const withoutTmp = prev.filter((t) => t.id !== tableId);
-              const serverTable: Table = {
-                id: serverOrder.tableId,
-                companyId: table.companyId,
-                number: serverOrder.tableNumber,
-                capacity: table.capacity,
-                zone: serverOrder.zone,
-                status: 'ocupada',
-                occupiedSince: timeStr,
-                minutesElapsed: 1,
-                currentOrderId: serverOrder.id,
-                waiter: serverOrder.waiter,
-              };
-              return [...withoutTmp, serverTable];
-            });
-            setSelectedTableId(serverOrder.tableId);
-            if (pendingItems.length > 0) {
-              for (const it of pendingItems) {
-                await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
-                  productId: it.productId,
-                  quantity: it.quantity,
-                  notes: it.notes || undefined,
-                });
-              }
-              const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
-              setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
-            }
+            await finishOpening(res, tmpOrderId, tableId);
+            removeByClientOpId(tmpClientOpId);
+            syncPendingCount();
           },
           rollback: () => {
+            removeByClientOpId(tmpClientOpId);
+            syncPendingCount();
             delete tmpOrderItemsRef.current[tmpOrderId];
             delete tmpOrderOpRef.current[tmpOrderId];
             setOrders((prev) => {
@@ -1958,7 +2042,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               delete next[tmpOrderId];
               return next;
             });
-            setTables((prev) => prev.filter((t) => t.id !== tableId));
+            setTables((prev) => prev.filter((t) => t.id !== tableId || t.currentOrderId !== tmpOrderId));
             setSelectedTableId(null);
           },
         });
@@ -1975,32 +2059,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             waiter: createdOrder.waiter,
             clientOpId: tmpClientOpId,
           });
-          const serverOrder = mapOrder(res);
-          const pendingItems = tmpOrderItemsRef.current[tmpOrderId] ?? [];
-          delete tmpOrderItemsRef.current[tmpOrderId];
-          delete tmpOrderOpRef.current[tmpOrderId];
-          setOrders((prev) => {
-            const next = { ...prev };
-            delete next[tmpOrderId];
-            next[serverOrder.id] = serverOrder;
-            return next;
-          });
-          setTables((prev) =>
-            prev.map((t) => (t.id === tableId ? { ...t, currentOrderId: serverOrder.id } : t))
-          );
-          if (pendingItems.length > 0) {
-            for (const it of pendingItems) {
-              await apiClient.post(`/operations/orders/${serverOrder.id}/items`, {
-                productId: it.productId,
-                quantity: it.quantity,
-                notes: it.notes || undefined,
-              });
-            }
-            const refreshed = await apiClient.get<OrderDTO>(`/operations/orders/${serverOrder.id}`);
-            setOrders((prev) => ({ ...prev, [serverOrder.id]: mapOrder(refreshed) }));
-          }
+          await finishOpening(res, tmpOrderId);
+          removeByClientOpId(tmpClientOpId);
+          syncPendingCount();
         },
         rollback: () => {
+          removeByClientOpId(tmpClientOpId);
+          syncPendingCount();
           delete tmpOrderItemsRef.current[tmpOrderId];
           delete tmpOrderOpRef.current[tmpOrderId];
           setOrders((prev) => {
@@ -2010,7 +2075,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           });
           setTables((prev) =>
             prev.map((t) =>
-              t.id === tableId
+              t.id === tableId && t.currentOrderId === tmpOrderId
                 ? {
                     ...t,
                     status: 'libre',
@@ -2092,7 +2157,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             quantity: 1,
             notes: notes || undefined,
           });
-          setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
+          reconcileOrderResult(res);
         },
       });
     } else if (orderId) {
@@ -2100,11 +2165,31 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const abandonOpening = (orderId: string): boolean => {
+    const openingClientOpId = tmpOrderOpRef.current[orderId] ?? loadQueue().find((op) => (op.payload as Record<string, unknown>)?.tmpOrderId === orderId)?.clientOpId;
+    if (!openingClientOpId) return false;
+    const cancelOp: PendingOp = { clientOpId: newUuid(), entity: 'order', op: 'cancelOpening', payload: { openingClientOpId }, createdAt: new Date().toISOString() };
+    try { stageOrderOperation(cancelOp, openingClientOpId); }
+    catch (error) { addNotification('No se pudo guardar la cancelación', (error as Error).message, 'warning'); return false; }
+    // [] es una marca explícita mientras la petición de apertura está en vuelo.
+    tmpOrderItemsRef.current[orderId] = [];
+    syncPendingCount();
+    void attemptMutation({ clientOpId: cancelOp.clientOpId, entity: 'order', op: 'cancelOpening', queuePayload: cancelOp.payload,
+      endpointOp: async () => {
+        const result = await apiClient.post<OrderDTO | { cancelled: true }>('/operations/orders/cancel-opening', { openingClientOpId });
+        if ('id' in result) reconcileOrderResult(result);
+        removeByClientOpId(cancelOp.clientOpId);
+        syncPendingCount();
+      },
+    });
+    return true;
+  };
+
   const vacateTableState = (tableId: string, orderId: string) => {
     const table = tables.find((t) => t.id === tableId);
     setTables((prev) =>
       prev.map((t) =>
-        t.id === tableId
+        t.id === tableId && t.currentOrderId === orderId
           ? {
               ...t,
               status: 'libre',
@@ -2121,8 +2206,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       delete next[orderId];
       return next;
     });
-    setSelectedTableId(null);
-    setCurrentScreen('mesas');
+    if (tablesRef.current.find((t) => t.id === tableId)?.currentOrderId === orderId) {
+      setSelectedTableId(null);
+      setCurrentScreen('mesas');
+    }
     if (table) {
       addNotification(
         'Mesa Liberada',
@@ -2139,6 +2226,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const currentOrder = orders[table.currentOrderId];
     if (!currentOrder) return;
 
+    if (delta > 0) {
+      const item = currentOrder.items.find((i) => i.id === itemId);
+      const product = products.find((p) => p.id === item?.productId);
+      if (!product || !product.available || product.isDeleted || product.companyId !== table.companyId) {
+        addNotification('Producto no disponible', 'No se pueden agregar unidades de este producto.', 'warning');
+        return;
+      }
+    }
+
     const updatedItems = currentOrder.items
       .map((item) => {
         if (item.id === itemId) {
@@ -2154,7 +2250,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       items: updatedItems,
     });
 
+    const mutationId = newUuid();
     const orderId = table.currentOrderId;
+    if (!orderId.startsWith('order-tmp-')) {
+      try { stageOrderOperation({ clientOpId: mutationId, entity: 'orderItem', op: 'updateItemQuantity', payload: { orderId, itemId, delta }, createdAt: new Date().toISOString() }); }
+      catch (error) { addNotification('No se pudo guardar el cambio', (error as Error).message, 'warning'); return; }
+      syncPendingCount();
+    }
     const becomingEmpty = updatedItems.length === 0;
     const prevTableIdFields = {
       status: table.status,
@@ -2167,64 +2269,64 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (becomingEmpty) {
       const prevScreen = currentScreen;
       const prevSelectedTableId = selectedTableId;
+      if (orderId.startsWith('order-tmp-') && !abandonOpening(orderId)) return;
       vacateTableState(tableId, orderId);
       // Write-through (Fase E3): solo si la orden ya existe en el server.
       if (!orderId.startsWith('order-tmp-')) {
         attemptMutation({
-          clientOpId: newUuid(),
+          clientOpId: mutationId,
           entity: 'orderItem',
           op: 'updateItemQuantity',
           queuePayload: { orderId, itemId, delta },
           endpointOp: async () => {
             const res = await apiClient.patch<OrderDTO>(
               `/operations/orders/${orderId}/items/${itemId}/quantity`,
-              { delta }
+              { delta, clientOpId: mutationId }
             );
-            // El server libera la mesa y soft-deletea la orden cuando no quedan ítems.
+            // El servidor devuelve el estado definitivo del pedido vacío.
             // Refrescamos para reflejar la verdad del servidor.
-            if (res.isDeleted) {
-              vacateTableState(tableId, orderId);
-            } else {
-              setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
-            }
+            reconcileOrderResult(res);
+            removeByClientOpId(mutationId);
+            syncPendingCount();
           },
           rollback: () => {
+            removeByClientOpId(mutationId);
+            syncPendingCount();
             setTables((prev) =>
-              prev.map((t) => (t.id === tableId ? { ...t, ...prevTableIdFields } : t))
+              prev.map((t) => (t.id === tableId && (!t.currentOrderId || t.currentOrderId === orderId) ? { ...t, ...prevTableIdFields } : t))
             );
             setOrders((prev) => ({ ...prev, [orderId]: currentOrder }));
-            setSelectedTableId(prevSelectedTableId);
-            setCurrentScreen(prevScreen);
+            const current = tablesRef.current.find((t) => t.id === tableId)?.currentOrderId;
+            if (!current || current === orderId) {
+              setSelectedTableId(prevSelectedTableId);
+              setCurrentScreen(prevScreen);
+            }
           },
         });
-      } else {
-        // Orden temporal abandonada offline => retirar de la cola la op de apertura encolada.
-        const openOpId = tmpOrderOpRef.current[orderId];
-        if (openOpId) {
-          removeByClientOpId(openOpId);
-          delete tmpOrderOpRef.current[orderId];
-        }
-        delete tmpOrderItemsRef.current[orderId];
       }
       return;
     }
 
+    if (orderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[orderId] = updatedItems;
     setOrders((prev) => ({ ...prev, [orderId]: updatedOrder }));
 
     // Write-through (Fase E3): solo si la orden ya existe en el server.
     if (orderId && !orderId.startsWith('order-tmp-')) {
       attemptMutation({
-        clientOpId: newUuid(),
+        clientOpId: mutationId,
         entity: 'orderItem',
         op: 'updateItemQuantity',
         queuePayload: { orderId, itemId, delta },
         endpointOp: async () => {
           const res = await apiClient.patch<OrderDTO>(
             `/operations/orders/${orderId}/items/${itemId}/quantity`,
-            { delta }
+            { delta, clientOpId: mutationId }
           );
-          setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
+          reconcileOrderResult(res);
+          removeByClientOpId(mutationId);
+          syncPendingCount();
         },
+        rollback: () => { removeByClientOpId(mutationId); syncPendingCount(); },
       });
     }
   };
@@ -2241,6 +2343,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
 
     const updatedOrder = { ...currentOrder, items: updatedItems };
+    if (table.currentOrderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[table.currentOrderId] = updatedItems;
     setOrders((prev) => ({ ...prev, [table.currentOrderId!]: updatedOrder }));
     addNotification('Nota actualizada', 'Nota guardada para el pedido.', 'info');
 
@@ -2285,7 +2388,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       items: updatedItems,
     });
 
+    const mutationId = newUuid();
     const orderId = table.currentOrderId;
+    if (!orderId.startsWith('order-tmp-')) {
+      try { stageOrderOperation({ clientOpId: mutationId, entity: 'orderItem', op: 'removeItem', payload: { orderId, itemId }, createdAt: new Date().toISOString() }); }
+      catch (error) { addNotification('No se pudo guardar el cambio', (error as Error).message, 'warning'); return; }
+      syncPendingCount();
+    }
     const becomingEmpty = updatedItems.length === 0;
     const prevTableIdFields = {
       status: table.status,
@@ -2298,58 +2407,58 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (becomingEmpty) {
       const prevScreen = currentScreen;
       const prevSelectedTableId = selectedTableId;
+      if (orderId.startsWith('order-tmp-') && !abandonOpening(orderId)) return;
       vacateTableState(tableId, orderId);
       // Write-through (Fase E3): solo si la orden ya existe en el server.
       if (!orderId.startsWith('order-tmp-')) {
         attemptMutation({
-          clientOpId: newUuid(),
+          clientOpId: mutationId,
           entity: 'orderItem',
           op: 'removeItem',
           queuePayload: { orderId, itemId },
           endpointOp: async () => {
-            const res = await apiClient.del<OrderDTO>(`/operations/orders/${orderId}/items/${itemId}`);
-            // El server libera la mesa y soft-deletea la orden cuando no quedan ítems.
+            const res = await apiClient.del<OrderDTO>(`/operations/orders/${orderId}/items/${itemId}?clientOpId=${encodeURIComponent(mutationId)}`);
+            // El servidor devuelve el estado definitivo del pedido vacío.
             // Refrescamos para reflejar la verdad del servidor.
-            if (res.isDeleted) {
-              vacateTableState(tableId, orderId);
-            } else {
-              setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
-            }
+            reconcileOrderResult(res);
+            removeByClientOpId(mutationId);
+            syncPendingCount();
           },
           rollback: () => {
+            removeByClientOpId(mutationId);
+            syncPendingCount();
             setTables((prev) =>
-              prev.map((t) => (t.id === tableId ? { ...t, ...prevTableIdFields } : t))
+              prev.map((t) => (t.id === tableId && (!t.currentOrderId || t.currentOrderId === orderId) ? { ...t, ...prevTableIdFields } : t))
             );
             setOrders((prev) => ({ ...prev, [orderId]: currentOrder }));
-            setSelectedTableId(prevSelectedTableId);
-            setCurrentScreen(prevScreen);
+            const current = tablesRef.current.find((t) => t.id === tableId)?.currentOrderId;
+            if (!current || current === orderId) {
+              setSelectedTableId(prevSelectedTableId);
+              setCurrentScreen(prevScreen);
+            }
           },
         });
-      } else {
-        // Orden temporal abandonada offline => retirar de la cola la op de apertura encolada.
-        const openOpId = tmpOrderOpRef.current[orderId];
-        if (openOpId) {
-          removeByClientOpId(openOpId);
-          delete tmpOrderOpRef.current[orderId];
-        }
-        delete tmpOrderItemsRef.current[orderId];
       }
       return;
     }
 
+    if (orderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[orderId] = updatedItems;
     setOrders((prev) => ({ ...prev, [orderId]: updatedOrder }));
 
     // Write-through (Fase E3): solo si la orden ya existe en el server.
     if (orderId && !orderId.startsWith('order-tmp-')) {
       attemptMutation({
-        clientOpId: newUuid(),
+        clientOpId: mutationId,
         entity: 'orderItem',
         op: 'removeItem',
         queuePayload: { orderId, itemId },
         endpointOp: async () => {
-          const res = await apiClient.del<OrderDTO>(`/operations/orders/${orderId}/items/${itemId}`);
-          setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
+          const res = await apiClient.del<OrderDTO>(`/operations/orders/${orderId}/items/${itemId}?clientOpId=${encodeURIComponent(mutationId)}`);
+          reconcileOrderResult(res);
+          removeByClientOpId(mutationId);
+          syncPendingCount();
         },
+        rollback: () => { removeByClientOpId(mutationId); syncPendingCount(); },
       });
     }
   };
@@ -2406,7 +2515,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // (E4: también se encola si la orden es temporal y estamos offline — el replay la re-resuelve.)
     const orderId = table.currentOrderId;
     let outcome: 'ok' | 'queued' | 'rejected' = 'ok';
-    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
+    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline || loadQueue().some((op) => (op.payload as { tmpOrderId?: string }).tmpOrderId === orderId))) {
       const clientOpId = newUuid();
       outcome = await attemptMutation({
         clientOpId,
@@ -2533,7 +2642,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Write-through (Fase E3): persiste el estado "por cobrar" en el server.
     // (E4: también se encola si la orden es temporal y estamos offline.)
-    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline)) {
+    if (orderId && (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline || loadQueue().some((op) => (op.payload as { tmpOrderId?: string }).tmpOrderId === orderId))) {
       const prevTableStatus = table.status;
       const prevOrderStatus = currentOrder.status;
       attemptMutation({
@@ -2543,7 +2652,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         queuePayload: { orderId, tableId, tmpTableId: orderId.startsWith('order-tmp-') ? tableId : undefined },
         endpointOp: async () => {
           const res = await apiClient.post<OrderDTO>(`/operations/tables/${tableId}/por-cobrar`);
-          setOrders((prev) => ({ ...prev, [res.id]: mapOrder(res) }));
+          reconcileOrderResult(res);
         },
         rollback: () => {
           setTables((prev) =>
@@ -2593,11 +2702,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const change = Math.max(0, +(amountReceived - currentOrder.total).toFixed(2));
 
     // Look up custom payment method to find associated bank account if any
-    const matchedPm = paymentMethods.find(
-      (p) =>
-        (customPaymentMethodId && p.id === customPaymentMethodId) ||
-        p.name.toLowerCase() === (paymentMethod as string).toLowerCase()
-    );
+    const matchedPm = resolvePaymentMethod(paymentMethods, table.companyId, paymentMethod, customPaymentMethodId);
+    // A stale explicit ID must never silently route the payment by name.
+    if (customPaymentMethodId && !matchedPm) return null;
 
     const bankAccountId = matchedPm?.bankAccountId;
     const bankAccountAlias = matchedPm?.bankAccountAlias;
@@ -2681,7 +2788,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // Write-through (Fase E3): registra el pago real (marca cobrado + transacción de caja).
     // (E4: también se encola si la orden es temporal y estamos offline.)
     const orderId = table.currentOrderId;
-    if (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline) {
+    if (!orderId.startsWith('order-tmp-') || offlineState.isSimulatedOffline || loadQueue().some((op) => (op.payload as { tmpOrderId?: string }).tmpOrderId === orderId)) {
       const clientOpId = newUuid();
       attemptMutation({
         clientOpId,
@@ -3866,227 +3973,124 @@ Doble Alto: PEDIDO EXPRESS #8841
 
   // Save / Update Recipe (Fase E5: upsert a /catalogs/recipes; F5 persiste).
   // El server genera el id real al crear; el id local se reemplaza al reconciliar.
-  const saveRecipe = (recipe: Recipe) => {
-    const existed = recipes.some((r) => r.id === recipe.id);
-    const queuedOp = tmpCatalogOpRef.current[recipe.id];
-    // Estándar de dos decimales en fichas técnicas (creación y persistencia).
-    const r2 = (n: number) => round2(Number(n) || 0);
-    setRecipes((prev) => {
-      const idx = prev.findIndex((r) => r.id === recipe.id);
-      if (idx > -1) {
-        const copy = [...prev];
-        copy[idx] = recipe;
-        return copy;
+  const saveRecipe = async (recipe: Recipe): Promise<'saved' | 'queued'> => {
+    const linked = products.find((p) => p.id === recipe.productId);
+    if (linked && linked.companyId !== recipe.companyId) throw new Error('El producto y la ficha deben pertenecer a la misma empresa.');
+    if (linked && productIsSending(linked.id)) throw new Error('Espere a que termine de sincronizar el producto.');
+    const pendingProduct = productPending().find((op) => productIdOf(op) === linked?.id);
+    if (pendingProduct?.error) throw new Error('Revise el cambio pendiente del producto antes de guardar su ficha.');
+    const stableProductId = linked?.id ?? (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(recipe.productId) ? recipe.productId : uuid());
+    const data = validateProduct({ companyId: recipe.companyId, name: recipe.productName,
+      price: round2(Number(recipe.salePrice)), category: recipe.category as ProductCategory,
+      image: linked?.image ?? '', description: linked?.description ?? '', available: linked?.available ?? true });
+    const normalized: Recipe = { ...recipe, productId: stableProductId, productName: data.name,
+      salePrice: data.price, totalCost: round2(recipe.totalCost),
+      theoreticalFoodCostPct: round2(recipe.totalCost / data.price * 100),
+      ingredients: recipe.ingredients.map((i) => ({ ...i, quantity: round2(Number(i.quantity)),
+        costPerUnit: round2(Number(i.costPerUnit)), subtotalCost: round2(Number(i.subtotalCost)) })) };
+    const body = { ...normalized, id: recipe.id, tempId: recipe.id,
+      ingredients: normalized.ingredients.map((i) => ({ ...i, insumoId: i.insumoId || null })) };
+    const queue = loadQueue();
+    const index = queue.findIndex((op) => op.op === 'saveRecipe' && (op.payload as { id?: string }).id === recipe.id);
+    const op: PendingOp = { clientOpId: uuid(), entity: 'catalog', op: 'saveRecipe', payload: body,
+      createdAt: index >= 0 ? queue[index].createdAt : new Date().toISOString() };
+    if (index >= 0) queue[index] = op; else queue.push(op);
+    persistProductQueue(queue);
+    const previousRecipe = recipes.find((r) => r.id === recipe.id);
+    setRecipes((prev) => overlayRecipes([...prev.filter((r) => r.id !== recipe.id), normalized], prev));
+    setProducts((prev) => overlayProducts([...prev.filter((p) => p.id !== stableProductId), {
+      ...linked, ...data, id: stableProductId, hasRecipe: true,
+    }], prev));
+    if (offlineState.isSimulatedOffline || !getAuthToken() || queue[0].clientOpId !== op.clientOpId || isReplayingRef.current) {
+      if (!offlineState.isSimulatedOffline && getAuthToken()) {
+        if (isReplayingRef.current) productSyncRequestedRef.current = true;
+        else queueMicrotask(() => replayRef.current());
       }
-      return [recipe, ...prev];
-    });
-
-    // Fase E5 — una ficha técnica crea/actualiza su plato en el catálogo para que
-    // aparezca en las mesas. Si no se vinculó un plato existente, se crea uno nuevo.
-    const linkedProduct = recipe.productId ? products.find((p) => p.id === recipe.productId) : null;
-    const tempProductId = linkedProduct?.id ?? `prod-${Date.now()}`;
-    const productWasCreated = !linkedProduct;
-
-    if (productWasCreated) {
-      const localProduct: Product = {
-        id: tempProductId,
-      companyId: recipe.companyId || 'el-tayta',
-      name: recipe.productName,
-      description: recipe.preparationNotes || '',
-        price: r2(recipe.salePrice),
-        category: (recipe.category || 'platos') as ProductCategory,
-        image: '',
-        available: true,
-        hasRecipe: true,
-        updatedAt: new Date().toISOString(),
-      };
-      setProducts((prev) => [...prev.filter((p) => p.id !== tempProductId), localProduct]);
+      addNotification('Ficha pendiente', 'El cambio se guardó en este equipo y se sincronizará en orden.', 'info');
+      return 'queued';
     }
-
-    const serverBody = {
-      companyId: recipe.companyId || 'el-tayta',
-      productId: recipe.productId || null,
-      productName: recipe.productName || '',
-      category: recipe.category || 'platos',
-      portions: recipe.portions || 1,
-      salePrice: r2(recipe.salePrice),
-      totalCost: r2(recipe.totalCost),
-      theoreticalFoodCostPct: r2(recipe.theoreticalFoodCostPct),
-      preparationNotes: recipe.preparationNotes || null,
-      ingredients: recipe.ingredients?.map((ing) => ({
-        insumoId: ing.insumoId || null,
-        insumoName: ing.insumoName || '',
-        quantity: r2(Number(ing.quantity)),
-        unit: ing.unit || 'un',
-        costPerUnit: r2(Number(ing.costPerUnit)),
-        subtotalCost: r2(Number(ing.subtotalCost)),
-      })) || [],
-    };
-
-    // Edición de un alta aún no sincronizada: se parchea el save encolado.
-    if (queuedOp) {
-      updateQueuedPayload(queuedOp, { ...serverBody });
-      addNotification('Receta Guardada', `Ficha técnica de "${recipe.productName}" actualizada.`, 'success');
-      return;
+    const result = await replayCall(op, body);
+    if (result.disposition === 'ok') {
+      persistProductQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
+      const full = mapRecipe(result.data as RecipeDTO);
+      setRecipes((prev) => [...prev.filter((r) => r.id !== recipe.id), full]);
+      await refreshProductCatalogRef.current().catch(() => undefined);
+      addNotification('Ficha guardada', 'Producto y ficha técnica actualizados.', 'success');
+      return 'saved';
     }
-
-    const clientOpId = newUuid();
-    if (!existed) tmpCatalogOpRef.current[recipe.id] = clientOpId;
-    const queuePayload = {
-      id: recipe.id,
-      ...serverBody,
-      ...(!existed ? { tempId: recipe.id } : {}),
-      // El server crea el producto si el productId temporal aún no existe (FK).
-      // Este marcador permite remapear el producto local al id real en el replay.
-      ...(productWasCreated ? { tempProductId } : {}),
-    };
-    attemptMutation({
-      clientOpId,
-      entity: 'catalog',
-      op: 'saveRecipe',
-      queuePayload,
-      endpointOp: async () => {
-        let res: RecipeDTO;
-        try {
-          if (productWasCreated) {
-            // El plato no existe en el catálogo: se crea junto con la ficha.
-            const prodRes = await apiClient.post<ProductDTO>('/catalogs/products', {
-              companyId: recipe.companyId || 'el-tayta',
-              name: recipe.productName,
-              description: recipe.preparationNotes || '',
-              price: r2(recipe.salePrice),
-              category: (recipe.category || 'platos') as ProductCategory,
-              image: '',
-              available: true,
-              hasRecipe: true,
-            });
-            const realProduct = mapProduct(prodRes);
-            setProducts((prev) => prev.map((p) => (p.id === tempProductId ? realProduct : p)));
-            setRecipes((prev) =>
-              prev.map((r) => (r.id === recipe.id ? { ...r, productId: realProduct.id } : r))
-            );
-            serverBody.productId = realProduct.id;
-            // Si luego el save de la receta se encola (red caída), el replay ya
-            // llega con el id real del producto y no duplica el plato.
-            queuePayload.productId = realProduct.id;
-          } else if (linkedProduct) {
-            // Mantener nombre/precio del plato vinculado sincronizados con la ficha (best-effort).
-            try {
-              await apiClient.patch(`/catalogs/products/${linkedProduct.id}`, {
-                name: recipe.productName,
-                price: recipe.salePrice || 0,
-                category: (recipe.category || 'platos') as ProductCategory,
-                description: recipe.preparationNotes || '',
-                hasRecipe: true,
-              });
-            } catch {
-              /* el plato sigue vinculado aunque la actualización falle */
-            }
-          }
-          res = await apiClient.patch<RecipeDTO>(`/catalogs/recipes/${recipe.id}`, serverBody);
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 404) {
-            // La receta no existe en el servidor (ID temporal de nueva ficha): crear con POST.
-            try {
-              res = await apiClient.post<RecipeDTO>('/catalogs/recipes', serverBody);
-            } catch (postErr) {
-              const apiErr = postErr instanceof ApiError ? postErr : null;
-              const issues = apiErr?.issues;
-              const msg = apiErr
-                ? `POST recetas falló (${apiErr.status}): ${apiErr.code} - ${apiErr.message}`
-                : `POST recetas falló: ${String(postErr)}`;
-              addNotification('Error guardando receta', msg, 'warning');
-              console.error('POST /catalogs/recipes failed:', {
-                status: apiErr ? apiErr.status : 'unknown',
-                code: apiErr ? apiErr.code : 'unknown',
-                message: apiErr ? apiErr.message : String(postErr),
-                issues,
-                serverBody,
-              });
-              throw postErr;
-            }
-          } else if (err instanceof ApiError && (err.status === 401 || err.code === 'UNAUTHORIZED')) {
-            // Sesión expirada o sin token: invalidar sesión y notificar.
-            logout();
-            throw err;
-          } else {
-            throw err;
-          }
-        }
-        const mapped = mapRecipe(res);
-        const full: Recipe =
-          mapped.ingredients.length === 0 && recipe.ingredients.length > 0
-            ? { ...mapped, ingredients: recipe.ingredients }
-            : mapped;
-        delete tmpCatalogOpRef.current[recipe.id];
-        setRecipes((prev) => {
-          const next = prev.filter((r) => r.id !== recipe.id);
-          return next.some((r) => r.id === full.id) ? next : [full, ...next];
-        });
-      },
-      rollback: () => {
-        delete tmpCatalogOpRef.current[recipe.id];
-        if (!existed) {
-          setRecipes((prev) => prev.filter((r) => r.id !== recipe.id));
-          if (productWasCreated) {
-            setProducts((prev) => prev.filter((p) => p.id !== tempProductId));
-          }
-        }
-      },
-    });
-
-    addNotification('Receta Guardada', `Ficha técnica de "${recipe.productName}" actualizada.`, 'success');
+    if (result.disposition === 'retry') return 'queued';
+    if (result.disposition === 'conflict') { markInsumoIssue(op, result.message ?? 'Revise el insumo vinculado.'); throw new Error(result.message); }
+    persistProductQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
+    setRecipes((prev) => [...prev.filter((r) => r.id !== recipe.id), ...(previousRecipe ? [previousRecipe] : [])]);
+    setProducts((prev) => [...prev.filter((p) => p.id !== stableProductId), ...(linked ? [linked] : [])]);
+    throw new Error(result.message ?? 'No se pudo guardar la ficha.');
   };
 
-  // Add Insumo (Fase E5: write-through a POST /catalogs/insumos; el server asigna
-  // id/code reales — se reemplazan al reconciliar, F5 persiste)
-  const addInsumo = (insumoData: Omit<Insumo, 'id' | 'code'>) => {
-    const tempId = `ins-${Date.now()}`;
-    const clientOpId = newUuid();
-    const newCode = `INS-${String(insumos.length + 1).padStart(3, '0')}`;
-    const newInsumo: Insumo = { ...insumoData, id: tempId, code: newCode };
-    setInsumos((prev) => [...prev, newInsumo]);
-    tmpCatalogOpRef.current[tempId] = clientOpId;
-    attemptMutation({
-      clientOpId,
-      entity: 'catalog',
-      op: 'createInsumo',
-      queuePayload: {
-        companyId: insumoData.companyId === 'ambas' ? null : insumoData.companyId,
-        name: insumoData.name,
-        category: insumoData.category,
-        unit: insumoData.unit,
-        currentStock: insumoData.currentStock,
-        minStock: insumoData.minStock,
-        costPerUnit: insumoData.costPerUnit,
-        lastPurchaseDate: insumoData.lastPurchaseDate,
-        tempId,
-      },
-      endpointOp: async () => {
-        const res = await apiClient.post<InsumoDTO>('/catalogs/insumos', {
-          companyId: insumoData.companyId === 'ambas' ? null : insumoData.companyId,
-          name: insumoData.name,
-          category: insumoData.category,
-          unit: insumoData.unit,
-          currentStock: insumoData.currentStock,
-          minStock: insumoData.minStock,
-          costPerUnit: insumoData.costPerUnit,
-          lastPurchaseDate: insumoData.lastPurchaseDate,
-        });
-        const server = mapInsumo(res);
-        delete tmpCatalogOpRef.current[tempId];
-        setInsumos((prev) => {
-          const next = prev.filter((i) => i.id !== tempId);
-          return next.some((i) => i.id === server.id) ? next : [...next, server];
-        });
-      },
-      rollback: () => {
-        delete tmpCatalogOpRef.current[tempId];
-        setInsumos((prev) => prev.filter((i) => i.id !== tempId));
-      },
-    });
-    addNotification('Insumo Creado', `Insumo "${newInsumo.name}" registrado en Kardex.`, 'success');
+  const syncInsumoOperation = async (op: PendingOp): Promise<'saved' | 'queued'> => {
+    if (op.conflict || op.error) return 'queued';
+    if (!insumoIdOf(op)) {
+      markInsumoIssue(op, 'Este pendiente fue creado por una versión anterior. Revise el catálogo antes de volver a registrarlo para evitar duplicados.');
+      return 'queued';
+    }
+    const result = await replayCall(op, op.payload as Record<string, unknown>);
+    setLastSyncResult({ ok: result.disposition === 'ok', ts: Date.now(), op: op.op });
+    if (result.disposition === 'ok') {
+      persistInsumoQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
+      const dto = result.data as InsumoDTO;
+      setInsumos((prev) => overlayInsumos([...prev.filter((i) => i.id !== dto.id), mapInsumo(dto)], prev));
+      syncPendingCount();
+      await Promise.allSettled([refreshInsumos(), refreshProductCatalogRef.current()]);
+      return 'saved';
+    }
+    if (['conflict', 'business', 'gone'].includes(result.disposition)) markInsumoIssue(op, result.message ?? 'Revise los datos del insumo.');
+    syncPendingCount(); return 'queued';
   };
+  const submitInsumoOperation = async (op: PendingOp): Promise<'saved' | 'queued'> => {
+    setInsumos((prev) => overlayInsumos(prev, prev)); syncPendingCount();
+    if (offlineState.isSimulatedOffline || !getAuthToken()) return 'queued';
+    if (isReplayingRef.current) { productSyncRequestedRef.current = true; return 'queued'; }
+    if (loadQueue()[0]?.clientOpId !== op.clientOpId) { replayRef.current(); return 'queued'; }
+    const result = await syncInsumoOperation(op);
+    const pending = loadQueue().find((item) => item.clientOpId === op.clientOpId);
+    if (pending?.error) throw new Error(pending.error);
+    return result;
+  };
+  const saveInsumo = async (draft: InsumoDraft, original?: Insumo, id?: string) => {
+    const stableId = id ?? original?.id;
+    if (stableId && insumoIsSending(stableId)) throw new Error('Espere a que termine la sincronización.');
+    return submitInsumoOperation(stageInsumo(draft, original, stableId));
+  };
+  const addInsumo = (draft: Omit<Insumo, 'id' | 'code'>) => saveInsumo(draft);
+  const deleteInsumo = async (insumo: Insumo) => {
+    if (insumoIsSending(insumo.id)) throw new Error('Espere a que termine la sincronización.');
+    return submitInsumoOperation(stageInsumoDelete(insumo));
+  };
+  const resolveInsumoConflict = async (id: string, choice: 'server' | 'local') => {
+    if (offlineState.isSimulatedOffline) throw new Error('Restablezca la conexión para revisar.');
+    const all = await apiClient.get<InsumoDTO[]>('/catalogs/insumos');
+    const server = all.find((i) => i.id === id);
+    const op = insumoPending().find((item) => insumoIdOf(item) === id);
+    if (!op) return;
+    if (choice === 'local' && !server) throw new Error('El insumo fue eliminado. Descarte el cambio pendiente.');
+    persistInsumoQueue(choice === 'server' ? loadQueue().filter((item) => item.clientOpId !== op.clientOpId)
+      : loadQueue().map((item) => item.clientOpId !== op.clientOpId ? item : { ...item, clientOpId: newUuid(), error: undefined, conflict: undefined,
+        payload: { ...(item.payload as object), expectedVersion: server!.version } }));
+    setInsumos((prev) => overlayInsumos(all.map(mapInsumo), prev)); syncPendingCount();
+    if (choice === 'local') replayRef.current();
+  };
+  const discardInventoryDependency = async (clientOpId: string) => {
+    const op = loadQueue().find((item) => item.clientOpId === clientOpId);
+    if (!op || !isInventoryDependencyIssue(op)) return;
+    if (offlineState.isSimulatedOffline || !getAuthToken()) throw new Error('Restablezca la conexión para recuperar los datos confirmados.');
+    persistInsumoQueue(loadQueue().filter((item) => item.clientOpId !== clientOpId));
+    await Promise.allSettled([loadOperations(), loadCatalogs(), refreshProductCatalogRef.current()]);
+    syncPendingCount();
+  };
+  useEffect(() => {
+    const refresh = () => syncPendingCount();
+    window.addEventListener(INSUMO_QUEUE_EVENT, refresh);
+    return () => window.removeEventListener(INSUMO_QUEUE_EVENT, refresh);
+  }, []);
 
   // Reset to Demo Data
   const resetToDemoData = () => {
@@ -4166,9 +4170,7 @@ Doble Alto: PEDIDO EXPRESS #8841
       .filter((o) => o.status === 'cobrado' || o.status === 'en_cocina')
       .forEach((o) => {
         o.items.forEach((item) => {
-          const rec = recipes.find(
-            (r) => r.productId === item.productId || r.productName === item.name
-          );
+          const rec = matchingRecipe<Recipe>(recipes, o.companyId, item);
           if (rec) {
             totalTheoreticalCost += rec.totalCost * item.quantity;
           }
@@ -4256,6 +4258,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         authToken,
         isAuthenticating,
         isSessionInitializing,
+        authNotice,
         login,
         logout,
         catalogSyncMeta,
@@ -4268,11 +4271,17 @@ Doble Alto: PEDIDO EXPRESS #8841
         activeCompany,
         currentScreen,
         setCurrentScreen,
+        catalogTarget,
+        setCatalogTarget,
         selectedTableId,
         setSelectedTableId,
         tables,
         filteredTables,
         products,
+        productPendingOps,
+        productIsSending,
+        saveProduct,
+        resolveProductConflict,
         filteredProducts,
         orders,
         transactions,
@@ -4331,6 +4340,10 @@ Doble Alto: PEDIDO EXPRESS #8841
         addKardexAdjustment,
         saveRecipe,
         addInsumo,
+        saveInsumo,
+        deleteInsumo,
+        resolveInsumoConflict,
+        discardInventoryDependency,
         // Impresoras
         printers,
         thermalPrinters: printers,

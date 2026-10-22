@@ -2,6 +2,7 @@
 // Singleton socket.io-client. Los eventos son avisos; la verdad se reconcilia
 // con REST en POSContext (merge de mesa + GET de orden si la tengo abierta).
 import { io, type Socket } from 'socket.io-client';
+import { requireAuthentication } from './api';
 
 export interface TableChangedEvent {
   tableId: string;
@@ -9,6 +10,7 @@ export interface TableChangedEvent {
   status: string;
   currentOrderId: string | null;
   orderStatus?: string | null;
+  sourceOrderId?: string;
   ticketNumber?: string | null;
   total?: number | null;
   itemsCount?: number | null;
@@ -21,6 +23,7 @@ export interface OrderChangedEvent {
   tableId: string | null;
   companyId: string;
   status: string;
+  isDeleted?: boolean;
   total?: number | null;
   itemsCount?: number | null;
   updatedAt: string;
@@ -139,6 +142,7 @@ export type RealtimeStatus = 'connected' | 'connecting' | 'disconnected';
 let socket: Socket | null = null;
 let lastToken: string | null = null;
 let lastCompany: string | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function isRealtimeConnected(): boolean {
   return !!socket?.connected;
@@ -175,7 +179,28 @@ export function connectRealtime(opts: {
   onStatus('connecting');
   // Mismo origen (en dev Vite proxyea /socket.io → :4000).
   socket = io({ auth: { token }, reconnection: true, reconnectionDelayMax: 5000 });
+  const currentSocket = socket;
+  const retryAuthentication = () => {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      if (socket === currentSocket && !currentSocket.connected) currentSocket.connect();
+    }, 5000);
+  };
+  const handleAuthError = (code?: string) => {
+    onStatus('disconnected');
+    if (code === 'UNAUTHORIZED') {
+      clearTimeout(reconnectTimer);
+      currentSocket.disconnect();
+      requireAuthentication(token, 'Su sesión ya no es válida. Vuelva a iniciar sesión; las operaciones pendientes se conservan.');
+    } else {
+      // Un fallo de SQL/infraestructura conserva el token y permite reintentar.
+      retryAuthentication();
+    }
+  };
+  socket.on('connect_error', (error: Error & { data?: { code?: string } }) => handleAuthError(error.data?.code));
+  socket.on('session:error', (error: { code?: string }) => handleAuthError(error.code));
   socket.on('connect', () => {
+    clearTimeout(reconnectTimer);
     onStatus('connected');
     socket?.emit('join-company', { companyId: lastCompany });
   });
@@ -204,6 +229,7 @@ export function joinRealtimeCompany(companyId: string): void {
 }
 
 export function disconnectRealtime(): void {
+  clearTimeout(reconnectTimer);
   try {
     socket?.removeAllListeners();
     socket?.disconnect();

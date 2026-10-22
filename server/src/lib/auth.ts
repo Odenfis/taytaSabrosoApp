@@ -1,11 +1,10 @@
 import jwt from 'jsonwebtoken';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import type { User } from '@prisma/client';
-import { AppError } from './utils';
-import { prisma } from './prisma';
+import { AppError } from './utils.js';
+import { prisma } from './prisma.js';
+import { getJwtSecret } from './config.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-cambiar-en-produccion';
 const TOKEN_TTL_HOURS = 12;
 
 export interface AccessTokenPayload {
@@ -16,7 +15,9 @@ export interface AccessTokenPayload {
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign(payload, getJwtSecret(), {
+    algorithm: 'HS256',
+    jwtid: randomUUID(),
     expiresIn: `${TOKEN_TTL_HOURS}h`,
   });
 }
@@ -25,11 +26,43 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export function verifyAccessToken(token: string): AccessTokenPayload {
-  return jwt.verify(token, JWT_SECRET) as AccessTokenPayload;
+export function verifyAccessToken(token: string): AccessTokenPayload & { exp: number } {
+  // La configuración se evalúa fuera del catch: un fallo del servidor no es un 401.
+  const secret = getJwtSecret();
+  let decoded: string | jwt.JwtPayload;
+  try {
+    decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
+  } catch (err) {
+    if (err instanceof jwt.JsonWebTokenError) {
+      throw new AppError('Sesión inválida o vencida. Vuelva a iniciar sesión.', 401, 'UNAUTHORIZED');
+    }
+    throw err;
+  }
+  if (typeof decoded === 'string' || typeof decoded.sub !== 'string' || !decoded.sub ||
+      typeof decoded.deviceId !== 'string' || !decoded.deviceId ||
+      typeof decoded.exp !== 'number' || !Number.isFinite(decoded.exp)) {
+    throw new AppError('Token de sesión inválido.', 401, 'UNAUTHORIZED');
+  }
+  return decoded as AccessTokenPayload & { exp: number };
 }
 
-// Middleware de autenticación: verifica JWT y carga el usuario activo desde la DB.
+// Única fuente de validación para HTTP y Socket.IO. No captura errores de SQL.
+export async function authenticateAccessToken(token: string) {
+  const payload = verifyAccessToken(token);
+  const tokenHash = hashToken(token);
+  const session = await prisma.session.findUnique({
+    where: { tokenHash },
+    include: { user: true, device: true },
+  });
+  const expiresAt = Math.min(payload.exp * 1000, session?.expiresAt.getTime() ?? 0);
+  if (!session || session.userId !== payload.sub || session.deviceId !== payload.deviceId ||
+      expiresAt <= Date.now() || !session.user.isActive || session.user.isDeleted ||
+      !session.device.isActive) {
+    throw new AppError('Sesión inválida o vencida. Vuelva a iniciar sesión.', 401, 'UNAUTHORIZED');
+  }
+  return { user: session.user, deviceId: session.deviceId, tokenHash, expiresAt };
+}
+
 export async function requireAuth(req: Request, _res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization;
@@ -37,21 +70,12 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
       throw new AppError('No autorizado. Falta el token.', 401, 'UNAUTHORIZED');
     }
 
-    const payload = verifyAccessToken(header.slice('Bearer '.length));
-
-    const user = await prisma.user.findFirst({
-      where: { id: payload.sub, isActive: true, isDeleted: false },
-    });
-
-    if (!user) {
-      throw new AppError('Sesión inválida o usuario inactivo.', 401, 'UNAUTHORIZED');
-    }
-
-    req.auth = { user, deviceId: payload.deviceId };
+    const session = await authenticateAccessToken(header.slice('Bearer '.length));
+    req.auth = { user: session.user, deviceId: session.deviceId };
 
     // Marca de última conexión del dispositivo (sin bloqueo).
     prisma.device
-      .update({ where: { id: payload.deviceId }, data: { lastSeenAt: new Date() } })
+      .update({ where: { id: session.deviceId }, data: { lastSeenAt: new Date() } })
       .catch(() => undefined);
 
     next();

@@ -16,6 +16,7 @@ import { ReportsScreen } from './components/ReportsScreen';
 import { SettingsScreen } from './components/SettingsScreen';
 import { KardexScreen } from './components/KardexScreen';
 import { PurchasesScreen } from './components/PurchasesScreen';
+import { ProductsScreen } from './components/ProductsScreen';
 import { RecipesScreen } from './components/RecipesScreen';
 import { ExpenseRatiosScreen } from './components/ExpenseRatiosScreen';
 import { BankAccountsScreen } from './components/BankAccountsScreen';
@@ -30,8 +31,8 @@ const MainLayout: React.FC = () => {
 
   if (isSessionInitializing) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-[#121212]">
-        <div className="flex flex-col items-center gap-3 text-[#dac1b8]/80">
+      <div className="min-h-screen w-full flex items-center justify-center bg-panel-4">
+        <div className="flex flex-col items-center gap-3 text-ink-muted-5">
           <span className="material-symbols-outlined animate-spin text-[32px]">autorenew</span>
           <p className="text-[13px]">Validando sesión...</p>
         </div>
@@ -47,7 +48,7 @@ const MainLayout: React.FC = () => {
   const isFullCustomHeader = currentScreen === 'pedido' || currentScreen === 'cobro';
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#121212] text-[#e5e2e1] font-sans antialiased select-none">
+    <div className="flex h-screen w-screen overflow-hidden bg-panel-4 text-ink-body font-sans antialiased select-none">
       {/* Persistent POS Sidebar */}
       <Sidebar onCloseMobile={() => setMobileMenuOpen(false)} />
 
@@ -55,7 +56,7 @@ const MainLayout: React.FC = () => {
       {mobileMenuOpen && (
         <div
           onClick={() => setMobileMenuOpen(false)}
-          className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm"
+          className="fixed inset-0 bg-surface-scrim-3 z-40 md:hidden backdrop-blur-sm"
         />
       )}
 
@@ -73,6 +74,7 @@ const MainLayout: React.FC = () => {
           {currentScreen === 'cobro' && <PaymentScreen />}
           {currentScreen === 'kardex' && <KardexScreen />}
           {currentScreen === 'compras' && <PurchasesScreen />}
+          {currentScreen === 'productos' && <ProductsScreen />}
           {currentScreen === 'recetas' && <RecipesScreen />}
           {currentScreen === 'ratios' && <ExpenseRatiosScreen />}
           {currentScreen === 'movimientos' && <CashLedgerScreen />}

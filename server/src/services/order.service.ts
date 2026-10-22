@@ -1,8 +1,10 @@
+import { lockInsumos, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
+import { matchingRecipe } from '../lib/recipeMatch.js';
 import type { Prisma } from '@prisma/client';
-import { AppError, plain, round2, round3, toNum } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime';
+import { AppError, plain, round2, round3, toNum } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime.js';
 
 function nowParts(timeStr?: string) {
   const now = new Date();
@@ -33,28 +35,166 @@ function recalcTotals(items: { price: number | Prisma.Decimal; quantity: number 
   return { subtotal, igv, total };
 }
 
-// Cuando la comanda queda sin ítems, libera la mesa y elimina lógicamente la orden
-// (esta_eliminado=1: desaparece de activos/analítica pero conserva historial y referencias Kardex).
-// Guard anti-race: solo se libera la mesa si esta comanda sigue siendo su pedido activo,
-// protege el caso de replays offline mientras ya se abrió una orden nueva en esa mesa.
-async function vacateOrderAndFreeTable(tx: Prisma.TransactionClient, orderId: string): Promise<void> {
-  const order = await tx.order.findUnique({ where: { id: orderId } });
-  if (!order || order.isDeleted || !order.tableId) return;
-
-  const itemsCount = await tx.orderItem.count({ where: { orderId } });
-  if (itemsCount > 0) return;
-
-  const table = await tx.table.findFirst({ where: { id: order.tableId, isDeleted: false } });
-  if (!table) return;
-
-  if (table.currentOrderId === order.id) {
-    await tx.table.update({
-      where: { id: table.id },
-      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null },
-    });
+// El bloqueo SQL serializa todos los escritores de una comanda. El rango de
+// recibos también protege claves que aún no existen (apertura/cancelación).
+const transactionNotices = new WeakMap<Prisma.TransactionClient, (() => void)[]>();
+function afterCommit(tx: Prisma.TransactionClient, notice: () => void) { transactionNotices.get(tx)?.push(notice); }
+async function orderTransaction<T>(action: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const notices: (() => void)[] = [];
+      const result = await prisma.$transaction((tx) => { transactionNotices.set(tx, notices); return action(tx); }, { timeout: 15000 });
+      for (const notice of notices) notice();
+      return result;
+    }
+    catch (error) {
+      const failure = error as { code?: string; meta?: { code?: string | number } };
+      const deadlock = failure.code === 'P2034' || (failure.code === 'P2010' && String(failure.meta?.code) === '1205');
+      if (attempt >= 3 || !deadlock) throw error;
+    }
   }
+}
+async function lockOrder(tx: Prisma.TransactionClient, id: string) {
+  await tx.$queryRaw`SELECT [id] FROM [dbo].[pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${id}`;
+}
+async function readReceipt(tx: Prisma.TransactionClient, id: string) {
+  await tx.$queryRaw`SELECT [id] FROM [dbo].[resultados_pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${id}`;
+  const receipt = await tx.orderOperationResult.findUnique({ where: { id } });
+  return receipt ? JSON.parse(receipt.result) : null;
+}
+async function saveReceipt(tx: Prisma.TransactionClient, id: string, orderId: string | null, result: unknown) {
+  await tx.orderOperationResult.upsert({ where: { id }, create: { id, orderId, result: JSON.stringify(plain(result)) }, update: {} });
+}
+async function findOpeningOrder(tx: Prisma.TransactionClient, clientOpId: string) {
+  const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${clientOpId}` } });
+  if (alias?.orderId) return tx.order.findUnique({ where: { id: alias.orderId }, include: { items: true } });
+  return tx.order.findUnique({ where: { clientOpId }, include: { items: true } });
+}
+async function rememberOpening(tx: Prisma.TransactionClient, clientOpId: string | undefined, order: { id: string }) {
+  if (clientOpId) await saveReceipt(tx, `alias:${clientOpId}`, order.id, { orderId: order.id });
+}
+function assertEditable(order: { status: string; isDeleted: boolean }) {
+  if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+  if (order.isDeleted || order.status === 'anulado') throw new AppError('La orden está anulada.', 409, 'ORDER_CANCELLED');
+}
+async function editableOrder(tx: Prisma.TransactionClient, id: string) {
+  await lockOrder(tx, id);
+  const order = await tx.order.findUnique({ where: { id }, include: { items: true } });
+  if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
+  assertEditable(order);
+  return order;
+}
 
-  await tx.order.update({ where: { id: order.id }, data: { isDeleted: true } });
+// Solo elimina físicamente borradores con historial conocido y sin despacho/pago.
+async function finishEmptyOrder(tx: Prisma.TransactionClient, orderId: string) {
+  const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: { items: true, transactions: { select: { id: true } } } });
+  if (order.items.length) return order;
+  assertEditable(order);
+  const { transactions, ...snapshot } = order;
+  const final = { ...snapshot, status: 'anulado', isDeleted: true, subtotal: 0, igv: 0, total: 0, closedUtc: new Date(), closedAt: nowParts().time };
+  if (order.tableId) {
+    await tx.table.updateMany({ where: { id: order.tableId, currentOrderId: order.id },
+      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null } });
+  }
+  if (order.dispatchHistoryKnown && !order.firstDispatchedUtc && order.status === 'abierto' && transactions.length === 0) {
+    await saveReceipt(tx, `cancelled:${order.id}`, order.id, final);
+    await saveReceipt(tx, `opening:${order.clientOpId}`, order.id, final);
+    await tx.order.delete({ where: { id: order.id } });
+    return final;
+  }
+  const updated = await tx.order.update({ where: { id: order.id }, data: {
+    status: 'anulado', isDeleted: true, subtotal: 0, igv: 0, total: 0, closedUtc: final.closedUtc, closedAt: final.closedAt,
+  }, include: { items: true } });
+  await saveReceipt(tx, `cancelled:${order.id}`, order.id, updated);
+  await saveReceipt(tx, `opening:${order.clientOpId}`, order.id, updated);
+  return updated;
+}
+
+// Aporte inicial de una apertura: se reconcilia bajo el mismo bloqueo que su
+// cancelación. Guarda cantidades propias para no retirar adiciones de otra terminal.
+export async function syncOpeningItems(clientOpId: string, items: { productId: string; quantity: number; notes?: string }[]) {
+  return orderTransaction(async (tx) => {
+    if (await readReceipt(tx, `opening:${clientOpId}`)) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
+    const found = await findOpeningOrder(tx, clientOpId);
+    if (!found) throw new AppError('Apertura no encontrada.', 404, 'NOT_FOUND');
+    const order = await editableOrder(tx, found.id);
+    if (order.firstDispatchedUtc || order.status !== 'abierto') throw new AppError('El pedido ya fue despachado.', 409, 'ALREADY_DISPATCHED');
+    const key = `draft:${clientOpId}`;
+    const previous = await tx.orderOperationResult.findUnique({ where: { id: key } });
+    const contributions: { id: string; quantity: number }[] = previous ? JSON.parse(previous.result) : [];
+    for (const contribution of contributions) {
+      const item = await tx.orderItem.findUnique({ where: { id: contribution.id } });
+      if (!item) continue;
+      const remaining = Math.max(0, toNum(item.quantity) - contribution.quantity);
+      if (remaining) await tx.orderItem.update({ where: { id: item.id }, data: { quantity: remaining } });
+      else await tx.orderItem.delete({ where: { id: item.id } });
+    }
+    const owned: { id: string; quantity: number }[] = [];
+    for (const input of items) {
+      const product = await tx.product.findUnique({ where: { id: input.productId } });
+      if (!product || product.isDeleted || !product.available) throw new AppError('Producto no disponible.', 409, 'PRODUCT_UNAVAILABLE');
+      if (product.companyId !== order.companyId) throw new AppError('Producto de otra empresa.', 409, 'PRODUCT_COMPANY_MISMATCH');
+      const notes = input.notes?.trim() || null;
+      const existing = await tx.orderItem.findFirst({ where: { orderId: order.id, productId: product.id, notes, status: 'agregado' } });
+      const item = existing
+        ? await tx.orderItem.update({ where: { id: existing.id }, data: { quantity: { increment: input.quantity } } })
+        : await tx.orderItem.create({ data: { id: randomUUID(), orderId: order.id, productId: product.id, name: product.name,
+          price: product.price, quantity: input.quantity, notes, status: 'agregado', addedAt: nowParts().time } });
+      const same = owned.find((entry) => entry.id === item.id);
+      if (same) same.quantity += input.quantity;
+      else owned.push({ id: item.id, quantity: input.quantity });
+    }
+    await tx.orderOperationResult.upsert({ where: { id: key }, create: { id: key, orderId: order.id, result: JSON.stringify(owned) }, update: { result: JSON.stringify(owned) } });
+    const currentItems = await tx.orderItem.findMany({ where: { orderId: order.id } });
+    return tx.order.update({ where: { id: order.id }, data: recalcTotals(currentItems), include: { items: true } });
+  }).then(plain);
+}
+
+// Herramienta administrativa separada: revalida bajo bloqueo y nunca elimina
+// pedidos antiguos inciertos, despachados, cobrados o modificados desde la revisión.
+export async function cleanupEmptyDraft(orderId: string) {
+  return orderTransaction(async (tx) => {
+    await lockOrder(tx, orderId);
+    const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true, transactions: true } });
+    if (!order || order.isDeleted || !order.dispatchHistoryKnown || order.firstDispatchedUtc || order.status !== 'abierto' || order.items.length || order.transactions.length) {
+      return { id: orderId, skipped: true };
+    }
+    return finishEmptyOrder(tx, orderId);
+  }).then(plain);
+}
+
+// Resuelve aperturas cuya respuesta se perdió, sin volver a crear un pedido.
+export async function cancelOrderOpening(clientOpId: string) {
+  return orderTransaction(async (tx) => {
+    const key = `opening:${clientOpId}`;
+    const receipt = await readReceipt(tx, key);
+    if (receipt) return receipt;
+    const order = await findOpeningOrder(tx, clientOpId);
+    if (!order) {
+      const result = { cancelled: true };
+      await saveReceipt(tx, key, null, result);
+      return result;
+    }
+    await lockOrder(tx, order.id);
+    const current = await tx.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true } });
+    if (current.status !== 'abierto' || current.isDeleted || current.firstDispatchedUtc) return current;
+    const contribution = await tx.orderOperationResult.findUnique({ where: { id: `draft:${clientOpId}` } });
+    const owned: { id: string; quantity: number }[] = contribution ? JSON.parse(contribution.result) : [];
+    for (const entry of owned) {
+      const item = current.items.find((item) => item.id === entry.id);
+      if (!item || item.status !== 'agregado') continue;
+      const remaining = Math.max(0, toNum(item.quantity) - entry.quantity);
+      if (remaining) await tx.orderItem.update({ where: { id: item.id }, data: { quantity: remaining } });
+      else await tx.orderItem.delete({ where: { id: item.id } });
+    }
+    const items = await tx.orderItem.findMany({ where: { orderId: current.id } });
+    if (!items.length) return finishEmptyOrder(tx, current.id);
+    // Otra terminal conserva productos: bloquear replays de esta apertura,
+    // manteniendo el pedido compartido y su mesa.
+    const result = await tx.order.update({ where: { id: current.id }, data: recalcTotals(items), include: { items: true } });
+    await saveReceipt(tx, key, current.id, { cancelled: true });
+    return result;
+  }).then(plain);
 }
 
 // ============================ APERTURA DE MESA / ORDEN ============================
@@ -63,17 +203,21 @@ export async function openOrderForTable(
   tableId: string,
   input: { waiter?: string; clientOpId?: string }
 ) {
-  return prisma.$transaction(async (tx) => {
+  return orderTransaction(async (tx) => {
+    if (input.clientOpId) {
+      const cancelled = await readReceipt(tx, `opening:${input.clientOpId}`);
+      if (cancelled) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
+    }
+    await tx.$queryRaw`SELECT [id] FROM [dbo].[mesas] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${tableId}`;
     const table = await tx.table.findFirst({ where: { id: tableId, isDeleted: false } });
     if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
 
     // Idempotencia (contrato de sync): si el cliente reenvía el mismo clientOpId, devolver la orden existente.
     if (input.clientOpId) {
-      const existing = await tx.order.findFirst({
-        where: { clientOpId: input.clientOpId, isDeleted: false },
-        include: { items: true },
-      });
-      if (existing) return existing;
+      const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${input.clientOpId}` } });
+      const existing = await findOpeningOrder(tx, input.clientOpId);
+      if (existing) { assertEditable(existing); return existing; }
+      if (alias) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
     }
 
     // Si ya tiene una orden activa, retornarla.
@@ -91,6 +235,7 @@ export async function openOrderForTable(
             data: { status: 'ocupada', occupiedSince: syncTime, currentOrderId: existing.id, waiter: input.waiter?.trim() || existing.waiter },
           });
         }
+        await rememberOpening(tx, input.clientOpId, existing);
         return existing;
       }
       // Orden ya no es válida (borrada o cobrada) → limpiar referencia muerta.
@@ -128,6 +273,7 @@ export async function openOrderForTable(
       data: { status: 'ocupada', occupiedSince: time, currentOrderId: order.id, waiter },
     });
 
+    await rememberOpening(tx, input.clientOpId, order);
     return order;
   }).then((o) => plain(o));
 }
@@ -135,7 +281,15 @@ export async function openOrderForTable(
 // Pedido rápido en barra (reutiliza mesa libre de barra o crea una nueva).
 export async function createQuickBarOrder(input: { companyId: string; waiter?: string; clientOpId?: string }) {
   const companyId = input.companyId;
-  return prisma.$transaction(async (tx) => {
+  return orderTransaction(async (tx) => {
+    if (input.clientOpId) {
+      const cancelled = await readReceipt(tx, `opening:${input.clientOpId}`);
+      if (cancelled) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
+      const existing = await findOpeningOrder(tx, input.clientOpId);
+      if (existing) { assertEditable(existing); return existing; }
+      const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${input.clientOpId}` } });
+      if (alias) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
+    }
     const freeBarra = await tx.table.findFirst({
       where: { companyId, isDeleted: false, status: 'libre', zone: 'Barra' },
       orderBy: { number: 'asc' },
@@ -172,6 +326,7 @@ async function openOrderForTableTx(
   waiter?: string,
   clientOpId?: string
 ) {
+  await tx.$queryRaw`SELECT [id] FROM [dbo].[mesas] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${tableId}`;
   const table = await tx.table.findFirst({ where: { id: tableId, isDeleted: false } });
   if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
 
@@ -197,6 +352,7 @@ async function openOrderForTableTx(
           data: { status: 'ocupada', occupiedSince: syncTime, currentOrderId: existing.id, waiter: waiter?.trim() || existing.waiter },
         });
       }
+      await rememberOpening(tx, clientOpId, existing);
       return existing;
     }
     // Orden ya no es válida (borrada o cobrada) → limpiar referencia muerta.
@@ -233,6 +389,7 @@ async function openOrderForTableTx(
     data: { status: 'ocupada', occupiedSince: time, currentOrderId: order.id, waiter },
   });
 
+  await rememberOpening(tx, clientOpId, order);
   return order;
 }
 
@@ -248,13 +405,13 @@ export async function getOrder(orderId: string) {
 }
 
 export async function addItemToOrder(orderId: string, input: { productId: string; quantity?: number; notes?: string }) {
-  return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, isDeleted: false }, include: { items: true } });
-    if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
-    if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+  return orderTransaction(async (tx) => {
+    const order = await editableOrder(tx, orderId);
 
     const product = await tx.product.findFirst({ where: { id: input.productId, isDeleted: false } });
     if (!product) throw new AppError('Producto no encontrado.', 404, 'PRODUCT_NOT_FOUND');
+    if (product.companyId !== order.companyId) throw new AppError('El producto pertenece a otra empresa.', 409, 'PRODUCT_COMPANY_MISMATCH');
+    if (!product.available) throw new AppError('Este producto no está disponible.', 409, 'PRODUCT_UNAVAILABLE');
 
     const quantity = input.quantity ?? 1;
     const notes = input.notes?.trim() || '';
@@ -306,9 +463,10 @@ async function reverseKitchenForItems(
   if (qtyToReverse <= 0) return;
 
   const recipes = await tx.recipe.findMany({ where: { isDeleted: false }, include: { ingredients: true } });
-  const recipe = recipes.find((r) => r.productId === item.productId || r.productName === item.name);
+  const recipe = matchingRecipe(recipes, order.companyId, item);
   if (!recipe || recipe.ingredients.length === 0) return;
 
+  await lockInsumos(tx, recipe.ingredients.map((i) => i.insumoId));
   const { time, date, utc } = nowParts();
   const deductionByInsumo: Record<string, number> = {};
   const movements: Prisma.KardexMovementCreateManyInput[] = [];
@@ -348,7 +506,7 @@ async function reverseKitchenForItems(
     await tx.kardexMovement.createMany({ data: movements });
 
     for (const m of movements) {
-      emitKardexChanged(order.companyId, {
+      afterCommit(tx, () => emitKardexChanged(order.companyId, {
         insumoId: m.insumoId ?? null,
         insumoName: m.insumoName,
         companyId: order.companyId,
@@ -361,7 +519,7 @@ async function reverseKitchenForItems(
         stockAfter: toNum(m.stockAfter),
         referenceDoc: m.referenceDoc,
         updatedAt: utc.toISOString(),
-      });
+      }));
     }
 
     for (const insumoId of Object.keys(deductionByInsumo)) {
@@ -369,17 +527,35 @@ async function reverseKitchenForItems(
       if (!insumo) continue;
       await tx.insumo.update({
         where: { id: insumoId },
-        data: { currentStock: round2(toNum(insumo.currentStock) + deductionByInsumo[insumoId]) },
+        data: { currentStock: round2(toNum(insumo.currentStock) + deductionByInsumo[insumoId]), version: { increment: 1 } },
       });
     }
   }
 }
 
-export async function updateItemQuantity(orderId: string, itemId: string, delta: number) {
-  return prisma.$transaction(async (tx) => {
-    const item = await tx.orderItem.findFirst({ where: { id: itemId, orderId } });
-    if (!item) throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
+export async function updateItemQuantity(orderId: string, itemId: string, delta: number, clientOpId?: string) {
+  return orderTransaction(async (tx) => {
+    const key = clientOpId ? `quantity:${clientOpId}` : null;
+    if (key) { const previous = await readReceipt(tx, key); if (previous) return previous; }
+    await lockOrder(tx, orderId);
+    const cancelled = await tx.orderOperationResult.findUnique({ where: { id: `cancelled:${orderId}` } });
+    if (cancelled) {
+      if (delta > 0) throw new AppError('La orden está anulada.', 409, 'ORDER_CANCELLED');
+      return JSON.parse(cancelled.result);
+    }
+    const order = await editableOrder(tx, orderId);
+    const item = order.items.find((item) => item.id === itemId);
+    if (!item) {
+      if (delta <= 0) return order;
+      throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
+    }
 
+    if (delta > 0) {
+      const product = item.productId ? await tx.product.findUnique({ where: { id: item.productId } }) : null;
+      const order = await tx.order.findUnique({ where: { id: orderId } });
+      if (!product || product.isDeleted || !product.available) throw new AppError('Este producto no está disponible.', 409, 'PRODUCT_UNAVAILABLE');
+      if (product.companyId !== order?.companyId) throw new AppError('El producto pertenece a otra empresa.', 409, 'PRODUCT_COMPANY_MISMATCH');
+    }
     const newQty = round3(toNum(item.quantity) + delta);
 
     if (item.status === 'en_cocina' && newQty < toNum(item.quantity)) {
@@ -397,28 +573,34 @@ export async function updateItemQuantity(orderId: string, itemId: string, delta:
     const items = await tx.orderItem.findMany({ where: { orderId } });
     const totals = recalcTotals(items);
     const updated = await tx.order.update({ where: { id: orderId }, data: { ...totals } });
-    if (items.length === 0) {
-      await vacateOrderAndFreeTable(tx, orderId);
-    }
-    return { ...updated, items };
+    const result = items.length === 0 ? await finishEmptyOrder(tx, orderId) : { ...updated, items };
+    if (key) await saveReceipt(tx, key, orderId, result);
+    return result;
   }).then((o) => plain(o));
 }
 
 export async function updateItemNotes(orderId: string, itemId: string, notes: string) {
-  const item = await prisma.orderItem.findFirst({ where: { id: itemId, orderId } });
-  if (!item) throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
-  return plain(
-    await prisma.orderItem.update({
-      where: { id: itemId },
-      data: { notes: notes.trim() || null },
-    })
-  );
-}
-
-export async function removeItemFromOrder(orderId: string, itemId: string) {
-  return prisma.$transaction(async (tx) => {
+  return orderTransaction(async (tx) => {
+    await editableOrder(tx, orderId);
     const item = await tx.orderItem.findFirst({ where: { id: itemId, orderId } });
     if (!item) throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
+    return tx.orderItem.update({ where: { id: itemId }, data: { notes: notes.trim() || null } });
+  }).then(plain);
+}
+
+export async function removeItemFromOrder(orderId: string, itemId: string, clientOpId?: string) {
+  return orderTransaction(async (tx) => {
+    const key = clientOpId ? `remove:${clientOpId}` : null;
+    if (key) { const previous = await readReceipt(tx, key); if (previous) return previous; }
+    await lockOrder(tx, orderId);
+    const cancelled = await tx.orderOperationResult.findUnique({ where: { id: `cancelled:${orderId}` } });
+    if (cancelled) return JSON.parse(cancelled.result);
+    const order = await editableOrder(tx, orderId);
+    const item = order.items.find((item) => item.id === itemId);
+    if (!item) {
+      if (true) return order;
+      throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
+    }
 
     if (item.status === 'en_cocina') {
       const order = await tx.order.findUnique({ where: { id: orderId } });
@@ -430,10 +612,9 @@ export async function removeItemFromOrder(orderId: string, itemId: string) {
     const items = await tx.orderItem.findMany({ where: { orderId } });
     const totals = recalcTotals(items);
     const updated = await tx.order.update({ where: { id: orderId }, data: { ...totals } });
-    if (items.length === 0) {
-      await vacateOrderAndFreeTable(tx, orderId);
-    }
-    return { ...updated, items };
+    const result = items.length === 0 ? await finishEmptyOrder(tx, orderId) : { ...updated, items };
+    if (key) await saveReceipt(tx, key, orderId, result);
+    return result;
   }).then((o) => plain(o));
 }
 
@@ -442,13 +623,10 @@ export async function removeItemFromOrder(orderId: string, itemId: string) {
 // Motor de deducción Kardex, réplica fiel de la demo: explota la receta de cada ítem
 // y descuenta stock de insumos registrando movimientos SALIDA_VENTA_POS.
 export async function sendToKitchen(orderId: string, input?: { clientOpId?: string }) {
-  return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({
-      where: { id: orderId, isDeleted: false },
-      include: { items: true },
-    });
-    if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
-    if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
+  return orderTransaction(async (tx) => {
+    const order = await editableOrder(tx, orderId);
+    if (!order.items.length) throw new AppError('La comanda está vacía.', 409, 'EMPTY_ORDER');
+    if (!order.firstDispatchedUtc) await tx.order.update({ where: { id: orderId }, data: { firstDispatchedUtc: new Date() } });
 
     // Idempotencia (fix 2026-10-12): solo se deducen ítems en `agregado`. Los ítems
     // `en_cocina`/`servido` ya fueron rebajados por un despacho previo, así que un
@@ -468,15 +646,15 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
     }
 
     const recipes = await tx.recipe.findMany({ where: { isDeleted: false }, include: { ingredients: true } });
+    const selectedRecipes = pendingItems.map((item) => matchingRecipe(recipes, order.companyId, item)).filter((recipe) => !!recipe);
+    await requireActiveInsumos(tx, selectedRecipes.flatMap((recipe) => recipe.ingredients.map((i) => i.insumoId)), order.companyId);
     const { time, date, utc } = nowParts();
 
     const movements: Prisma.KardexMovementCreateManyInput[] = [];
     const deductionByInsumo: Record<string, number> = {};
 
     for (const item of pendingItems) {
-      const recipe = recipes.find(
-        (r) => r.productId === item.productId || r.productName === item.name
-      );
+      const recipe = matchingRecipe(recipes, order.companyId, item);
       if (!recipe || recipe.ingredients.length === 0) continue;
 
       for (const ing of recipe.ingredients) {
@@ -517,7 +695,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
       await tx.kardexMovement.createMany({ data: movements });
 
       for (const m of movements) {
-        emitKardexChanged(order.companyId, {
+        afterCommit(tx, () => emitKardexChanged(order.companyId, {
           insumoId: m.insumoId ?? null,
           insumoName: m.insumoName,
           companyId: order.companyId,
@@ -530,14 +708,14 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
           stockAfter: toNum(m.stockAfter),
           referenceDoc: m.referenceDoc,
           updatedAt: utc.toISOString(),
-        });
+        }));
       }
 
       for (const insumoId of Object.keys(deductionByInsumo)) {
         const insumo = await tx.insumo.findUnique({ where: { id: insumoId } });
         if (!insumo) continue;
         const newStock = Math.max(0, round2(toNum(insumo.currentStock) - deductionByInsumo[insumoId]));
-        await tx.insumo.update({ where: { id: insumoId }, data: { currentStock: newStock } });
+        await tx.insumo.update({ where: { id: insumoId }, data: { currentStock: newStock, version: { increment: 1 } } });
       }
     }
 
@@ -554,11 +732,12 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
 
 // Marcar mesa + pedido como "por cobrar" (write-through del paso a cobro en POS).
 export async function markTableForBilling(tableId: string) {
-  return prisma.$transaction(async (tx) => {
+  return orderTransaction(async (tx) => {
     const table = await tx.table.findFirst({ where: { id: tableId, isDeleted: false } });
     if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
     if (!table.currentOrderId) throw new AppError('La mesa no tiene pedido activo.', 409, 'NO_ACTIVE_ORDER');
 
+    await lockOrder(tx, table.currentOrderId);
     const order = await tx.order.findUnique({
       where: { id: table.currentOrderId },
       include: { items: true },
@@ -566,6 +745,8 @@ export async function markTableForBilling(tableId: string) {
     if (!order) throw new AppError('Pedido no encontrado.', 404, 'NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
 
+    assertEditable(order);
+    if (!order.items.length) throw new AppError('La comanda está vacía.', 409, 'EMPTY_ORDER');
     assertKitchenDispatched(order.items);
 
     const updated = await tx.order.update({
@@ -607,7 +788,7 @@ export interface PayTableInput {
 }
 
 export async function payTable(tableId: string, input: PayTableInput) {
-  return prisma.$transaction(async (tx) => {
+  return orderTransaction(async (tx) => {
     // Idempotencia: si ya se cobró con ese clientOpId, devolver el resultado existente.
     if (input.clientOpId) {
       const existingTxn = await tx.transaction.findFirst({
@@ -630,6 +811,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
       throw new AppError('La mesa no tiene una orden activa para cobrar.', 404, 'ORDER_NOT_FOUND');
     }
 
+    await lockOrder(tx, table.currentOrderId);
     const order = await tx.order.findFirst({
       where: { id: table.currentOrderId, isDeleted: false },
       include: { items: true },
@@ -637,6 +819,8 @@ export async function payTable(tableId: string, input: PayTableInput) {
     if (!order) throw new AppError('Orden no encontrada.', 404, 'ORDER_NOT_FOUND');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
 
+    assertEditable(order);
+    if (!order.items.length) throw new AppError('La comanda está vacía.', 409, 'EMPTY_ORDER');
     assertKitchenDispatched(order.items);
 
     const change = Math.max(0, round2(input.amountReceived - toNum(order.total)));
@@ -724,7 +908,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
     });
 
     // Aviso realtime Libro de Caja: la venta (caja/banco) ya está registrada.
-    emitTransactionChanged(order.companyId, {
+    afterCommit(tx, () => emitTransactionChanged(order.companyId, {
       transactionId: transaction.id,
       companyId: order.companyId,
       type: txType,
@@ -736,7 +920,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
       shift: companyShift?.currentShift ?? 'Día',
       tableNumber: table.number,
       updatedAt: utc.toISOString(),
-    });
+    }));
 
     return { order: finalized, transaction };
   }).then((o) => plain(o));

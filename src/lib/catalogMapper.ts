@@ -50,6 +50,8 @@ export interface ProductDTO {
 }
 
 export interface InsumoDTO {
+  canEditBase?: boolean;
+  activeRecipes?: { id: string; name: string }[];
   id: string;
   companyId: string | null; // null = 'ambas' (compartido)
   code: string;
@@ -209,6 +211,8 @@ export function mapProduct(dto: ProductDTO): Product {
 
 export function mapInsumo(dto: InsumoDTO): Insumo {
   return {
+    canEditBase: dto.canEditBase,
+    activeRecipes: dto.activeRecipes,
     id: dto.id,
     companyId: toAmbasCompanyId(dto.companyId),
     code: dto.code,

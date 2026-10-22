@@ -1,7 +1,11 @@
+import { inventoryTransaction, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
-import { AppError, plain, toNum, round2 } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import { emitRecipeChanged, emitInsumoChanged, emitPaymentMethodChanged, emitPrinterChanged, emitProductChanged } from '../lib/realtime';
+import type { Prisma } from '@prisma/client';
+import { productFields, writeProduct, recipeRatio, notifyProduct, notifyLinkedRecipes } from './product.service.js';
+export { createProduct, updateProduct } from './product.service.js';
+import { AppError, plain, toNum, round2 } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import { emitRecipeChanged, emitInsumoChanged, emitPaymentMethodChanged, emitPrinterChanged, emitProductChanged } from '../lib/realtime.js';
 
 // companyId opcional para filtrar recursos por empresa.
 // Los recursos 'ambas' (companyId NULL) siempre se incluyen cuando hay filtro.
@@ -88,49 +92,6 @@ export async function listProducts(companyId?: string, category?: string) {
   return plain(products);
 }
 
-export async function createProduct(input: {
-  companyId: string;
-  name: string;
-  description: string;
-  price: number;
-  category: string;
-  image: string;
-  available?: boolean;
-  hasRecipe?: boolean;
-}) {
-  const product = await prisma.product.create({
-    data: { id: randomUUID(), ...input },
-  });
-  emitProductChanged(input.companyId, {
-    productId: product.id,
-    companyId: input.companyId,
-    action: 'create',
-    name: product.name,
-    price: Number(product.price),
-    category: product.category,
-    hasRecipe: !!product.hasRecipe,
-    updatedAt: new Date(product.updatedAt).toISOString(),
-  });
-  return product;
-}
-
-export async function updateProduct(id: string, updates: Partial<{
-  name: string; description: string; price: number; category: string; image: string; available: boolean; hasRecipe: boolean;
-}>) {
-  const product = plain(await prisma.product.update({ where: { id }, data: { ...updates } }));
-  emitProductChanged(product.companyId, {
-    productId: product.id,
-    companyId: product.companyId,
-    action: 'update',
-    name: product.name,
-    price: Number(product.price),
-    category: product.category,
-    hasRecipe: !!product.hasRecipe,
-    updatedAt: new Date(product.updatedAt).toISOString(),
-  });
-  return product;
-}
-
 export async function deleteProduct(id: string) {
   const product = plain(await prisma.product.update({ where: { id }, data: { isDeleted: true } }));
   emitProductChanged(product.companyId, {
@@ -148,110 +109,7 @@ export async function deleteProduct(id: string) {
 
 // ============================ INSUMOS ============================
 
-export async function listInsumos(companyId?: string, category?: string) {
-  const where: Record<string, unknown> = {
-    isDeleted: false,
-    ...(companyId ? companyWhere(companyId) : {}),
-  };
-  const insumos = await prisma.insumo.findMany({
-    where: { ...where, ...(category ? { category } : {}) } as never,
-    orderBy: { code: 'asc' },
-  });
-  return plain(insumos);
-}
-
-export async function createInsumo(input: {
-  companyId?: string | null; // null = 'ambas'
-  name: string;
-  category: string;
-  unit: string;
-  currentStock: number;
-  minStock: number;
-  costPerUnit: number;
-  lastPurchaseDate?: string;
-}) {
-  const codes = await prisma.insumo.findMany({
-    where: { code: { startsWith: 'INS-' } },
-    select: { code: true },
-  });
-  let next = codes.length + 1;
-  const existing = new Set(codes.map((c) => c.code));
-  while (existing.has(`INS-${String(next).padStart(3, '0')}`)) next += 1;
-  const code = `INS-${String(next).padStart(3, '0')}`;
-
-  const insumo = await prisma.insumo.create({
-    data: {
-      id: randomUUID(),
-      code,
-      companyId: input.companyId ?? null,
-      name: input.name,
-      category: input.category,
-      unit: input.unit,
-      currentStock: input.currentStock,
-      minStock: input.minStock,
-      costPerUnit: input.costPerUnit,
-      lastPurchaseDate: input.lastPurchaseDate,
-      lastPurchaseUtc: new Date(),
-    },
-  });
-
-  // Notifica en tiempo real la creación del insumo a los terminales de la empresa.
-  emitInsumoChanged(input.companyId ?? null, {
-    insumoId: insumo.id,
-    companyId: input.companyId ?? null,
-    action: 'create',
-    name: insumo.name,
-    category: insumo.category,
-    unit: insumo.unit,
-    currentStock: toNum(insumo.currentStock),
-    costPerUnit: toNum(insumo.costPerUnit),
-    updatedAt: insumo.createdAt.toISOString(),
-  });
-
-  return plain(insumo);
-}
-
-export async function updateInsumo(id: string, updates: Partial<{
-  companyId: string | null; name: string; category: string; unit: string; currentStock: number; minStock: number; costPerUnit: number; lastPurchaseDate: string | null;
-}>) {
-  const updated = await prisma.insumo.update({ where: { id }, data: { ...updates } });
-
-  // Notifica en tiempo real la actualización del insumo a los terminales de la empresa.
-  emitInsumoChanged(updated.companyId ?? null, {
-    insumoId: updated.id,
-    companyId: updated.companyId ?? null,
-    action: 'update',
-    name: updated.name,
-    category: updated.category,
-    unit: updated.unit,
-    currentStock: toNum(updated.currentStock),
-    costPerUnit: toNum(updated.costPerUnit),
-    updatedAt: updated.updatedAt.toISOString(),
-  });
-
-  return plain(updated);
-}
-
-export async function deleteInsumo(id: string) {
-  const insumo = await prisma.insumo.findUnique({ where: { id } });
-  if (!insumo) throw new AppError('Insumo no encontrado.', 404, 'NOT_FOUND');
-  await prisma.insumo.update({ where: { id }, data: { isDeleted: true } });
-
-  // Notifica en tiempo real la eliminación (soft-delete) del insumo a los terminales de la empresa.
-  emitInsumoChanged(insumo.companyId ?? null, {
-    insumoId: insumo.id,
-    companyId: insumo.companyId ?? null,
-    action: 'delete',
-    name: insumo.name,
-    category: insumo.category,
-    unit: insumo.unit,
-    currentStock: toNum(insumo.currentStock),
-    costPerUnit: toNum(insumo.costPerUnit),
-    updatedAt: new Date().toISOString(),
-  });
-
-  return plain(insumo);
-}
+export { listInsumos, createInsumo, updateInsumo, deleteInsumo } from './insumo.service.js';
 
 // ============================ RECIPES ============================
 
@@ -267,222 +125,113 @@ export async function listRecipes(companyId?: string) {
   return plain(recipes);
 }
 
-// Resuelve el plato de una ficha: si productId es nulo o no existe en productos
-// (p.ej. id temporal generado offline), crea automáticamente el producto con los
-// datos de la ficha para que impacte en el menú de mesas. Devuelve el productId final.
-async function resolveRecipeProduct(
-  companyId: string,
-  productId: string | null | undefined,
-  productName: string,
-  category: string,
-  salePrice: number,
-  preparationNotes?: string | null
-): Promise<string | null> {
-  const existing = productId ? await prisma.product.findUnique({ where: { id: productId } }) : null;
-  if (existing) {
-    if (!existing.hasRecipe) {
-      const updated = await prisma.product.update({ where: { id: existing.id }, data: { hasRecipe: true } });
-      emitProductChanged(existing.companyId, {
-        productId: updated.id,
-        companyId: updated.companyId,
-        action: 'update',
-        name: updated.name,
-        price: Number(updated.price),
-        category: updated.category,
-        hasRecipe: true,
-        updatedAt: new Date(updated.updatedAt).toISOString(),
-      });
-    }
-    return existing.id;
+type IngredientInput = { insumoId?: string | null; insumoName: string; quantity: number; unit: string; costPerUnit: number; subtotalCost: number };
+type RecipeInput = {
+  id?: string; companyId: string; productId?: string | null; productName: string; category: string;
+  portions?: number; salePrice: number; totalCost: number; theoreticalFoodCostPct: number;
+  preparationNotes?: string | null; ingredients: IngredientInput[];
+};
+
+async function ingredientData(tx: Prisma.TransactionClient, ingredients: IngredientInput[], companyId: string) {
+  const ids = ingredients.flatMap((i) => i.insumoId ? [i.insumoId] : []);
+  const insumos = await requireActiveInsumos(tx, ids, companyId);
+  const valid = new Set(insumos.map((i) => i.id));
+  for (const item of ingredients) {
+    const insumo = insumos.find((i) => i.id === item.insumoId);
+    if (insumo && insumo.unit !== item.unit) throw new AppError('La unidad del ingrediente no coincide con el insumo.', 409, 'INSUMO_UNIT_MISMATCH');
   }
-  const created = await prisma.product.create({
-    data: {
-      id: randomUUID(),
-      companyId,
-      name: productName,
-      description: preparationNotes ?? '',
-      price: round2(salePrice),
-      category,
-      image: '',
-      available: true,
-      hasRecipe: true,
-    },
-  });
-  emitProductChanged(companyId, {
-    productId: created.id,
-    companyId,
-    action: 'create',
-    name: created.name,
-    price: Number(created.price),
-    category: created.category,
-    hasRecipe: true,
-    updatedAt: created.createdAt.toISOString(),
-  });
-  return created.id;
+  return ingredients.map((i) => ({ id: randomUUID(), insumoId: i.insumoId && valid.has(i.insumoId) ? i.insumoId : null,
+    insumoName: insumos.find((ins) => ins.id === i.insumoId)?.name ?? i.insumoName, quantity: round2(i.quantity), unit: i.unit,
+    costPerUnit: round2(i.costPerUnit), subtotalCost: round2(i.subtotalCost) }));
 }
 
-// Verifica qué insumos existen antes de insertar ingredientes para no violar la FK
-// de ingredientes_receta (los insumos creados offline llevan ids temporales que
-// aún no existen en el server: se guardan con insumo_id NULL conservando el nombre).
-async function validInsumoIds(nestedIds: (string | null | undefined)[]): Promise<Set<string>> {
-  const wanted = [...new Set(nestedIds.filter((v): v is string => !!v))];
-  if (wanted.length === 0) return new Set();
-  const rows = await prisma.insumo.findMany({ where: { id: { in: wanted } }, select: { id: true } });
-  return new Set(rows.map((r) => r.id));
-}
-
-export async function createRecipe(input: {
-  companyId: string;
-  productId?: string | null;
-  productName: string;
-  category: string;
-  portions?: number;
-  salePrice: number;
-  totalCost: number;
-  theoreticalFoodCostPct: number;
-  preparationNotes?: string | null;
-  ingredients: { insumoId?: string | null; insumoName: string; quantity: number; unit: string; costPerUnit: number; subtotalCost: number }[];
+async function resolveRecipeProduct(tx: Prisma.TransactionClient, data: {
+  companyId: string; productId?: string | null; productName: string; category: string; salePrice: number;
 }) {
-  const productId = await resolveRecipeProduct(
-    input.companyId,
-    input.productId ?? null,
-    input.productName,
-    input.category,
-    input.salePrice,
-    input.preparationNotes
-  );
-  const valid = await validInsumoIds(input.ingredients.map((ing) => ing.insumoId));
-  const recipe = await prisma.recipe.create({
-    data: {
-      id: randomUUID(),
-      companyId: input.companyId,
-      productId,
-      productName: input.productName,
-      category: input.category,
-      portions: input.portions ?? 1,
-      salePrice: round2(input.salePrice),
-      totalCost: round2(input.totalCost),
-      theoreticalFoodCostPct: round2(input.theoreticalFoodCostPct),
-      preparationNotes: input.preparationNotes,
-      ingredients: {
-        create: input.ingredients.map((ing) => ({
-          id: randomUUID(),
-          insumoId: ing.insumoId && valid.has(ing.insumoId) ? ing.insumoId : null,
-          insumoName: ing.insumoName,
-          quantity: round2(ing.quantity),
-          unit: ing.unit,
-          costPerUnit: round2(ing.costPerUnit),
-          subtotalCost: round2(ing.subtotalCost),
-        })),
-      },
-    },
-    include: { ingredients: true },
+  const fields = productFields.pick({ name: true, price: true, category: true }).parse({
+    name: data.productName, price: round2(data.salePrice), category: data.category,
   });
-
-  // Notifica en tiempo real la creación de la receta a los terminales de la empresa.
-  emitRecipeChanged(input.companyId, {
-    recipeId: recipe.id,
-    companyId: input.companyId,
-    action: 'create',
-    productName: recipe.productName,
-    category: recipe.category,
-    updatedAt: recipe.createdAt.toISOString(),
-  });
-
-  return plain(recipe);
+  const existing = data.productId ? await tx.product.findUnique({ where: { id: data.productId } }) : null;
+  if (existing) {
+    if (existing.companyId !== data.companyId) throw new AppError('El producto y la ficha deben pertenecer a la misma empresa.', 409, 'PRODUCT_COMPANY_MISMATCH');
+    if (existing.isDeleted) throw new AppError('El producto vinculado fue retirado.', 409, 'PRODUCT_DELETED');
+    return existing;
+  }
+  // UUID estable del cliente: una ficha offline conserva el vínculo antes y después del replay.
+  const id = data.productId && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(data.productId) ? data.productId : randomUUID();
+  return tx.product.create({ data: { id, companyId: data.companyId, ...fields,
+    description: '', image: '', available: true, hasRecipe: false } });
 }
 
-export async function updateRecipe(
-  id: string,
-  input: Partial<{
-    productId: string | null;
-    productName: string;
-    category: string;
-    portions: number;
-    salePrice: number;
-    totalCost: number;
-    theoreticalFoodCostPct: number;
-    preparationNotes: string | null;
-  }> & { ingredients?: { insumoId?: string | null; insumoName: string; quantity: number; unit: string; costPerUnit: number; subtotalCost: number }[] }
-) {
-  const { ingredients, ...data } = input;
-  // Estándar de dos decimales: se normaliza lo monetario antes de escribir.
-  const roundedData: typeof data = {
-    ...data,
-    ...(data.salePrice !== undefined ? { salePrice: round2(data.salePrice) } : {}),
-    ...(data.totalCost !== undefined ? { totalCost: round2(data.totalCost) } : {}),
-    ...(data.theoreticalFoodCostPct !== undefined
-      ? { theoreticalFoodCostPct: round2(data.theoreticalFoodCostPct) }
-      : {}),
-  };
-  let effectiveData = roundedData;
-  // Solo si el payload trae productId: lo resuelve/crea si no existe en productos.
-  if (effectiveData.productId !== undefined) {
-    const existing = await prisma.recipe.findUnique({ where: { id } });
-    if (existing) {
-      effectiveData.productId = await resolveRecipeProduct(
-        existing.companyId,
-        effectiveData.productId,
-        effectiveData.productName ?? existing.productName,
-        effectiveData.category ?? existing.category,
-        effectiveData.salePrice !== undefined ? effectiveData.salePrice : Number(existing.salePrice),
-        effectiveData.preparationNotes !== undefined ? effectiveData.preparationNotes : existing.preparationNotes
-      );
+async function notifyRecipeCommit(product: Awaited<ReturnType<typeof resolveRecipeProduct>>) {
+  await notifyProduct(product);
+  await notifyLinkedRecipes(product.id).catch(() => undefined);
+}
+
+export async function createRecipe(input: RecipeInput) {
+  const result = await inventoryTransaction(async (tx) => {
+    if (input.id) {
+      const prior = await tx.recipe.findUnique({ where: { id: input.id }, include: { ingredients: true } });
+      if (prior) {
+        if (prior.companyId !== input.companyId || prior.isDeleted) throw new AppError('La ficha ya existe en otro contexto.', 409, 'RECIPE_ID_CONFLICT');
+        return { recipe: prior, product: null };
+      }
     }
-  }
-  const valid = ingredients ? await validInsumoIds(ingredients.map((ing) => ing.insumoId)) : null;
-  const updated = await prisma.$transaction(async (tx) => {
-    const recipe = await tx.recipe.update({
-      where: { id },
-      data: { ...effectiveData },
-    });
+    const product = await resolveRecipeProduct(tx, input);
+    const recipe = await tx.recipe.create({ data: {
+      id: input.id ?? randomUUID(), companyId: input.companyId, productId: product.id,
+      productName: input.productName.trim(), category: input.category, portions: input.portions ?? 1,
+      salePrice: round2(input.salePrice), totalCost: round2(input.totalCost),
+      theoreticalFoodCostPct: recipeRatio(round2(input.totalCost), round2(input.salePrice)),
+      preparationNotes: input.preparationNotes,
+      ingredients: { create: await ingredientData(tx, input.ingredients, input.companyId) },
+    }, include: { ingredients: true } });
+    const updated = await writeProduct(tx, product.id, { name: recipe.productName, price: toNum(recipe.salePrice), category: recipe.category as 'platos' });
+    return { recipe: (await tx.recipe.findUnique({ where: { id: recipe.id }, include: { ingredients: true } }))!, product: updated };
+  });
+  if (result.product) await notifyRecipeCommit(result.product);
+  return plain(result.recipe);
+}
+
+export async function updateRecipe(id: string, input: Partial<Omit<RecipeInput, 'companyId' | 'id'>>) {
+  const result = await inventoryTransaction(async (tx) => {
+    const prior = await tx.recipe.findUnique({ where: { id } });
+    if (!prior || prior.isDeleted) throw new AppError('Ficha no encontrada.', 404, 'NOT_FOUND');
+    const product = await resolveRecipeProduct(tx, { companyId: prior.companyId,
+      productId: input.productId === undefined ? prior.productId : input.productId,
+      productName: input.productName ?? prior.productName, category: input.category ?? prior.category,
+      salePrice: input.salePrice ?? toNum(prior.salePrice) });
+    const { ingredients, ...fields } = input;
+    const updated = await tx.recipe.update({ where: { id }, data: { ...fields, productId: product.id,
+      ...(input.productName !== undefined ? { productName: input.productName.trim() } : {}),
+      ...(input.salePrice !== undefined ? { salePrice: round2(input.salePrice) } : {}),
+      ...(input.totalCost !== undefined ? { totalCost: round2(input.totalCost) } : {}),
+      version: { increment: 1 } } });
     if (ingredients) {
       await tx.recipeIngredient.deleteMany({ where: { recipeId: id } });
-      await tx.recipeIngredient.createMany({
-        data: ingredients.map((ing) => ({
-          id: randomUUID(),
-          recipeId: id,
-          insumoId: ing.insumoId && valid?.has(ing.insumoId) ? ing.insumoId : null,
-          insumoName: ing.insumoName,
-          quantity: round2(ing.quantity),
-          unit: ing.unit,
-          costPerUnit: round2(ing.costPerUnit),
-          subtotalCost: round2(ing.subtotalCost),
-        })),
-      });
+      await tx.recipeIngredient.createMany({ data: (await ingredientData(tx, ingredients, prior.companyId)).map((i) => ({ ...i, recipeId: id })) });
     }
-    return recipe;
+    const synced = await writeProduct(tx, product.id, { name: updated.productName, price: toNum(updated.salePrice), category: updated.category as 'platos' });
+    let previousProduct = null;
+    if (prior.productId && prior.productId !== product.id) previousProduct = await writeProduct(tx, prior.productId, {});
+    return { recipe: (await tx.recipe.findUnique({ where: { id }, include: { ingredients: true } }))!, product: synced, previousProduct };
   });
-
-  // Notifica en tiempo real la actualización de la receta a los terminales de la empresa.
-  emitRecipeChanged(updated.companyId, {
-    recipeId: updated.id,
-    companyId: updated.companyId,
-    action: 'update',
-    productName: updated.productName,
-    category: updated.category,
-    updatedAt: updated.updatedAt.toISOString(),
-  });
-
-  return plain(updated);
+  await notifyRecipeCommit(result.product);
+  if (result.previousProduct) await notifyRecipeCommit(result.previousProduct);
+  return plain(result.recipe);
 }
 
 export async function deleteRecipe(id: string) {
-  const recipe = await prisma.recipe.findUnique({ where: { id } });
-  if (!recipe) throw new AppError('Receta no encontrada.', 404, 'NOT_FOUND');
-  await prisma.recipe.update({ where: { id }, data: { isDeleted: true } });
-
-  // Notifica en tiempo real la eliminación (soft-delete) de la receta a los terminales de la empresa.
-  emitRecipeChanged(recipe.companyId, {
-    recipeId: recipe.id,
-    companyId: recipe.companyId,
-    action: 'delete',
-    productName: recipe.productName,
-    category: recipe.category,
-    updatedAt: new Date().toISOString(),
+  const result = await inventoryTransaction(async (tx) => {
+    const recipe = await tx.recipe.findUnique({ where: { id } });
+    if (!recipe) throw new AppError('Receta no encontrada.', 404, 'NOT_FOUND');
+    await tx.recipe.update({ where: { id }, data: { isDeleted: true, version: { increment: 1 } } });
+    return { recipe, product: recipe.productId ? await writeProduct(tx, recipe.productId, {}) : null };
   });
-
-  return plain(recipe);
+  if (result.product) await notifyRecipeCommit(result.product);
+  emitRecipeChanged(result.recipe.companyId, { recipeId: id, companyId: result.recipe.companyId,
+    action: 'delete', productName: result.recipe.productName, category: result.recipe.category, updatedAt: new Date().toISOString() });
+  return plain(result.recipe);
 }
 
 // ============================ BANK ACCOUNTS ============================

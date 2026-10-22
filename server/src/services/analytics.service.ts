@@ -1,5 +1,5 @@
-import { AppError, plain, round1, round2, toNum } from '../lib/utils';
-import { prisma } from '../lib/prisma';
+import { AppError, plain, round1, round2, toNum } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
 
 // Análisis financiero: réplica exacta del motor getCompanyAnalysis de la demo (ratios Food Cost).
 export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso' | 'all' */) {

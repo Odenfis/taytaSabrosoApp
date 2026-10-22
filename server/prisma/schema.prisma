@@ -192,7 +192,9 @@ model Order {
   subtotal       Decimal   @db.Decimal(12, 2)
   igv            Decimal   @db.Decimal(12, 2)
   total          Decimal   @db.Decimal(12, 2)
-  status         String    @map("estado") @default("abierto") @db.NVarChar(20) // abierto | en_cocina | por_cobrar | cobrado
+  status         String    @map("estado") @default("abierto") @db.NVarChar(20) // abierto | en_cocina | por_cobrar | cobrado | anulado
+  firstDispatchedUtc DateTime? @map("primer_despacho_utc") @db.DateTime2
+  dispatchHistoryKnown Boolean @default(true) @map("historial_despacho_conocido")
   paymentMethod  String?   @map("metodo_pago") @db.NVarChar(100)
   amountReceived Decimal?  @map("monto_recibido") @db.Decimal(12, 2)
   change         Decimal?  @map("vuelto") @db.Decimal(12, 2)
@@ -592,4 +594,13 @@ model ClientOp {
   @@index([deviceId, status])
   @@index([createdAt])
   @@map("operaciones_cliente")
+}
+// Recibos sin FK: sobreviven a la eliminación física de un borrador.
+model OrderOperationResult {
+  id String @id @db.NVarChar(100)
+  orderId String? @map("pedido_id") @db.NVarChar(36)
+  result String @map("resultado") @db.NVarChar(Max)
+  createdAt DateTime @default(now()) @map("creado_utc") @db.DateTime2
+  @@index([orderId])
+  @@map("resultados_pedidos")
 }

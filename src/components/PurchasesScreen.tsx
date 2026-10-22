@@ -1,3 +1,4 @@
+import { insumoSelectable } from '../lib/insumoCatalog';
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Purchase, PurchaseItem, CompanyId, PurchaseCategory, PurchaseDocumentStatus } from '../types';
@@ -226,18 +227,18 @@ export const PurchasesScreen: React.FC = () => {
   };
 
   return (
-    <div id="purchases-screen" className="flex-1 flex flex-col h-full bg-[#101010] text-[#e5e2e1] overflow-hidden">
+    <div id="purchases-screen" className="flex-1 flex flex-col h-full bg-panel-20 text-ink-body overflow-hidden">
       {/* Top Header */}
-      <div className="bg-[#181717] border-b border-[#54433c]/60 p-4 md:px-6">
+      <div className="bg-panel-21 border-b border-edge-outline-2 p-4 md:px-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[26px] text-[#ffb597]">shopping_cart_checkout</span>
-              <h1 className="text-[20px] md:text-[22px] font-black text-[#ffdbcd]">
+              <span className="material-symbols-outlined text-[26px] text-ink-brand">shopping_cart_checkout</span>
+              <h1 className="text-[20px] md:text-[22px] font-black text-ink-heading-brand">
                 Compras, Facturas &amp; Vales Provisionales
               </h1>
             </div>
-            <p className="text-[13px] text-[#dac1b8]/75 mt-0.5">
+            <p className="text-[13px] text-ink-muted-7 mt-0.5">
               Registro formal e intermedio de compras de insumos, actualización de Kardex y regularización de comprobantes
             </p>
           </div>
@@ -248,7 +249,7 @@ export const PurchasesScreen: React.FC = () => {
                 setIsProvisionalDoc(true);
                 setIsNewPurchaseModalOpen(true);
               }}
-              className="bg-[#2a231d] hover:bg-[#382d24] text-[#ffb597] border border-[#ffb597]/40 px-3.5 py-2 rounded-xl text-[13px] font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              className="bg-surface-tinted-2 hover:bg-surface-tinted-3 text-ink-brand border border-edge-brand-3 px-3.5 py-2 rounded-xl text-[13px] font-bold flex items-center gap-1.5 shadow-sm transition-all"
             >
               <span className="material-symbols-outlined text-[18px]">receipt</span>
               <span>+ Vale Provisional (Al paso)</span>
@@ -260,7 +261,7 @@ export const PurchasesScreen: React.FC = () => {
                 setIsProvisionalDoc(false);
                 setIsNewPurchaseModalOpen(true);
               }}
-              className="bg-[#823b19] hover:bg-[#9a451e] text-[#ffdbcd] px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 shadow-md transition-all"
+              className="bg-surface-brand-solid hover:bg-surface-brand-hover-alt text-ink-on-brand px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 shadow-md transition-all"
             >
               <span className="material-symbols-outlined text-[18px]">add_shopping_cart</span>
               <span>Registrar Compra con Factura</span>
@@ -271,13 +272,13 @@ export const PurchasesScreen: React.FC = () => {
 
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 md:px-6 pb-2">
-        <div className="bg-[#181717] border border-[#54433c]/60 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-panel-21 border border-edge-outline-2 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <span className="text-[12px] font-semibold text-[#dac1b8]/70 uppercase">Total en Compras</span>
-            <p className="text-[22px] font-black text-white mt-1">S/ {totalPurchasesAmount.toFixed(2)}</p>
-            <span className="text-[11px] text-[#dac1b8]/60">{filteredPurchases.length} operaciones registradas</span>
+            <span className="text-[12px] font-semibold text-ink-muted-3 uppercase">Total en Compras</span>
+            <p className="text-[22px] font-black text-ink-strong mt-1">S/ {totalPurchasesAmount.toFixed(2)}</p>
+            <span className="text-[11px] text-ink-muted">{filteredPurchases.length} operaciones registradas</span>
           </div>
-          <div className="w-11 h-11 rounded-xl bg-[#823b19]/30 text-[#ffb597] flex items-center justify-center border border-[#ffb597]/30">
+          <div className="w-11 h-11 rounded-xl bg-surface-brand-solid-3 text-ink-brand flex items-center justify-center border border-edge-brand-4">
             <span className="material-symbols-outlined text-[24px]">receipt_long</span>
           </div>
         </div>
@@ -285,50 +286,50 @@ export const PurchasesScreen: React.FC = () => {
         {/* Provisional Alert Card */}
         <div
           onClick={() => setDocFilter('provisionales')}
-          className={`bg-[#181717] rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-all border ${
+          className={`bg-panel-21 rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-all border ${
             provisionalPurchases.length > 0
-              ? 'border-amber-500/50 hover:bg-amber-950/20'
-              : 'border-[#54433c]/60'
+              ? 'border-edge-warning-2 hover:bg-surface-warning-strong-2'
+              : 'border-edge-outline-2'
           }`}
         >
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-[12px] font-semibold text-amber-400 uppercase">Vales por Regularizar</span>
+              <span className="text-[12px] font-semibold text-ink-warning-3 uppercase">Vales por Regularizar</span>
               {provisionalPurchases.length > 0 && (
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-surface-warning animate-pulse" />
               )}
             </div>
-            <p className="text-[22px] font-black text-amber-400 mt-1">{provisionalPurchases.length} Vales</p>
-            <span className="text-[11px] text-[#dac1b8]/70">
+            <p className="text-[22px] font-black text-ink-warning-3 mt-1">{provisionalPurchases.length} Vales</p>
+            <span className="text-[11px] text-ink-muted-3">
               S/ {provisionalTotalAmount.toFixed(2)} pendientes de factura formal
             </span>
           </div>
-          <div className="w-11 h-11 rounded-xl bg-amber-950/40 text-amber-400 flex items-center justify-center border border-amber-500/40">
+          <div className="w-11 h-11 rounded-xl bg-surface-warning-strong-3 text-ink-warning-3 flex items-center justify-center border border-edge-warning-3">
             <span className="material-symbols-outlined text-[24px]">pending_actions</span>
           </div>
         </div>
 
-        <div className="bg-[#181717] border border-[#54433c]/60 rounded-2xl p-4 flex items-center justify-between">
+        <div className="bg-panel-21 border border-edge-outline-2 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <span className="text-[12px] font-semibold text-[#dac1b8]/70 uppercase">Regularizadas / Formales</span>
-            <p className="text-[22px] font-black text-emerald-400 mt-1">
+            <span className="text-[12px] font-semibold text-ink-muted-3 uppercase">Regularizadas / Formales</span>
+            <p className="text-[22px] font-black text-ink-success mt-1">
               {filteredPurchases.filter((p) => p.documentStatus === 'regularizado').length} Compras
             </p>
-            <span className="text-[11px] text-[#dac1b8]/60">Con Factura / Boleta SUNAT validada</span>
+            <span className="text-[11px] text-ink-muted">Con Factura / Boleta SUNAT validada</span>
           </div>
-          <div className="w-11 h-11 rounded-xl bg-emerald-950/30 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
+          <div className="w-11 h-11 rounded-xl bg-surface-success-strong-3 text-ink-success flex items-center justify-center border border-edge-success-2">
             <span className="material-symbols-outlined text-[24px]">verified</span>
           </div>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="px-4 md:px-6 py-2 border-b border-[#54433c]/40 flex flex-wrap items-center justify-between gap-3 bg-[#141313]">
-        <div className="flex items-center gap-1.5 bg-[#1e1d1d] p-1 rounded-xl border border-[#54433c]/50">
+      <div className="px-4 md:px-6 py-2 border-b border-edge-outline-5 flex flex-wrap items-center justify-between gap-3 bg-panel-29">
+        <div className="flex items-center gap-1.5 bg-panel-30 p-1 rounded-xl border border-edge-outline-3">
           <button
             onClick={() => setDocFilter('todos')}
             className={`px-3 py-1 rounded-lg text-[12px] font-bold transition-all ${
-              docFilter === 'todos' ? 'bg-[#823b19] text-[#ffdbcd]' : 'text-[#dac1b8]/70 hover:text-white'
+              docFilter === 'todos' ? 'bg-surface-brand-solid text-ink-on-brand' : 'text-ink-muted-3 hover:text-ink-strong'
             }`}
           >
             Todas ({purchases.length})
@@ -337,28 +338,28 @@ export const PurchasesScreen: React.FC = () => {
             onClick={() => setDocFilter('provisionales')}
             className={`px-3 py-1 rounded-lg text-[12px] font-bold transition-all flex items-center gap-1.5 ${
               docFilter === 'provisionales'
-                ? 'bg-amber-950 text-amber-300 border border-amber-500/50'
-                : 'text-[#dac1b8]/70 hover:text-amber-300'
+                ? 'bg-surface-warning-strong-4 text-ink-warning-2 border border-edge-warning-2'
+                : 'text-ink-muted-3 hover:text-ink-warning-2'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="w-2 h-2 rounded-full bg-surface-warning" />
             Vales Provisionales ({purchases.filter((p) => p.documentStatus === 'provisional').length})
           </button>
           <button
             onClick={() => setDocFilter('regularizados')}
             className={`px-3 py-1 rounded-lg text-[12px] font-bold transition-all flex items-center gap-1.5 ${
               docFilter === 'regularizados'
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/50'
-                : 'text-[#dac1b8]/70 hover:text-emerald-300'
+                ? 'bg-surface-success-strong-4 text-ink-success-2 border border-edge-success-3'
+                : 'text-ink-muted-3 hover:text-ink-success-2'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            <span className="w-2 h-2 rounded-full bg-surface-success" />
             Regularizados ({purchases.filter((p) => p.documentStatus === 'regularizado').length})
           </button>
         </div>
 
         <div className="relative w-full sm:w-64">
-          <span className="material-symbols-outlined absolute left-3 top-2.5 text-[#dac1b8]/50 text-[18px]">
+          <span className="material-symbols-outlined absolute left-3 top-2.5 text-ink-muted-4 text-[18px]">
             search
           </span>
           <input
@@ -366,17 +367,17 @@ export const PurchasesScreen: React.FC = () => {
             placeholder="Buscar por N° doc, RUC o proveedor..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-[#1e1d1d] border border-[#54433c]/60 rounded-xl pl-9 pr-3 py-1.5 text-[12px] text-white focus:outline-none focus:border-[#ffb597]"
+            className="w-full bg-panel-30 border border-edge-outline-2 rounded-xl pl-9 pr-3 py-1.5 text-[12px] text-ink-strong focus:outline-none focus:border-edge-brand"
           />
         </div>
       </div>
 
       {/* Purchases Table */}
       <div className="flex-1 overflow-y-auto p-4 md:px-6">
-        <div className="bg-[#181717] border border-[#54433c]/60 rounded-2xl overflow-hidden shadow-lg">
+        <div className="bg-panel-21 border border-edge-outline-2 rounded-2xl overflow-hidden shadow-lg">
           <table className="w-full text-left border-collapse text-[13px]">
             <thead>
-              <tr className="bg-[#1e1d1d] border-b border-[#54433c]/50 text-[11px] uppercase font-bold text-[#dac1b8]/70 tracking-wider">
+              <tr className="bg-panel-30 border-b border-edge-outline-3 text-[11px] uppercase font-bold text-ink-muted-3 tracking-wider">
                 <th className="py-3 px-4">Estado / Folio</th>
                 <th className="py-3 px-4">Proveedor / RUC</th>
                 <th className="py-3 px-4">Insumos Comprados</th>
@@ -385,64 +386,64 @@ export const PurchasesScreen: React.FC = () => {
                 <th className="py-3 px-4 text-center">Acciones</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#54433c]/30">
+            <tbody className="divide-y divide-edge-outline-6">
               {filteredPurchases.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-[#dac1b8]/60">
-                    <span className="material-symbols-outlined text-[36px] text-[#54433c] mb-2">shopping_bag</span>
+                  <td colSpan={6} className="py-12 text-center text-ink-muted">
+                    <span className="material-symbols-outlined text-[36px] text-ink-outline mb-2">shopping_bag</span>
                     <p>No se encontraron compras en este filtro.</p>
                   </td>
                 </tr>
               ) : (
                 filteredPurchases.map((p) => (
-                  <tr key={p.id} className="hover:bg-[#201f1f] transition-colors">
+                  <tr key={p.id} className="hover:bg-panel-31 transition-colors">
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-2">
                           {p.documentStatus === 'provisional' ? (
-                            <span className="bg-amber-950/70 text-amber-300 border border-amber-500/50 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 w-max">
+                            <span className="bg-surface-warning-strong-5 text-ink-warning-2 border border-edge-warning-2 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 w-max">
                               <span className="material-symbols-outlined text-[12px]">schedule</span>
                               Provisional (Vale)
                             </span>
                           ) : (
-                            <span className="bg-emerald-950/60 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 w-max">
+                            <span className="bg-surface-success-strong-5 text-ink-success-2 border border-edge-success text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 w-max">
                               <span className="material-symbols-outlined text-[12px]">verified</span>
                               Regularizado
                             </span>
                           )}
-                          <span className="text-[11px] text-[#dac1b8]/60">{p.date} • {p.time}</span>
+                          <span className="text-[11px] text-ink-muted">{p.date} • {p.time}</span>
                         </div>
 
-                        <div className="font-bold text-white font-mono text-[13px]">
+                        <div className="font-bold text-ink-strong font-mono text-[13px]">
                           {p.documentStatus === 'provisional' ? (
-                            <span className="text-amber-400">{p.provisionalNoteNumber || 'VALE PROVISIONAL'}</span>
+                            <span className="text-ink-warning-3">{p.provisionalNoteNumber || 'VALE PROVISIONAL'}</span>
                           ) : (
-                            <span className="text-[#ffb597]">{p.invoiceNumber}</span>
+                            <span className="text-ink-brand">{p.invoiceNumber}</span>
                           )}
                         </div>
 
-                        <span className="text-[10px] text-[#dac1b8]/50">
+                        <span className="text-[10px] text-ink-muted-4">
                           {p.companyId === 'el-tayta' ? 'El Tayta' : 'El Sabroso'} • Turno {p.shift}
                         </span>
                       </div>
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <div className="font-bold text-white">{p.supplierName}</div>
-                      <div className="text-[11px] text-[#dac1b8]/70 font-mono">RUC: {p.supplierRuc}</div>
+                      <div className="font-bold text-ink-strong">{p.supplierName}</div>
+                      <div className="text-[11px] text-ink-muted-3 font-mono">RUC: {p.supplierRuc}</div>
                       {p.notes && (
-                        <div className="text-[11px] text-[#dac1b8]/50 italic mt-0.5 truncate max-w-xs">
+                        <div className="text-[11px] text-ink-muted-4 italic mt-0.5 truncate max-w-xs">
                           {p.notes}
                         </div>
                       )}
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <div className="text-[12px] text-[#dac1b8] space-y-0.5 max-w-xs">
+                      <div className="text-[12px] text-ink-muted-2 space-y-0.5 max-w-xs">
                         {(p.items || []).map((it, idx) => (
                           <div key={idx} className="flex justify-between gap-2">
                             <span className="truncate">{it.insumoName}</span>
-                            <span className="font-mono text-[#dac1b8]/70 shrink-0">
+                            <span className="font-mono text-ink-muted-3 shrink-0">
                               {it.quantity} {it.unit}
                             </span>
                           </div>
@@ -452,14 +453,14 @@ export const PurchasesScreen: React.FC = () => {
 
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col gap-1">
-                        <span className="text-[12px] font-medium text-white">{p.paymentStatus}</span>
+                        <span className="text-[12px] font-medium text-ink-strong">{p.paymentStatus}</span>
                         {p.bankAccountAlias ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-500/30 w-max">
+                          <span className="inline-flex items-center gap-1 text-[10px] text-ink-success bg-surface-success-strong-6 px-1.5 py-0.5 rounded border border-edge-success-2 w-max">
                             <span className="material-symbols-outlined text-[11px]">account_balance</span>
                             {p.bankAccountAlias}
                           </span>
                         ) : p.paidFromCash ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-[#dac1b8]/70 bg-zinc-800 px-1.5 py-0.5 rounded w-max">
+                          <span className="inline-flex items-center gap-1 text-[10px] text-ink-muted-3 bg-surface-neutral-2 px-1.5 py-0.5 rounded w-max">
                             <span className="material-symbols-outlined text-[11px]">point_of_sale</span>
                             Caja Chica Efectivo
                           </span>
@@ -468,22 +469,22 @@ export const PurchasesScreen: React.FC = () => {
                     </td>
 
                     <td className="py-3.5 px-4 text-right">
-                      <div className="font-black text-[15px] text-white">S/ {p.total.toFixed(2)}</div>
-                      <div className="text-[10px] text-[#dac1b8]/60">Sub: S/ {p.subtotal.toFixed(2)}</div>
+                      <div className="font-black text-[15px] text-ink-strong">S/ {p.total.toFixed(2)}</div>
+                      <div className="text-[10px] text-ink-muted">Sub: S/ {p.subtotal.toFixed(2)}</div>
                     </td>
 
                     <td className="py-3.5 px-4 text-center">
                       {p.documentStatus === 'provisional' ? (
                         <button
                           onClick={() => openRegularizeModal(p)}
-                          className="px-3 py-1.5 rounded-xl bg-amber-950/80 hover:bg-amber-900 border border-amber-500/50 text-amber-300 font-bold text-[11px] flex items-center gap-1.5 mx-auto transition-all shadow-sm"
+                          className="px-3 py-1.5 rounded-xl bg-surface-warning-strong hover:bg-surface-warning-strong-6 border border-edge-warning-2 text-ink-warning-2 font-bold text-[11px] flex items-center gap-1.5 mx-auto transition-all shadow-sm"
                           title="Ingresar N° de Factura oficial emitida por el proveedor"
                         >
                           <span className="material-symbols-outlined text-[14px]">edit_document</span>
                           Pasar a Limpio
                         </button>
                       ) : (
-                        <div className="text-[11px] text-emerald-400/80 font-medium">
+                        <div className="text-[11px] text-ink-success-4 font-medium">
                           {p.regularizedAt ? `Reg. ${p.regularizedAt}` : 'Facturado'}
                         </div>
                       )}
@@ -498,41 +499,41 @@ export const PurchasesScreen: React.FC = () => {
 
       {/* Modal: Regularize Provisional Purchase */}
       {isRegularizeModalOpen && selectedPurchaseToRegularize && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="bg-[#1c1b1b] border border-[#54433c] rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-[#54433c]/60 pb-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-surface-scrim backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-panel border border-edge-outline rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-edge-outline-2 pb-3">
               <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[24px] text-amber-400">edit_document</span>
+                <span className="material-symbols-outlined text-[24px] text-ink-warning-3">edit_document</span>
                 <div>
-                  <h3 className="text-[17px] font-bold text-white">Pasar Compra a Limpio</h3>
-                  <p className="text-[11px] text-[#dac1b8]/70">
+                  <h3 className="text-[17px] font-bold text-ink-strong">Pasar Compra a Limpio</h3>
+                  <p className="text-[11px] text-ink-muted-3">
                     Vincular comprobante formal definitivo de SUNAT al vale provisional
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsRegularizeModalOpen(false)}
-                className="text-[#dac1b8]/60 hover:text-white p-1 rounded-lg hover:bg-[#2a2a2a]"
+                className="text-ink-muted hover:text-ink-strong p-1 rounded-lg hover:bg-panel-3"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
 
             {/* Summary of provisional purchase */}
-            <div className="bg-[#141313] p-3.5 rounded-xl border border-[#54433c]/50 space-y-1.5 text-[12px]">
+            <div className="bg-panel-29 p-3.5 rounded-xl border border-edge-outline-3 space-y-1.5 text-[12px]">
               <div className="flex justify-between">
-                <span className="text-[#dac1b8]/60">Vale de Origen:</span>
-                <span className="font-bold text-amber-400 font-mono">
+                <span className="text-ink-muted">Vale de Origen:</span>
+                <span className="font-bold text-ink-warning-3 font-mono">
                   {selectedPurchaseToRegularize.provisionalNoteNumber || 'VALE PROVISIONAL'}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#dac1b8]/60">Proveedor Temporal:</span>
-                <span className="font-bold text-white">{selectedPurchaseToRegularize.supplierName}</span>
+                <span className="text-ink-muted">Proveedor Temporal:</span>
+                <span className="font-bold text-ink-strong">{selectedPurchaseToRegularize.supplierName}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#dac1b8]/60">Total de la Compra:</span>
-                <span className="font-bold text-emerald-400 text-[14px]">
+                <span className="text-ink-muted">Total de la Compra:</span>
+                <span className="font-bold text-ink-success text-[14px]">
                   S/ {selectedPurchaseToRegularize.total.toFixed(2)}
                 </span>
               </div>
@@ -540,7 +541,7 @@ export const PurchasesScreen: React.FC = () => {
 
             <form onSubmit={handleConfirmRegularization} className="space-y-3.5">
               <div>
-                <label className="block text-[12px] font-bold text-[#dac1b8] mb-1">
+                <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                   N° de Factura / Boleta Oficial *
                 </label>
                 <input
@@ -549,12 +550,12 @@ export const PurchasesScreen: React.FC = () => {
                   placeholder="Ej. F001-0004921 o B002-1920"
                   value={regInvoiceNumber}
                   onChange={(e) => setRegInvoiceNumber(e.target.value)}
-                  className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[14px] font-bold font-mono text-white focus:outline-none focus:border-[#ffb597]"
+                  className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[14px] font-bold font-mono text-ink-strong focus:outline-none focus:border-edge-brand"
                 />
               </div>
 
               <div>
-                <label className="block text-[12px] font-bold text-[#dac1b8] mb-1">
+                <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                   RUC Formal del Proveedor (11 dígitos)
                 </label>
                 <input
@@ -562,12 +563,12 @@ export const PurchasesScreen: React.FC = () => {
                   placeholder="Ej. 20601829401"
                   value={regSupplierRuc}
                   onChange={(e) => setRegSupplierRuc(e.target.value)}
-                  className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] font-mono text-white focus:outline-none focus:border-[#ffb597]"
+                  className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] font-mono text-ink-strong focus:outline-none focus:border-edge-brand"
                 />
               </div>
 
               <div>
-                <label className="block text-[12px] font-medium text-[#dac1b8] mb-1">
+                <label className="block text-[12px] font-medium text-ink-muted-2 mb-1">
                   Notas de Regularización
                 </label>
                 <input
@@ -575,21 +576,21 @@ export const PurchasesScreen: React.FC = () => {
                   placeholder="Ej. Factura enviada por correo el día de hoy..."
                   value={regNotes}
                   onChange={(e) => setRegNotes(e.target.value)}
-                  className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[12px] text-white focus:outline-none focus:border-[#ffb597]"
+                  className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[12px] text-ink-strong focus:outline-none focus:border-edge-brand"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#54433c]/40">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-edge-outline-5">
                 <button
                   type="button"
                   onClick={() => setIsRegularizeModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-[13px] font-bold text-[#dac1b8] hover:bg-[#2a2a2a]"
+                  className="px-4 py-2 rounded-xl text-[13px] font-bold text-ink-muted-2 hover:bg-panel-3"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-[#823b19] hover:brightness-110 text-white font-bold text-[13px] shadow-md flex items-center gap-1.5"
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-surface-warning-2 to-surface-brand-solid-4 hover:brightness-110 text-ink-on-solid font-bold text-[13px] shadow-md flex items-center gap-1.5"
                 >
                   <span className="material-symbols-outlined text-[16px]">verified</span>
                   Confirmar y Regularizar
@@ -602,20 +603,20 @@ export const PurchasesScreen: React.FC = () => {
 
       {/* Modal: New Purchase (Supports both direct Factura & Provisional Vale) */}
       {isNewPurchaseModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="bg-[#1c1b1b] border border-[#54433c] rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="p-4 border-b border-[#54433c]/60 flex items-center justify-between bg-[#161515]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-surface-scrim backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-panel border border-edge-outline rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 border-b border-edge-outline-2 flex items-center justify-between bg-panel-2">
               <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[24px] text-[#ffb597]">
+                <span className="material-symbols-outlined text-[24px] text-ink-brand">
                   {isProvisionalDoc ? 'receipt' : 'add_shopping_cart'}
                 </span>
-                <h3 className="text-[17px] font-bold text-white">
+                <h3 className="text-[17px] font-bold text-ink-strong">
                   {isProvisionalDoc ? 'Nuevo Vale de Compra Provisional (Al Paso)' : 'Registrar Compra Formal con Factura'}
                 </h3>
               </div>
               <button
                 onClick={() => setIsNewPurchaseModalOpen(false)}
-                className="text-[#dac1b8]/60 hover:text-white p-1 rounded-lg hover:bg-[#2a2a2a]"
+                className="text-ink-muted hover:text-ink-strong p-1 rounded-lg hover:bg-panel-3"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
@@ -623,16 +624,16 @@ export const PurchasesScreen: React.FC = () => {
 
             <form onSubmit={handleSavePurchase} className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-4">
               {/* Document Type Switch */}
-              <div className="bg-[#141313] p-2 rounded-xl border border-[#54433c]/50 flex items-center justify-between gap-2">
-                <span className="text-[12px] font-bold text-[#dac1b8]">Modalidad del Registro:</span>
+              <div className="bg-panel-29 p-2 rounded-xl border border-edge-outline-3 flex items-center justify-between gap-2">
+                <span className="text-[12px] font-bold text-ink-muted-2">Modalidad del Registro:</span>
                 <div className="flex gap-1">
                   <button
                     type="button"
                     onClick={() => setIsProvisionalDoc(false)}
                     className={`px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all ${
                       !isProvisionalDoc
-                        ? 'bg-[#823b19] text-[#ffdbcd] shadow-sm'
-                        : 'text-[#dac1b8]/70 hover:text-white'
+                        ? 'bg-surface-brand-solid text-ink-on-brand shadow-sm'
+                        : 'text-ink-muted-3 hover:text-ink-strong'
                     }`}
                   >
                     Factura / Boleta SUNAT
@@ -642,11 +643,11 @@ export const PurchasesScreen: React.FC = () => {
                     onClick={() => setIsProvisionalDoc(true)}
                     className={`px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all flex items-center gap-1 ${
                       isProvisionalDoc
-                        ? 'bg-amber-950 text-amber-300 border border-amber-500/50'
-                        : 'text-[#dac1b8]/70 hover:text-amber-300'
+                        ? 'bg-surface-warning-strong-4 text-ink-warning-2 border border-edge-warning-2'
+                        : 'text-ink-muted-3 hover:text-ink-warning-2'
                     }`}
                   >
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-surface-warning" />
                     Vale Provisional (Pasar a limpio luego)
                   </button>
                 </div>
@@ -655,22 +656,22 @@ export const PurchasesScreen: React.FC = () => {
               {/* Company & Category */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">Empresa</label>
+                  <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">Empresa</label>
                   <select
                     value={targetCompany}
                     onChange={(e) => setTargetCompany(e.target.value as CompanyId)}
-                    className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] text-white focus:outline-none focus:border-[#ffb597]"
+                    className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] text-ink-strong focus:outline-none focus:border-edge-brand"
                   >
                     <option value="el-tayta">El Tayta (Criollo &amp; Marino)</option>
                     <option value="el-sabroso">El Sabroso (Brasas &amp; Parrillas)</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">Rubro</label>
+                  <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">Rubro</label>
                   <select
                     value={category}
                     onChange={(e) => setCategory(e.target.value as PurchaseCategory)}
-                    className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] text-white focus:outline-none focus:border-[#ffb597]"
+                    className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] text-ink-strong focus:outline-none focus:border-edge-brand"
                   >
                     <option value="insumos">Insumos de Cocina / Recetas</option>
                     <option value="productos_reventa">Bebidas y Reventa</option>
@@ -683,7 +684,7 @@ export const PurchasesScreen: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {!isProvisionalDoc ? (
                   <div>
-                    <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">
+                    <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                       N° Factura / Boleta *
                     </label>
                     <input
@@ -692,22 +693,22 @@ export const PurchasesScreen: React.FC = () => {
                       placeholder="Ej. F001-00921"
                       value={invoiceNumber}
                       onChange={(e) => setInvoiceNumber(e.target.value)}
-                      className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] font-mono text-white focus:outline-none focus:border-[#ffb597]"
+                      className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] font-mono text-ink-strong focus:outline-none focus:border-edge-brand"
                     />
                   </div>
                 ) : (
                   <div>
-                    <label className="block text-[11px] font-bold uppercase text-amber-400 mb-1">
+                    <label className="block text-[11px] font-bold uppercase text-ink-warning-3 mb-1">
                       Folio Provisional de Vale
                     </label>
-                    <div className="bg-[#141313] border border-amber-500/30 rounded-xl px-3 py-2 text-[13px] font-mono text-amber-300">
+                    <div className="bg-panel-29 border border-edge-warning-4 rounded-xl px-3 py-2 text-[13px] font-mono text-ink-warning-2">
                       Auto-generado (Ej. VALE-Mercado)
                     </div>
                   </div>
                 )}
 
                 <div>
-                  <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">
+                  <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                     Proveedor *
                   </label>
                   <input
@@ -716,7 +717,7 @@ export const PurchasesScreen: React.FC = () => {
                     placeholder="Ej. Distribuidora Santa Rosa"
                     value={supplierName}
                     onChange={(e) => setSupplierName(e.target.value)}
-                    className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] text-white focus:outline-none focus:border-[#ffb597]"
+                    className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] text-ink-strong focus:outline-none focus:border-edge-brand"
                   />
                 </div>
               </div>
@@ -724,7 +725,7 @@ export const PurchasesScreen: React.FC = () => {
               {/* Supplier RUC & Presets */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">
+                  <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                     RUC Proveedor
                   </label>
                   <input
@@ -732,33 +733,33 @@ export const PurchasesScreen: React.FC = () => {
                     placeholder="20601928301 o PENDIENTE"
                     value={supplierRuc}
                     onChange={(e) => setSupplierRuc(e.target.value)}
-                    className="w-full bg-[#141313] border border-[#54433c] rounded-xl px-3 py-2 text-[13px] font-mono text-white focus:outline-none focus:border-[#ffb597]"
+                    className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] font-mono text-ink-strong focus:outline-none focus:border-edge-brand"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold uppercase text-[#dac1b8]/70 mb-1">
+                  <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                     Proveedores Habituales
                   </label>
                   <div className="flex flex-wrap gap-1">
                     <button
                       type="button"
                       onClick={() => applySupplierPreset('Avícola San Fernando S.A.', '20100154308')}
-                      className="px-2 py-1 rounded bg-[#2a2a2a] text-[11px] text-[#dac1b8] hover:text-white"
+                      className="px-2 py-1 rounded bg-panel-3 text-[11px] text-ink-muted-2 hover:text-ink-strong"
                     >
                       San Fernando
                     </button>
                     <button
                       type="button"
                       onClick={() => applySupplierPreset('Mercado Mayorista Frutas y Verduras', 'PENDIENTE')}
-                      className="px-2 py-1 rounded bg-[#2a2a2a] text-[11px] text-[#dac1b8] hover:text-white"
+                      className="px-2 py-1 rounded bg-panel-3 text-[11px] text-ink-muted-2 hover:text-ink-strong"
                     >
                       Mercado Local
                     </button>
                     <button
                       type="button"
                       onClick={() => applySupplierPreset('Comercializadora de Mariscos Del Pacífico', '20489102931')}
-                      className="px-2 py-1 rounded bg-[#2a2a2a] text-[11px] text-[#dac1b8] hover:text-white"
+                      className="px-2 py-1 rounded bg-panel-3 text-[11px] text-ink-muted-2 hover:text-ink-strong"
                     >
                       Mariscos Pacífico
                     </button>
@@ -767,8 +768,8 @@ export const PurchasesScreen: React.FC = () => {
               </div>
 
               {/* Payment Mode Selection (Cash vs Bank Account) */}
-              <div className="bg-[#141313] p-3 rounded-xl border border-[#54433c]/50 space-y-2">
-                <span className="block text-[11px] font-bold uppercase text-[#dac1b8]/70">
+              <div className="bg-panel-29 p-3 rounded-xl border border-edge-outline-3 space-y-2">
+                <span className="block text-[11px] font-bold uppercase text-ink-muted-3">
                   Fuente de Fondos / Forma de Pago
                 </span>
                 <div className="grid grid-cols-3 gap-2">
@@ -780,8 +781,8 @@ export const PurchasesScreen: React.FC = () => {
                     }}
                     className={`p-2 rounded-xl border text-[12px] font-bold flex flex-col items-center gap-1 ${
                       paymentMode === 'caja'
-                        ? 'bg-[#823b19]/40 border-[#ffb597] text-[#ffdbcd]'
-                        : 'bg-[#1c1b1b] border-[#54433c]/40 text-[#dac1b8]/70'
+                        ? 'bg-surface-brand-solid-2 border-edge-brand text-ink-heading-brand'
+                        : 'bg-panel border-edge-outline-5 text-ink-muted-3'
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">point_of_sale</span>
@@ -798,8 +799,8 @@ export const PurchasesScreen: React.FC = () => {
                     }}
                     className={`p-2 rounded-xl border text-[12px] font-bold flex flex-col items-center gap-1 ${
                       paymentMode === 'banco'
-                        ? 'bg-emerald-950/40 border-emerald-500 text-emerald-300'
-                        : 'bg-[#1c1b1b] border-[#54433c]/40 text-[#dac1b8]/70'
+                        ? 'bg-surface-success-strong-6 border-edge-success-4 text-ink-success-2'
+                        : 'bg-panel border-edge-outline-5 text-ink-muted-3'
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">account_balance</span>
@@ -814,8 +815,8 @@ export const PurchasesScreen: React.FC = () => {
                     }}
                     className={`p-2 rounded-xl border text-[12px] font-bold flex flex-col items-center gap-1 ${
                       paymentMode === 'credito'
-                        ? 'bg-amber-950/40 border-amber-500 text-amber-300'
-                        : 'bg-[#1c1b1b] border-[#54433c]/40 text-[#dac1b8]/70'
+                        ? 'bg-surface-warning-strong-3 border-edge-warning-5 text-ink-warning-2'
+                        : 'bg-panel border-edge-outline-5 text-ink-muted-3'
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">credit_card</span>
@@ -825,13 +826,13 @@ export const PurchasesScreen: React.FC = () => {
 
                 {paymentMode === 'banco' && (
                   <div className="pt-2">
-                    <label className="block text-[11px] font-semibold text-[#dac1b8]/80 mb-1">
+                    <label className="block text-[11px] font-semibold text-ink-muted-5 mb-1">
                       Seleccionar Cuenta Bancaria de Débito:
                     </label>
                     <select
                       value={selectedBankId}
                       onChange={(e) => setSelectedBankId(e.target.value)}
-                      className="w-full bg-[#1e1d1d] border border-emerald-500/50 rounded-xl px-3 py-2 text-[13px] text-white focus:outline-none"
+                      className="w-full bg-panel-30 border border-edge-success-3 rounded-xl px-3 py-2 text-[13px] text-ink-strong focus:outline-none"
                     >
                       {filteredBankAccounts.map((b) => (
                         <option key={b.id} value={b.id}>
@@ -846,11 +847,11 @@ export const PurchasesScreen: React.FC = () => {
               {/* Items List */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-bold text-white">Insumos a Ingresar al Kardex:</span>
+                  <span className="text-[12px] font-bold text-ink-strong">Insumos a Ingresar al Kardex:</span>
                   <button
                     type="button"
                     onClick={handleAddItem}
-                    className="text-[11px] text-[#ffb597] hover:underline font-bold flex items-center gap-1"
+                    className="text-[11px] text-ink-brand hover:underline font-bold flex items-center gap-1"
                   >
                     <span className="material-symbols-outlined text-[14px]">add</span>
                     Agregar Insumo
@@ -861,17 +862,17 @@ export const PurchasesScreen: React.FC = () => {
                   {items.map((it, idx) => (
                     <div
                       key={idx}
-                      className="bg-[#141313] p-2.5 rounded-xl border border-[#54433c]/40 flex flex-wrap sm:flex-nowrap items-center gap-2"
+                      className="bg-panel-29 p-2.5 rounded-xl border border-edge-outline-5 flex flex-wrap sm:flex-nowrap items-center gap-2"
                     >
                       <div className="flex-1 min-w-[140px]">
                         <select
                           required
                           value={it.insumoId}
                           onChange={(e) => handleItemChange(idx, 'insumoId', e.target.value)}
-                          className="w-full bg-[#1e1d1d] border border-[#54433c] rounded-lg px-2.5 py-1.5 text-[12px] text-white focus:outline-none"
+                          className="w-full bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-1.5 text-[12px] text-ink-strong focus:outline-none"
                         >
                           <option value="">-- Seleccionar Insumo --</option>
-                          {insumos.map((ins) => (
+                          {insumos.filter(insumoSelectable).map((ins) => (
                             <option key={ins.id} value={ins.id}>
                               {ins.name} ({ins.unit})
                             </option>
@@ -887,7 +888,7 @@ export const PurchasesScreen: React.FC = () => {
                           placeholder="Cant."
                           value={it.quantity}
                           onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
-                          className="w-full bg-[#1e1d1d] border border-[#54433c] rounded-lg px-2 py-1.5 text-[12px] text-white text-center"
+                          className="w-full bg-panel-30 border border-edge-outline rounded-lg px-2 py-1.5 text-[12px] text-ink-strong text-center"
                         />
                       </div>
 
@@ -899,11 +900,11 @@ export const PurchasesScreen: React.FC = () => {
                           placeholder="Costo U."
                           value={it.unitCost}
                           onChange={(e) => handleItemChange(idx, 'unitCost', e.target.value)}
-                          className="w-full bg-[#1e1d1d] border border-[#54433c] rounded-lg px-2 py-1.5 text-[12px] text-white text-center"
+                          className="w-full bg-panel-30 border border-edge-outline rounded-lg px-2 py-1.5 text-[12px] text-ink-strong text-center"
                         />
                       </div>
 
-                      <div className="w-24 text-right font-bold text-[13px] text-[#ebc246]">
+                      <div className="w-24 text-right font-bold text-[13px] text-ink-gold">
                         S/ {(it.totalCost || 0).toFixed(2)}
                       </div>
 
@@ -911,7 +912,7 @@ export const PurchasesScreen: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleRemoveItem(idx)}
-                          className="text-rose-400 hover:text-rose-300 p-1"
+                          className="text-ink-danger-3 hover:text-ink-danger-2 p-1"
                         >
                           <span className="material-symbols-outlined text-[16px]">close</span>
                         </button>
@@ -922,23 +923,23 @@ export const PurchasesScreen: React.FC = () => {
               </div>
 
               {/* Total Calculation Strip */}
-              <div className="bg-[#141313] p-3.5 rounded-xl border border-[#54433c]/60 flex items-center justify-between text-[13px]">
-                <span className="text-[#dac1b8]/80 font-bold">Total a Registrar en Kardex y Contabilidad:</span>
-                <span className="text-[20px] font-black text-emerald-400">S/ {draftTotal.toFixed(2)}</span>
+              <div className="bg-panel-29 p-3.5 rounded-xl border border-edge-outline-2 flex items-center justify-between text-[13px]">
+                <span className="text-ink-muted-5 font-bold">Total a Registrar en Kardex y Contabilidad:</span>
+                <span className="text-[20px] font-black text-ink-success">S/ {draftTotal.toFixed(2)}</span>
               </div>
 
               {/* Action Buttons */}
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#54433c]/40">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-edge-outline-5">
                 <button
                   type="button"
                   onClick={() => setIsNewPurchaseModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-[13px] font-bold text-[#dac1b8] hover:bg-[#2a2a2a]"
+                  className="px-4 py-2 rounded-xl text-[13px] font-bold text-ink-muted-2 hover:bg-panel-3"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#823b19] hover:bg-[#9a451e] text-[#ffdbcd] font-bold text-[13px] shadow-md flex items-center gap-1.5"
+                  className="px-5 py-2 rounded-xl bg-surface-brand-solid hover:bg-surface-brand-hover-alt text-ink-on-brand font-bold text-[13px] shadow-md flex items-center gap-1.5"
                 >
                   <span className="material-symbols-outlined text-[18px]">save</span>
                   {isProvisionalDoc ? 'Guardar Vale Provisional' : 'Guardar Compra y Afectar Kardex'}

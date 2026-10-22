@@ -2,16 +2,19 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import routes from './routes';
-import { errorHandler, notFound } from './lib/utils';
+import routes from './routes/index.js';
+import { errorHandler, notFound } from './lib/utils.js';
+import { getCorsOrigins } from './lib/config.js';
 
-const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+// app.ts vive en src/ en desarrollo y app.js en dist/ al compilar.
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(moduleDir, import.meta.url.endsWith('.ts') ? '../public' : 'public');
 const indexHtmlPath = path.join(publicDir, 'index.html');
 
 export function createApp() {
   const app = express();
 
-  app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') ?? true }));
+  app.use(cors({ origin: getCorsOrigins() }));
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/health', (_req, res) => {

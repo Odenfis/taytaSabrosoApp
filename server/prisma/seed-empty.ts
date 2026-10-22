@@ -6,7 +6,7 @@
 //    16 productos, 13 insumos con stock, 7 recetas, 4 cuentas con saldos,
 //    9 métodos, 4 impresoras, turnos Día con caja 350).
 // 2. Este script vacía SOLO operaciones: orderItem, order, purchaseItem,
-//    purchase, kardexMovement, transaction, shiftRecord, session, clientOp.
+//    purchase, kardexMovement, transaction, shiftRecord, session, clientOp, orderOperationResult.
 // 3. Libera las 13 mesas y resetea numberingSequence a 0 (tickets limpios).
 // 4. NO toca: catálogos, stocks, saldos, turnos, usuarios, dispositivos.
 //
@@ -18,6 +18,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('Vaciando operaciones (seed vacío)...');
 
+  await prisma.orderOperationResult.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
   await prisma.purchaseItem.deleteMany();
@@ -45,6 +46,7 @@ async function main() {
   console.log(`Secuencias reseteadas: ${seq.count}`);
 
   const check = {
+    orderReceipts: await prisma.orderOperationResult.count(),
     orders: await prisma.order.count({ where: { isDeleted: false } }),
     purchases: await prisma.purchase.count({ where: { isDeleted: false } }),
     kardex: await prisma.kardexMovement.count(),
@@ -55,7 +57,7 @@ async function main() {
     insumos: await prisma.insumo.count({ where: { isDeleted: false } }),
   };
   console.log('Estado:', JSON.stringify(check));
-  if (check.orders !== 0 || check.purchases !== 0 || check.kardex !== 0 ||
+  if (check.orderReceipts !== 0 || check.orders !== 0 || check.purchases !== 0 || check.kardex !== 0 ||
       check.transactions !== 0 || check.busyTables !== 0) {
     throw new Error('Seed vacío incompleto, revisar.');
   }

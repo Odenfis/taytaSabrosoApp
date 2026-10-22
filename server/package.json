@@ -5,13 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "smoke:built": "node scripts/smoke-built.mjs",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "test:products:sql": "node scripts/test-products-sql.mjs",
+    "test:orders:sql": "node scripts/test-orders-sql.mjs",
+    "orders:review": "tsx scripts/review-empty-orders.ts",
+    "test:insumos:sql": "node scripts/test-insumos-sql.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

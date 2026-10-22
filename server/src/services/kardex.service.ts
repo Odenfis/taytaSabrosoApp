@@ -1,7 +1,8 @@
+import { notifyInventoryAfterCommit, inventoryTransaction, lockInsumos, assertInsumoCompany } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
-import { AppError, plain, round2, toNum } from '../lib/utils';
-import { prisma } from '../lib/prisma';
-import { emitKardexChanged } from '../lib/realtime';
+import { AppError, plain, round2, toNum } from '../lib/utils.js';
+import { prisma } from '../lib/prisma.js';
+import { emitKardexChanged } from '../lib/realtime.js';
 
 function nowParts() {
   const now = new Date();
@@ -22,9 +23,16 @@ export async function addKardexAdjustment(input: {
   companyId?: string;
   clientOpId?: string;
 }) {
-  return prisma.$transaction(async (tx) => {
+  return inventoryTransaction(async (tx) => {
+    await lockInsumos(tx, [input.insumoId]);
+    // Un reintento ya aplicado sigue siendo válido aunque el insumo se haya dado de baja.
+    if (input.clientOpId) {
+      const movement = await tx.kardexMovement.findUnique({ where: { clientOpId: input.clientOpId } });
+      if (movement) return { movement, companyId: movement.companyId };
+    }
     const insumo = await tx.insumo.findFirst({ where: { id: input.insumoId, isDeleted: false } });
-    if (!insumo) throw new AppError('Insumo no encontrado.', 404, 'NOT_FOUND');
+    if (!insumo) throw new AppError('El insumo fue eliminado o no existe.', 409, 'INSUMO_DELETED');
+    assertInsumoCompany(insumo.companyId, input.companyId);
 
     // Idempotencia: reintentos con el mismo clientOpId devuelven el movimiento existente.
     if (input.clientOpId) {
@@ -72,11 +80,11 @@ export async function addKardexAdjustment(input: {
 
     await tx.insumo.update({
       where: { id: insumo.id },
-      data: { currentStock: stockAfter },
+      data: { currentStock: stockAfter, version: { increment: 1 } },
     });
 
     // Notifica en tiempo real el movimiento de kardex a los terminales de la empresa.
-    emitKardexChanged(companyId, {
+    notifyInventoryAfterCommit(tx, () => emitKardexChanged(companyId, {
       insumoId: insumo.id,
       insumoName: insumo.name,
       companyId,
@@ -89,7 +97,7 @@ export async function addKardexAdjustment(input: {
       stockAfter,
       referenceDoc: `Ajuste manual: ${input.reason}`,
       updatedAt: movement.timestamp.toISOString(),
-    });
+    }));
 
     return { movement, companyId };
   }).then((r) => plain(r));

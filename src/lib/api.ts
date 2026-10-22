@@ -1,10 +1,18 @@
 import type { AuthToken } from '../types';
 
 const API_BASE: string =
-  (import.meta.env.VITE_API_URL as string | undefined) || '/api';
+  (import.meta.env?.VITE_API_URL as string | undefined) || '/api';
 
 const TOKEN_KEY = 'ts_auth_token';
 const EXPIRES_KEY = 'ts_auth_expires';
+export const AUTH_REQUIRED_EVENT = 'pos:authentication-required';
+
+export function requireAuthentication(token: string, message: string): void {
+  // Una respuesta tardía de la sesión anterior no puede cerrar una sesión nueva.
+  if (getAuthToken()?.token !== token) return;
+  clearAuthToken();
+  window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT, { detail: { message } }));
+}
 
 export class ApiError extends Error {
   readonly code: string;
@@ -65,10 +73,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   };
   headers['Content-Type'] = 'application/json';
 
-  const auth = getAuthToken();
+  const auth = path === '/auth/login' ? null : getAuthToken();
   if (auth) {
     if (isTokenExpired(auth)) {
-      clearAuthToken();
+      requireAuthentication(auth.token, 'Su sesión venció. Vuelva a iniciar sesión; las operaciones pendientes se conservan.');
       throw new ApiError(
         'La sesión expiró. Por favor, vuelva a iniciar sesión.',
         'UNAUTHORIZED',
@@ -101,6 +109,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const code = errBody?.error?.code || 'UNKNOWN_ERROR';
     const message = errBody?.error?.message || `Error inesperado (${res.status})`;
     const issues = errBody?.error?.issues;
+    if (res.status === 401 && auth && path !== '/auth/logout') {
+      requireAuthentication(auth.token, 'Su sesión ya no es válida. Vuelva a iniciar sesión; las operaciones pendientes se conservan.');
+    }
     throw new ApiError(message, code, res.status, issues);
   }
 

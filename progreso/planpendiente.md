@@ -1,85 +1,157 @@
-# Plan pendiente — Tareas restantes post-Fase D/E
+# Plan pendiente — Ruta a producción
 
-> Objetivo: documentar lo que falta por cerrar una vez completados los módulos de tiempo real
-> (mesas/órdenes, Kardex & Stock, Compras & Facturas, Recetas/Fichas, Insumos, Métodos de pago,
-> Impresoras) y el sync offline (E4/E5).
+> Actualizado: **2026-10-21**. Orden vigente acordado con el usuario.
+> Evidencia e historial: `progreso/progress.md`.
+> El primer bloque implementado es **sesiones y arranque de producción**.
+> Su cierre técnico no significa que el sistema completo esté listo para el piloto.
 
-> El avance histórico y las decisiones van en `progreso/progress.md`.
+## Arquitectura y alcance acordados
 
----
+- Dos locales separados, cada uno con una PC Windows que aloja aplicación, API,
+  Socket.IO y SQL Server. Meseros, cocina y caja trabajan en LAN aunque no haya internet.
+- Azure consolida **la información completa de negocio de ambos locales**, incluidos
+  detalles de operaciones, cuando se implemente la sincronización. Durante un corte
+  conserva la última información recibida y debe mostrar su antigüedad.
+- Primera versión de Azure: consulta consolidada, sin crear ventas ni editar catálogos
+  desde la nube. Administración central y distribución de cambios quedan para otra etapa.
+- Cada local es la autoridad de sus operaciones; Azure recibe datos confirmados y no
+  vuelve a ejecutar cobros ni descuentos de stock.
+- POS interno: emisión electrónica fuera del alcance de esta versión.
+- Pruebas de negocio en una base separada; no resetear la base actual.
 
-## 1. Pantalla de Cocina / Barra (pendiente)
+## 1. Sesiones y arranque — implementado y verificado
 
-`sendToKitchen` ya emite el evento `order:changed` al cambiar el estado de la orden a `en_cocina`,
-pero **no existe una pantalla dedicada** que muestre las comandas pendientes en cocina/barra.
-Falta crear una pantalla que:
-- Suscriba a los eventos `order:changed` del socket (o consulte `/operations/orders/active`).
-- Liste las órdenes con estado `en_cocina` o `por_cobrar` agrupadas por empresa/mesa.
-- Permita al personal de cocina/barra marcar ítems como `servido` (si se define ese flujo).
+- [x] Validador compartido HTTP/Socket.IO de JWT, sesión, vencimiento, usuario y dispositivo.
+- [x] JWT único por login, revocación al logout y desconexión de sockets de esa sesión.
+- [x] Vencimiento de sockets y revalidación al solicitar salas; errores de infraestructura
+  diferenciados de autenticación.
+- [x] Identidad persistente por perfil/origen del navegador, sin terminal fija compartida.
+- [x] 401 durante replay conserva cola y solicita login; logout confirma revocación
+  únicamente cuando el servidor la confirma.
+- [x] Backend Node ESM en `dist/index.js`, recursos HTML empaquetados, sin seeds.
+- [x] Configuración de arranque validada y orígenes explícitos HTTP/WebSocket.
+- [x] TypeScript, builds, 22 pruebas de servidor y 7 de cliente.
+- [x] Smoke del artefacto compilado conectado a SQL Server, de solo lectura.
+- [ ] Refrendo visual en navegador: login/logout, aviso de sesión inválida, reautenticación
+  con cola y dos perfiles con distintas identidades. No confundirlo con pruebas automatizadas.
 
----
+## 2. Maestro de Productos — implementado antes de Cocina/Barra
 
-## 2. Smoke E2E offline en navegador (Paso 2 — pendiente)
+- [x] Módulo Productos antes de Fichas; lista, búsqueda, filtros y modal compartido.
+- [x] Alta sin receta, edición, disponibilidad e identificación de empresa en Ambas.
+- [x] Seleccionar/arrastrar URL no cierra el modal; confirmación antes de descartar cambios.
+- [x] Crear/Ver ficha desde Productos y retorno al producto exacto desde Fichas.
+- [x] Alta de ficha distingue producto existente/nuevo; aviso de nombre repetido.
+- [x] Empresa fija en edición de ficha y cambio de vínculo explícito.
+- [x] Seguimiento: 20 pruebas cliente, 13 escenarios SQL aislados y recorridos visuales aprobados.
+- [x] Producto/fichas coherentes en una transacción; ingredientes e historial conservados.
+- [x] UUID estable, control de versión, conflictos revisables y cola durable para productos.
+- [x] Alta/edición offline acumuladas; recuperación desde cola tras F5.
+- [x] REST completo tras avisos de producto/ficha, preservando pendientes locales.
+- [x] POS por empresa de mesa, Brasas y rechazo de nuevas unidades no disponibles.
+- [x] Recetas por vínculo/empresa; fallback antiguo solo sin vínculo y sin ambigüedad.
+- [x] TypeScript, builds, 18 pruebas cliente, 26 servidor y 13 escenarios SQL aislados.
+- [x] Navegador: escritorio/tablet, alta/F5, ficha coherente, offline/F5/replay,
+  dos terminales, conflicto explícito y propagación de disponibilidad.
+- [ ] Completar en el smoke E2E: corte real durante replay, reingreso visual tras 401
+  con alta pendiente y ciclo completo de venta/cobro desde navegador.
+- [ ] Validación en tablet física y LAN del local. La revisión visual usa viewports de navegador.
 
-Probar el ciclo completo offline → reconectar → confirmar en BD que todo se aplicó exactamente una vez
-y que la cola quedó vacía.
+Comandos: `npm test`, `npm test --prefix server` y, desde `server/`,
+`npm run test:products:sql`. Este último crea/elimina una BD temporal independiente;
+no ejecuta seeds sobre la base actual. Evidencia detallada en la bitácora.
 
-Con `npm run dev:all` corriendo (`:3000` + `:4000`), PIN `1004`:
+## Corrección de pedidos vacíos — implementada antes de Cocina/Barra
 
-- [ ] Desde Configuración → "Simular Corte de Internet".
-- [ ] Operar el ciclo completo offline:
-      abrir mesa → añadir ítems → enviar a cocina → pedir cuenta → cobrar (pago) → transacción manual de
-      Caja → compra + regularización → ajuste de Kardex → cambio de turno.
-- [ ] Reconectar (botón "Restablecer Conexión" o reload con red real).
-- [ ] Verificar en la UI: contador de cola en 0, notificación "Sincronización completada",
-      stock/caja/kardex coherentes (refrescan automáticamente).
-- [ ] Verificar en BD (`server/scripts/verify-sync.ts` o `sqlcmd` a BD `tayta_sabroso`): una sola
-      orden/transacción/compra/movimiento de kardex por op encolada, sin duplicados y sin doble deducción.
-- [ ] Caso "mesa liberada offline": abrir mesa offline, vaciarla (se libera), reconectar → no se
-      crea orden fantasma en BD.
-- [ ] **Fix E4-b (recarga con cola pendiente)**: abrir mesa + ítems offline, y **sin** pulsar
-      "Restablecer Conexión" recargar (F5) con red activa → el auto-replay debe crear/cobrar esa orden.
-- [ ] **Persistencia E5 (nuevo)**: crear mesa/cuenta/método/impresora/receta/insumo online → **F5** →
-      persisten (verificación clave de E5). Repetir uno en offline → reconectar → persiste tras replay.
+- [x] Borrador vacío nuevo eliminado físicamente; pedido despachado conservado como anulado.
+- [x] Respuesta final, protección de cobrados, cantidades cero y tickets sin reutilización.
+- [x] Apertura/cancelación y flush idempotente por terminal; cola durable y liberación condicionada al pedido.
+- [x] Fecha de despacho, historial antiguo conservador y recibos para reintentos tras borrado físico.
+- [x] 28 pruebas cliente, 26 servidor, 15 escenarios SQL/API/realtime; TypeScript y builds.
+- [x] Navegador aislado: vaciado antes/después de despacho y mesa libre tras recargar.
+- [x] Revisión de solo lectura y procedimiento separado de limpieza selectiva preparados.
+- [x] Aplicada `0004_empty_orders` en `TaytaSabroso` durante el reset solicitado del 2026-10-21.
+- [x] Pedidos vacíos anteriores retirados por el reset completo solicitado el 2026-10-21; no se ejecutó la herramienta de limpieza selectiva.
+- [ ] Corte físico/LAN y tablet dentro del smoke general; las carreras de solicitudes/401/cola tienen pruebas automatizadas.
 
----
+Detalle y comandos: `progreso/pedidos-vacios.md`.
 
-## 3. UI refrendo: compra a crédito y error visible al re-regularizar (pendiente)
+## Kardex & Stock: edición y baja de insumos — implementado
 
-Ambos ya están verificados a nivel API (2026-10-12), falta el refrendo en la pantalla:
+- [x] Menú de acciones y formulario compartido; código, empresa y stock protegidos.
+- [x] Nombre/categoría/mínimo editables; unidad/costo inicial solo sin uso.
+- [x] Baja lógica con stock cero, sin fichas activas y versión revisada.
+- [x] Validación en compras/recetas/ajustes/despacho; bloqueos coordinados y versiones.
+- [x] Historial conservado y nombre actualizado en fichas activas.
+- [x] UUID estable, cola durable, conflictos revisables y REST completo tras realtime.
+- [x] 111 comprobaciones agregadas (37 cliente, 28 servidor y 46 escenarios SQL de los tres módulos); tipos y builds.
+- [x] Navegador: alta/edición/F5/baja, bloqueos por stock/ficha, offline/F5 y dos terminales con conflicto.
+- [ ] Tablet/LAN y corte físico durante replay en el smoke general.
 
-- [ ] **Compra a crédito**: crear una compra con modalidad "Crédito 15 días" desde la UI y
-      verificar que se cree sin transacción de caja (tx el-tayta 7→7).
-- [ ] **Error visible al re-regularizar**: intentar regularizar una compra ya regularizada desde la
-      UI y verificar que se muestre el error `409 ALREADY_REGULARIZED` ("La compra ya fue regularizada.")
-      y que el dispatcher lo traduzca a `already` (quita de la cola sin duplicar folios).
+Sin migración nueva ni reset operativo. Detalle: `progreso/insumos-edicion-baja.md`.
 
----
+## 3. Cocina / Barra — siguiente implementación
 
-## 4. Maestro de Productos / Menú (pendiente, Fase E)
+- [ ] Pantalla por empresa, estación, mesa y ticket, actualizada por `order:changed`.
+- [ ] Consulta específica de preparación: incluir pedidos cobrados con ítems pendientes.
+  Conservar el significado actual de `/operations/orders/active` para el POS.
+- [ ] Operación autenticada e idempotente para marcar una línea completa `servido`,
+  sin alterar stock, total ni estado de pago.
+- [ ] Despachar solo líneas `agregado`; conservar las servidas al enviar o reintentar.
+- [ ] Separar cantidades nuevas de líneas despachadas para que tengan su propio envío.
+- [ ] Cobrar libera la mesa, pero no marca automáticamente los ítems servidos.
+  La comanda permanece en cocina hasta completarse, identificada por pedido/ticket.
+- [ ] Distribución inicial: bebidas → Barra; demás categorías → Cocina.
+- [ ] Pruebas: pedido mixto, segundo despacho, doble clic, cobro anticipado y nueva
+  ocupación de la misma mesa con la comanda anterior pendiente.
 
-Las fichas técnicas ahora crean/actualizan su plato automáticamente (ver progress.md), pero **no existe una pantalla dedicada para administrar productos** del menú (alta de bebidas/entradas/postres sin ficha, editar precio/nombre/categoría, foto, disponible/no disponible, activar/desactivar `hasRecipe`). Falta crear:
+## 4. Smoke E2E offline y refrendo UI
 
-- Pantalla Maestro de Productos con CRUD sobre `/catalogs/products` (GET ya existe; POST/PATCH/DELETE en el server ya están implementados).
-- Evento `product:changed` ya implementado en tiempo real (servidor + cliente + POSContext handler); la pantalla solo debe consumirlo para replicar entre terminales.
-- Opcional: indicador visual de `hasRecipe` en OrderTakingScreen para distinguir platos con ficha técnica.
+Ejecutar en base separada y registrar resultados por escenario:
 
----
+- [ ] Abrir mesa → añadir ítems → cocina → cuenta → cobrar → transacción manual →
+  compra y regularización → ajuste Kardex → cambio de turno.
+- [ ] Reconectar: cola 0 y efectos correctos en stock, caja, bancos, pedidos y compras.
+  No basta comprobar UUID únicos: verificar también cantidades, saldos y efectos de negocio.
+- [ ] Mesa liberada offline: no debe aparecer una orden fantasma al sincronizar.
+- [ ] Recarga con cola y red recuperada: conservar órdenes/mesas temporales.
+- [ ] F5 tras altas de catálogos online y después de replay offline.
+- [ ] Corte real de internet conservando LAN: login, recarga, comandas y cobro entre equipos.
+- [ ] Corte durante replay, respuesta perdida después de commit y dos terminales concurrentes.
+- [ ] Compra a crédito sin transacción de caja y error visible al re-regularizar
+  (`409 ALREADY_REGULARIZED`).
+- [ ] Voucher: impresión de solo voucher y un único adjunto al compartir por WhatsApp
+  en escritorio/móvil, incluyendo cancelar y fallback de descarga.
 
-## Riesgos y mitigaciones
+## 5. Sincronización y operación local
 
-| Riesgo | Mitigación |
-|--------|------------|
-| Red cae exactamente entre `openOrder` y el flush de ítems del replay | Riesgo aceptado en v1 (ver progress.md E4): el `try/catch` marca `stuck` y no borra la cola; posible orden creada sin ítems. |
-| F5 / reload durante un replay en curso | Mutex `isReplayingRef` + idempotencia por `clientOpId`; recalcular contador real de `queueCount()`. |
-| Catálogos sin `clientOpId` en el server | Riesgo aceptado en v1 (ver progress.md E5): un fallo de red tras el POST podría duplicar al reintentar. |
+- [ ] Idempotencia transaccional y recuperación del resultado por `clientOpId` para
+  todas las mutaciones, incluidos ítems y altas de catálogos.
+- [ ] Recuperación de apertura/flush parcial, mapeos temporales y conflictos entre terminales.
+- [ ] Cola durable: tratar fallos de almacenamiento; no confirmar guardado si persistir falló.
+- [ ] Registrar en la misma transacción local los cambios pendientes de enviar a Azure;
+  retirarlos únicamente después de confirmación.
+- [ ] Identidad del local en registros replicados para evitar colisiones entre bases.
+  Consolidar stock y saldos por local; no fusionar automáticamente datos con empresa nula.
+- [ ] Servicios Windows con arranque automático, almacenamiento persistente, HTTPS local
+  y recursos de interfaz disponibles sin internet.
+- [ ] Respaldos, restauración probada, última sincronización y errores pendientes visibles.
 
----
+## 6. Azure y piloto
 
-## Estado
+- [ ] Infraestructura y secretos de producción, API de recepción y consulta consolidada.
+- [ ] Reconciliación por local: mismos detalles, importes y efectos, sin duplicaciones.
+- [ ] Permisos por rol/empresa en todas las rutas; revisión completa previa al piloto.
+- [ ] Reemplazar credenciales demo y rotar credenciales antiguas documentadas.
+  Sanear el archivo actual no elimina valores de commits históricos.
+- [ ] Reiniciar cada servidor y restaurar un respaldo en entorno de prueba.
+- [ ] Validación operativa en ambos locales y actualización final de la bitácora.
 
-- [ ] Pantalla de Cocina / Barra (pendiente)
-- [ ] Smoke E2E offline en navegador (Paso 2) + persistencia F5 (E5)
-- [ ] UI refrendo: compra a crédito y error visible al re-regularizar
-- [ ] Maestro de Productos / Menú (Fase E)
-- [ ] Documentar resultados en `progreso/progress.md` y limpiar este archivo.
+## Riesgos todavía abiertos
+
+- El ledger `operaciones_cliente` continúa siendo pasivo; no garantiza idempotencia de negocio.
+- La apertura ya tiene deduplicación por `clientOpId`, pero el flush de ítems y su
+  recuperación tras interrupción requieren pruebas y endurecimiento.
+- Los catálogos pueden duplicarse si se pierde la respuesta de un alta y se reintenta.
+- Una cola por navegador no sustituye al servidor local compartido para cocina/caja.
+- Este bloque no despliega Azure ni instala servicios Windows en los locales.

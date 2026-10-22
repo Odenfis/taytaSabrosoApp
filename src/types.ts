@@ -152,7 +152,7 @@ export interface Order {
   subtotal: number;
   igv: number;
   total: number;
-  status: 'abierto' | 'en_cocina' | 'por_cobrar' | 'cobrado';
+  status: 'abierto' | 'en_cocina' | 'por_cobrar' | 'cobrado' | 'anulado';
   paymentMethod?: PaymentMethod;
   amountReceived?: number;
   change?: number;
@@ -207,6 +207,7 @@ export type ScreenType =
   | 'cobro'
   | 'kardex'
   | 'compras'
+  | 'productos'
   | 'recetas'
   | 'ratios'
   | 'movimientos'
@@ -319,6 +320,8 @@ export interface OfflineSyncState {
 
 // Insumos e Inventario
 export interface Insumo {
+  canEditBase?: boolean;
+  activeRecipes?: { id: string; name: string }[];
   id: string;
   companyId: CompanyId | 'ambas';
   code: string;
@@ -487,6 +490,8 @@ export type PendingOpEntity =
 
 // Operación local que aún no se sincronizó con la API (write-through fallido o creada offline).
 export interface PendingOp {
+  conflict?: boolean;
+  error?: string;
   clientOpId: string;
   entity: PendingOpEntity;
   op: string; // ej. 'openOrder', 'quickBar', 'payTable', 'createPurchase', 'kardexAdjustment', 'switchShift', 'manualTransaction'
