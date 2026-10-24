@@ -10,7 +10,7 @@ export const LoginScreen: React.FC = () => {
     try { return getTerminalIdentity().deviceCode; }
     catch { return 'Terminal sin configurar'; }
   });
-  const [pin, setPin] = useState('1004');
+  const [pin, setPin] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   const runLogin = async (attemptPin: string) => {
@@ -33,11 +33,6 @@ export const LoginScreen: React.FC = () => {
       return;
     }
     await runLogin(pin);
-  };
-
-  const handleQuickLogin = async (testPin: string) => {
-    setPin(testPin);
-    await runLogin(testPin);
   };
 
   const [logoFailed, setLogoFailed] = useState(false);
@@ -101,11 +96,12 @@ export const LoginScreen: React.FC = () => {
                 </span>
                 <input
                   id="staff-id"
-                  type="text"
+                  type="password"
+                  inputMode="numeric"
                   value={pin}
                   onChange={(e) => setPin(e.target.value)}
-                  placeholder="Ingresa ID o PIN (ej. 1004)"
-                  maxLength={6}
+                  placeholder="Ingresa tu PIN"
+                  maxLength={12}
                   className="w-full bg-panel-16 border border-transparent focus:border-edge-info-6 rounded-xl text-ink-body placeholder-ink-muted-9 pl-11 pr-4 py-3.5 h-[50px] focus:ring-2 focus:ring-edge-info-8 focus:outline-none transition-all text-[16px]"
                 />
               </div>
@@ -121,20 +117,6 @@ export const LoginScreen: React.FC = () => {
               <span>{isAuthenticating ? 'Accediendo...' : 'Login'}</span>
               <span className="material-symbols-outlined text-[22px]">arrow_forward</span>
             </button>
-
-            {/* Quick Demo Login Switchers */}
-            <div className="pt-3 border-t border-edge-outline-5 flex flex-col gap-2">
-              <p className="text-[12px] text-center text-ink-muted-3">Acceso rápido para prueba:</p>
-              <button
-                type="button"
-                disabled={isAuthenticating}
-                onClick={() => handleQuickLogin('1004')}
-                className="bg-panel-3 hover:bg-panel-17 border border-edge-outline-2 rounded-lg py-2 px-3 text-[12px] text-ink-body font-medium flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-              >
-                <span className="w-2 h-2 rounded-full bg-surface-gold-2"></span>
-                Carlos M. (Cajero)
-              </button>
-            </div>
 
             {/* System Status Indicator */}
             <div className="mt-2 flex items-center justify-center gap-2 text-[12px] text-ink-muted-3">

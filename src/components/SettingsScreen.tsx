@@ -1,6 +1,7 @@
 import { ThemeSelector } from './ThemeSelector';
 import React, { useState } from 'react';
 import { usePOS } from '../context/POSContext';
+import { apiClient } from '../lib/api';
 import { ThermalPrinterConfig, PrinterRole, PrinterConnectionType, CompanyId } from '../types';
 
 export const SettingsScreen: React.FC = () => {
@@ -23,6 +24,7 @@ export const SettingsScreen: React.FC = () => {
     setIsOfflineModalOpen,
     activeCompanyId,
     activeCompany,
+    companies,
     setCurrentScreen,
   } = usePOS();
 
@@ -31,8 +33,25 @@ export const SettingsScreen: React.FC = () => {
   const handleUpdatePrinter = updatePrinter || updateThermalPrinter;
   const handleDeletePrinter = deletePrinter || deleteThermalPrinter;
 
-  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia'>('impresoras');
+  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia' | 'seguridad'>('impresoras');
   const [isSaved, setIsSaved] = useState(false);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [repeatPin, setRepeatPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinSaved, setPinSaved] = useState(false);
+  const [pinBusy, setPinBusy] = useState(false);
+
+  const saveSupervisorPin = async (event: React.FormEvent) => {
+    event.preventDefault(); setPinError(''); setPinSaved(false);
+    if (newPin !== repeatPin) { setPinError('Los PIN nuevos no coinciden.'); return; }
+    setPinBusy(true);
+    try {
+      await apiClient.patch('/auth/pin', { currentPin, newPin });
+      setCurrentPin(''); setNewPin(''); setRepeatPin(''); setPinSaved(true);
+    } catch (error) { setPinError(error instanceof Error ? error.message : 'No se pudo cambiar el PIN.'); }
+    finally { setPinBusy(false); }
+  };
 
   // Printer Form State for new printer modal
   const [isPrinterModalOpen, setIsPrinterModalOpen] = useState(false);
@@ -205,7 +224,21 @@ export const SettingsScreen: React.FC = () => {
           Mantenimiento &amp; Reset Demo
         </button>
         <button type="button" onClick={() => setActiveTab('apariencia')} aria-pressed={activeTab === 'apariencia'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'apariencia' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">palette</span>Apariencia</button>
+        {currentUser?.role === 'Administrador' && <button type="button" onClick={() => setActiveTab('seguridad')} aria-pressed={activeTab === 'seguridad'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'seguridad' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">lock</span>Seguridad</button>}
       </div>
+
+      {activeTab === 'seguridad' && currentUser?.role === 'Administrador' && <section className="rounded-2xl border border-outline-variant bg-surface-container-low p-5 space-y-4 max-w-lg">
+        <h2 className="text-lg font-bold text-primary">PIN de administrador</h2>
+        <p className="text-sm text-on-surface-variant">El PIN personal autoriza correcciones de medios de pago. Cambie el PIN inicial antes de usar esta función.</p>
+        <form onSubmit={(event) => void saveSupervisorPin(event)} className="space-y-3">
+          <label className="block text-sm">PIN actual<input type="password" autoComplete="off" value={currentPin} onChange={(event) => setCurrentPin(event.target.value)} required className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" /></label>
+          <label className="block text-sm">Nuevo PIN (6 a 12 dígitos)<input type="password" inputMode="numeric" pattern="[0-9]{6,12}" autoComplete="new-password" value={newPin} onChange={(event) => setNewPin(event.target.value)} required className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" /></label>
+          <label className="block text-sm">Repetir nuevo PIN<input type="password" inputMode="numeric" pattern="[0-9]{6,12}" autoComplete="new-password" value={repeatPin} onChange={(event) => setRepeatPin(event.target.value)} required className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" /></label>
+          {pinError && <p role="alert" className="text-sm text-ink-danger">{pinError}</p>}
+          {pinSaved && <p role="status" className="text-sm text-ink-success">PIN actualizado. Use el nuevo PIN para iniciar sesión y autorizar correcciones.</p>}
+          <button type="submit" disabled={pinBusy || !offlineState.isOnline || offlineState.isSimulatedOffline} className="rounded-lg bg-surface-gold-2 px-4 py-2 font-semibold text-ink-on-accent disabled:opacity-50">{pinBusy ? 'Guardando…' : 'Cambiar PIN'}</button>
+        </form>
+      </section>}
 
       {activeTab === 'apariencia' && <section className="rounded-2xl border border-outline-variant bg-surface-container-low p-5 space-y-4">
         <h2 className="text-lg font-bold text-primary">Apariencia</h2>
@@ -417,60 +450,22 @@ export const SettingsScreen: React.FC = () => {
       {/* Tab: Empresa */}
       {activeTab === 'empresa' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
-            <div className="flex items-center gap-2.5 pb-2 border-b border-edge-outline-5">
-              <span className="w-3 h-3 rounded-full bg-surface-brand" />
-              <h3 className="text-[17px] font-bold text-ink-strong">El Tayta (Criollo &amp; Marino)</h3>
-            </div>
-            <div className="space-y-2 text-[13px]">
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Razón Social</span>
-                <p className="font-semibold text-ink-strong">El Tayta Gastronomía Peruana S.A.C.</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">R.U.C.</span>
-                <p className="font-mono text-ink-strong">20601234567</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Dirección Sede</span>
-                <p className="text-ink-strong">Av. Javier Prado Este 1420, San Borja, Lima</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Especialidad</span>
-                <p className="text-ink-brand">Cevichería tradicional, mariscos y comida criolla</p>
+          {companies.map((company) => (
+            <div key={company.id} className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
+              <h3 className="text-[17px] font-bold text-ink-strong">{company.tradeName}</h3>
+              <div className="space-y-2 text-[13px]">
+                <p><span className="text-ink-muted block text-[11px] font-bold uppercase">Razón Social</span>{company.name}</p>
+                <p><span className="text-ink-muted block text-[11px] font-bold uppercase">R.U.C.</span>{company.ruc}</p>
+                <p><span className="text-ink-muted block text-[11px] font-bold uppercase">Dirección Sede</span>{company.address}</p>
+                <p><span className="text-ink-muted block text-[11px] font-bold uppercase">Especialidad</span>{company.specialty}</p>
               </div>
             </div>
-          </div>
-
-          <div className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
-            <div className="flex items-center gap-2.5 pb-2 border-b border-edge-outline-5">
-              <span className="w-3 h-3 rounded-full bg-surface-gold-2" />
-              <h3 className="text-[17px] font-bold text-ink-strong">El Sabroso (Brasas &amp; Parrillas)</h3>
-            </div>
-            <div className="space-y-2 text-[13px]">
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Razón Social</span>
-                <p className="font-semibold text-ink-strong">El Sabroso Brasas &amp; Parrillas E.I.R.L.</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">R.U.C.</span>
-                <p className="font-mono text-ink-strong">20609876543</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Dirección Sede</span>
-                <p className="text-ink-strong">Av. Las Palmeras 890, Los Olivos, Lima</p>
-              </div>
-              <div>
-                <span className="text-ink-muted block text-[11px] font-bold uppercase">Especialidad</span>
-                <p className="text-ink-gold">Pollería a la leña, cortes a la parrilla y anticuchos</p>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
       )}
 
       {/* Tab: Mantenimiento */}
-      {activeTab === 'mantenimiento' && (
+      {!import.meta.env.PROD && activeTab === 'mantenimiento' && (
         <div className="bg-panel border border-edge-outline-2 rounded-2xl p-5 space-y-4">
           <h3 className="text-[16px] font-bold text-ink-danger flex items-center gap-2">
             <span className="material-symbols-outlined text-ink-danger">restart_alt</span>

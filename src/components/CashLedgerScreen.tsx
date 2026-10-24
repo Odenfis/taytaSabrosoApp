@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
-import { TransactionType } from '../types';
+import { Transaction, TransactionType } from '../types';
+import { apiClient } from '../lib/api';
 
 export const CashLedgerScreen: React.FC = () => {
   const {
@@ -16,7 +17,53 @@ export const CashLedgerScreen: React.FC = () => {
     filteredBankAccounts,
     setIsShiftModalOpen,
     addManualTransaction,
+    paymentMethods,
+    correctSalePayment,
+    offlineState,
   } = usePOS();
+
+  const [correcting, setCorrecting] = useState<Transaction | null>(null);
+  const [methodId, setMethodId] = useState('');
+  const [correctionReference, setCorrectionReference] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [supervisorPin, setSupervisorPin] = useState('');
+  const [correctionId, setCorrectionId] = useState('');
+  const [correctionError, setCorrectionError] = useState('');
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionHistory, setCorrectionHistory] = useState<Array<{
+    id: string; createdAt: string; oldMethodName: string | null; newMethodName: string;
+    oldBankAccountAlias: string | null; newBankAccountAlias: string | null;
+    reason: string; operator: { name: string }; authorizer: { name: string };
+  }>>([]);
+  const correctionMethods = correcting ? paymentMethods.filter((m) =>
+    !m.isDeleted && m.isActive && m.category !== 'Crédito' &&
+    (m.companyId === correcting.companyId || m.companyId === 'ambas') &&
+    (m.category === 'Efectivo' ? !m.bankAccountId : !!m.bankAccountId) &&
+    (!m.bankAccountId || bankAccounts.some((b) => b.id === m.bankAccountId && b.companyId === correcting.companyId && b.isActive && !b.isDeleted && b.currency === 'PEN'))
+  ) : [];
+  const selectedCorrectionMethod = correctionMethods.find((m) => m.id === methodId);
+
+  const openCorrection = async (tx: Transaction) => {
+    setCorrecting(tx);
+    setCorrectionId(crypto.randomUUID());
+    setMethodId(''); setCorrectionReference(tx.referenceNumber ?? ''); setCorrectionReason('');
+    setSupervisorPin(''); setCorrectionError(''); setCorrectionHistory([]);
+    try {
+      const history = await apiClient.get<typeof correctionHistory>(`/operations/transactions/${encodeURIComponent(tx.id)}/corrections`);
+      setCorrectionHistory(history);
+    } catch (error) { setCorrectionError(error instanceof Error ? error.message : 'No se pudo cargar el historial.'); }
+  };
+
+  const saveCorrection = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!correcting || !selectedCorrectionMethod || correctionBusy) return;
+    setCorrectionBusy(true); setCorrectionError('');
+    try {
+      await correctSalePayment(correcting, correctionId, selectedCorrectionMethod.id, correctionReference, correctionReason, supervisorPin);
+      setCorrecting(null); setSupervisorPin('');
+    } catch (error) { setCorrectionError(error instanceof Error ? error.message : 'No se pudo corregir el cobro.'); }
+    finally { setCorrectionBusy(false); }
+  };
 
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'ingresos' | 'egresos'>('all');
@@ -225,15 +272,16 @@ export const CashLedgerScreen: React.FC = () => {
               <button
                 key={b.id}
                 onClick={() => setAccountFilter(accountFilter === b.id ? 'all' : b.id)}
-                className={`text-[12px] px-2.5 py-1 rounded-lg border transition-all flex items-center gap-1.5 ${
+                aria-pressed={accountFilter === b.id}
+                className={`ledger-bank-filter text-[12px] px-2.5 py-1 rounded-lg border transition-all flex items-center gap-1.5 ${
                   accountFilter === b.id
                     ? 'bg-surface-brand-solid border-edge-brand text-ink-on-brand font-bold'
                     : 'bg-panel-31 border-edge-outline-3 text-ink-muted-2 hover:text-ink-strong'
                 }`}
               >
                 <span className="font-semibold">{b.bankName}:</span>
-                <span className="font-mono text-ink-success">S/ {b.currentBalance.toFixed(2)}</span>
-                <span className="text-[10px] text-ink-muted">({b.alias.split(' ')[0]})</span>
+                <span className="ledger-bank-filter-balance font-mono text-ink-success">S/ {b.currentBalance.toFixed(2)}</span>
+                <span className="ledger-bank-filter-alias text-[10px] text-ink-muted">({b.alias.split(' ')[0]})</span>
               </button>
             ))}
             <button
@@ -321,12 +369,13 @@ export const CashLedgerScreen: React.FC = () => {
                 <th className="py-3 px-3">Tipo &amp; Cuenta</th>
                 <th className="py-3 px-3">Descripción &amp; N° Operación</th>
                 <th className="py-3 px-3 text-right">Monto</th>
+                <th className="py-3 px-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-edge-outline-10 text-[13px]">
               {filteredTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-8 text-center text-ink-muted">
+                  <td colSpan={5} className="py-8 text-center text-ink-muted">
                     No se encontraron transacciones con los criterios seleccionados.
                   </td>
                 </tr>
@@ -376,6 +425,7 @@ export const CashLedgerScreen: React.FC = () => {
                           </span>
                         )}
                         {tx.tableNumber && <span>Mesa: {tx.tableNumber}</span>}
+                        {!!tx.correctionCount && <span className="text-ink-gold">Corregido · {tx.correctionCount}</span>}
                       </div>
                     </td>
                     <td
@@ -385,6 +435,13 @@ export const CashLedgerScreen: React.FC = () => {
                     >
                       {tx.isIncome ? '+' : '-'} S/ {tx.amount.toFixed(2)}
                     </td>
+                    <td className="py-3.5 px-3 text-right">
+                      {tx.orderId && tx.type.startsWith('Venta (') && !tx.id.startsWith('tx-') && (
+                        <button type="button" onClick={() => void openCorrection(tx)} disabled={!offlineState.isOnline || offlineState.isSimulatedOffline}
+                          className="rounded-lg border border-edge-outline-2 px-2 py-1 text-xs text-ink-brand hover:bg-panel-3 disabled:opacity-50"
+                          title="Requiere conexión y PIN de administrador">Corregir medio de pago</button>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -392,6 +449,46 @@ export const CashLedgerScreen: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {correcting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim-4 p-4">
+          <form onSubmit={(event) => void saveCorrection(event)} role="dialog" aria-modal="true" aria-label="Corregir medio de pago"
+            className="w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl border border-edge-outline bg-panel-15 p-6 shadow-2xl space-y-4 text-ink-body">
+            <h2 className="text-lg font-bold">Corregir medio de pago</h2>
+            <p className="text-sm">Ticket #{correcting.ticketNumber} · S/ {correcting.amount.toFixed(2)}</p>
+            <p className="text-sm">Actual: {correcting.paymentMethod || 'Sin nombre'} · {correcting.bankAccountAlias || 'Caja efectivo'}{correcting.referenceNumber ? ` · Ref. ${correcting.referenceNumber}` : ''}</p>
+            <label className="block text-sm">Nuevo método
+              <select value={methodId} onChange={(event) => { setMethodId(event.target.value); setCorrectionReference(''); }} required
+                className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body">
+                <option value="">Seleccione un método</option>
+                {correctionMethods.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.bankAccountAlias || 'Caja efectivo'}</option>)}
+              </select>
+            </label>
+            {selectedCorrectionMethod?.requiresReferenceNumber && <label className="block text-sm">N° de operación
+              <input value={correctionReference} onChange={(event) => setCorrectionReference(event.target.value)} maxLength={100} required
+                className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" />
+            </label>}
+            <label className="block text-sm">Motivo de la corrección
+              <textarea value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} minLength={5} maxLength={500} required
+                className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" />
+            </label>
+            <label className="block text-sm">PIN de administrador
+              <input type="password" autoComplete="off" value={supervisorPin} onChange={(event) => setSupervisorPin(event.target.value)} required
+                className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body" />
+            </label>
+            {correctionError && <p role="alert" className="text-sm text-ink-danger">{correctionError}</p>}
+            {correctionHistory.length > 0 && <section className="border-t border-edge-outline-2 pt-3 text-xs space-y-2">
+              <h3 className="font-semibold">Historial de correcciones</h3>
+              {correctionHistory.map((item) => <p key={item.id}>{new Date(item.createdAt).toLocaleString()} · {item.oldMethodName || 'Sin método'} ({item.oldBankAccountAlias || 'Caja'}) → {item.newMethodName} ({item.newBankAccountAlias || 'Caja'}) · {item.reason} · Operador: {item.operator.name} · Autorizó: {item.authorizer.name}</p>)}
+            </section>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => { setCorrecting(null); setSupervisorPin(''); }} disabled={correctionBusy} className="rounded-lg border border-edge-outline-2 px-4 py-2">Cancelar</button>
+              <button type="submit" disabled={correctionBusy || !selectedCorrectionMethod || !offlineState.isOnline || offlineState.isSimulatedOffline}
+                className="rounded-lg bg-surface-gold-2 px-4 py-2 font-semibold text-ink-on-accent disabled:opacity-50">{correctionBusy ? 'Guardando…' : 'Confirmar corrección'}</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Manual Movement Modal */}
       {isAddModalOpen && (

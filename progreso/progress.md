@@ -1,5 +1,39 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
+## Paquete Docker inicial para cliente — 2026-10-24
+
+- Imagen `linux/amd64` con frontend, API y Socket.IO en el mismo origen; Compose añade Caddy con HTTPS local y certificados persistentes. SQL Server permanece instalado en Windows. Instrucciones en `deploy/client/README.md`.
+- `server/prisma/init-client.ts` inicializa exclusivamente una base nueva: dos empresas con datos reales, mesas configuradas, efectivo, secuencias en cero, caja inicial cero y un administrador con PIN nuevo. No ejecuta seeds demo y rechaza una base con datos.
+- La compilación de producción ya no inicia con catálogos/operaciones ficticios; Configuración y voucher leen identidad comercial de la API. El ticket se presenta como documento interno, sin afirmar emisión electrónica.
+- Verificación local: TypeScript y build frontend/servidor correctos; 50 pruebas cliente y 28 servidor aprobadas; imagen Docker `linux/amd64` construida; `prisma validate` dentro del contenedor correcto. Imagen local: `sha256:07d5bcb02ed2bc082937321703252cb3b2cc07ebfacf5e8364170b9bd94accbd`.
+- **Pendiente de campo:** datos reales y PIN del cliente, conexión al SQL Server 2025 de Windows, inicialización de su base nueva, confianza del certificado en terminales, recorrido operativo LAN/offline, impresión física, respaldo y restauración. No declarar el piloto aprobado hasta completar esas pruebas. El árbol de trabajo contiene cambios locales previos aún sin consolidar en Git.
+
+> Actualizado `2026-10-23`: vales provisionales “Al Paso” sin insumos y corrección de alineación de lupas.
+
+## Vales provisionales sin insumos — 2026-10-23
+
+- Un vale provisional puede registrarse con monto manual positivo y detalle vacío. Registra el pago según caja, banco o crédito; deja Kardex y existencias pendientes. La compra formal sigue exigiendo insumos.
+- “Pasar a Limpio” exige detalle para estos vales y comprueba que su total, incluido IGV, coincida con el importe original. La API registra detalle, entradas de Kardex y costo/stock en una transacción; los vales con detalle previo lo conservan. El reintento de una factura ya aplicada no duplica entradas.
+- La cola sin conexión transporta el detalle de regularización. Se impide regularizar un vale que aún tiene ID temporal hasta que se sincronice. Las lupas de búsqueda superpuestas en Kardex, Compras y Recetas se centran verticalmente.
+- Comprobación: TypeScript, builds, 50 pruebas cliente y 28 pruebas servidor correctos. La prueba SQL en una base temporal confirmó caja, banco, crédito, stock pendiente, total distinto, insumo retirado, regularización, reintento y conservación de vales con detalle; eliminó la base temporal al finalizar. Pendiente revisión visual interactiva de las búsquedas.
+
+> Actualizado `2026-10-22`: mejora de contraste en la cinta Cuentas Activas del Libro de Caja, sobre la corrección autorizada del medio de pago implementada ese día. La migración `0005_payment_corrections` fue probada en una base SQL temporal y aplicada a la base SQL configurada del proyecto.
+
+## Cuentas Activas: contraste del filtro seleccionado — 2026-10-22
+
+- En modo claro, el saldo y el alias de la cuenta bancaria seleccionada ahora usan texto claro sobre el fondo terracota. Las cuentas no seleccionadas mantienen el saldo verde; el modo oscuro y los estilos globales conservan su comportamiento.
+- El estado seleccionado se expone con `aria-pressed`. No se modificaron filtros, cálculos, saldos ni llamadas a la API.
+- `npm run lint`, `npm run build` y `git diff --check` correctos. El contraste calculado entre el texto claro y el terracota es **6,28:1**. La revisión interactiva de cuentas seleccionadas, «Ver Todas» y «Solo Caja Efectivo» quedó pendiente porque la sesión del navegador abrió en el login y no se introdujo un PIN.
+
+## Corrección de medio de pago — 2026-10-22
+
+- En Libro de Caja, las ventas cobradas persistidas muestran **Corregir medio de pago**. El formulario exige un nuevo método activo de la misma empresa, referencia si el método la requiere, motivo y PIN personal de administrador; muestra el historial de correcciones.
+- El PIN inicial de demostración `1004` estaba visible en el login y no sirve como autorización: se retiró el acceso rápido y se bloquea la corrección con ese PIN. Un administrador puede rotarlo en Configuración → Seguridad (6–12 dígitos); el cambio revoca sus otras sesiones.
+- El servidor verifica operador y autorizador, bloquea la transacción de venta, comprueba el estado visto por el operador y cambia cuenta bancaria, transacción, pedido y auditoría dentro de una sola transacción SQL. El PIN no se guarda. La operación es solo en línea y cada intento usa un UUID estable para reintentos.
+- Los turnos cerrados conservan su arqueo; cuando la corrección altera efectivo, se registra un ajuste de reclasificación en el turno vigente que no incrementa ventas ni gastos. Los cálculos de efectivo se limitan al turno abierto. Realtime refresca caja y bancos en las demás terminales.
+- Validación: `prisma validate`, build servidor y cliente, TypeScript, 50 pruebas cliente y 28 pruebas servidor aprobadas. Una base SQL temporal aplicó las cinco migraciones y comprobó efectivo ↔ banco, BBVA → BCP, PIN inicial/incorrecto, rotación por HTTP, referencia obligatoria, método inactivo, idempotencia, dos correcciones simultáneas, reporte y arqueo cerrado; la base temporal fue eliminada.
+- `prisma migrate deploy` aplicó `0005` a la base configurada, sin editar ni crear ventas existentes. Pendiente: revisión visual/interactiva en Libro de Caja con ventas reales de prueba en un entorno identificado.
+
 > Actualizado `2026-10-21`: **Modo Claro/Oscuro/Sistema implementado**, conservando los cambios previos de Kardex y cobro.
 > Última validación: **50 pruebas cliente aprobadas**, TypeScript y build frontend correctos.
 > Revisión visual con componentes reales y contexto de prueba sin escrituras operativas; no equivale a una prueba integral contra SQL.

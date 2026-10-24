@@ -18,10 +18,10 @@ export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso
     include: { ingredients: true },
   });
 
-  const totalSales = txs.filter((t) => t.isIncome).reduce((s, t) => s + toNum(t.amount), 0);
+  const totalSales = txs.filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago').reduce((s, t) => s + toNum(t.amount), 0);
   const totalPurchases = purs.reduce((s, p) => s + toNum(p.total), 0);
   const operatingExpenses = txs
-    .filter((t) => !t.isIncome && t.type !== 'Pago Proveedor')
+    .filter((t) => !t.isIncome && t.type !== 'Pago Proveedor' && t.type !== 'Reclasificación de Pago')
     .reduce((s, t) => s + toNum(t.amount), 0);
 
   let totalTheoreticalCost = 0;
@@ -112,8 +112,8 @@ export async function getReportSummary(companyId: string) {
     orderBy: { closedUtc: 'desc' },
   });
 
-  const totalIngresos = round2(txs.filter((t) => t.isIncome).reduce((s, t) => s + toNum(t.amount), 0));
-  const totalEgresos = round2(txs.filter((t) => !t.isIncome).reduce((s, t) => s + toNum(t.amount), 0));
+  const totalIngresos = round2(txs.filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago').reduce((s, t) => s + toNum(t.amount), 0));
+  const totalEgresos = round2(txs.filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago').reduce((s, t) => s + toNum(t.amount), 0));
 
   // "Efectivo en Caja" (gaveta): caja inicial vigente + movimientos SIN cuenta
   // bancaria (regla: un movimiento toca la gaveta ⇔ sin bankAccountId).
@@ -121,10 +121,12 @@ export async function getReportSummary(companyId: string) {
     ? await prisma.companyShift.findMany()
     : [await prisma.companyShift.findUnique({ where: { companyId } })].filter(Boolean);
   const initialCash = companyShift.reduce((s, cs) => s + toNum(cs!.initialCash), 0);
-  const cashIngresos = txs.filter((t) => t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
-  const cashEgresos = txs.filter((t) => !t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
+  const shiftsByCompany = new Map(companyShift.map((s) => [s!.companyId, s!.openedUtc]));
+  const currentCashTxs = txs.filter((t) => !t.companyId || !shiftsByCompany.has(t.companyId) || t.timestamp >= shiftsByCompany.get(t.companyId)!);
+  const cashIngresos = currentCashTxs.filter((t) => t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
+  const cashEgresos = currentCashTxs.filter((t) => !t.isIncome && !t.bankAccountId).reduce((s, t) => s + toNum(t.amount), 0);
 
-  const income = txs.filter((t) => t.isIncome);
+  const income = txs.filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago');
   const byMethod: Record<string, { count: number; total: number }> = {};
   for (const t of income) {
     const key = t.paymentMethod || 'Efectivo';

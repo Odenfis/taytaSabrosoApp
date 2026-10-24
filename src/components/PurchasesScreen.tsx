@@ -27,6 +27,7 @@ export const PurchasesScreen: React.FC = () => {
   const [regInvoiceNumber, setRegInvoiceNumber] = useState('');
   const [regSupplierRuc, setRegSupplierRuc] = useState('');
   const [regNotes, setRegNotes] = useState('');
+  const [regItems, setRegItems] = useState<PurchaseItem[]>([]);
 
   // New Purchase Form State
   const [targetCompany, setTargetCompany] = useState<CompanyId>(
@@ -40,6 +41,7 @@ export const PurchasesScreen: React.FC = () => {
   const [paymentMode, setPaymentMode] = useState<'caja' | 'banco' | 'credito'>('caja');
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [notes, setNotes] = useState('');
+  const [manualTotal, setManualTotal] = useState('');
 
   // Items in current draft purchase
   const [items, setItems] = useState<PurchaseItem[]>([
@@ -90,6 +92,10 @@ export const PurchasesScreen: React.FC = () => {
   }, [items]);
   const draftIgv = +(draftSubtotal * 0.18).toFixed(2);
   const draftTotal = +(draftSubtotal + draftIgv).toFixed(2);
+  const emptyProvisional = isProvisionalDoc && !items.some((it) => it.insumoId);
+  const purchaseTotal = emptyProvisional ? Number(manualTotal) : draftTotal;
+  const regSubtotal = regItems.reduce((sum, item) => sum + item.totalCost, 0);
+  const regTotal = +(regSubtotal * 1.18).toFixed(2);
 
   // Quick Supplier presets
   const applySupplierPreset = (name: string, ruc: string) => {
@@ -142,7 +148,7 @@ export const PurchasesScreen: React.FC = () => {
 
   const handleSavePurchase = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!supplierName || items.length === 0) {
+    if (!supplierName.trim()) {
       addNotification(
         'Faltan datos del proveedor',
         'Ingresa el nombre del proveedor para registrar la compra.',
@@ -152,12 +158,16 @@ export const PurchasesScreen: React.FC = () => {
     }
 
     const validItems = items.filter((it) => it.insumoId && it.quantity > 0);
-    if (validItems.length === 0) {
+    if (validItems.length === 0 && !isProvisionalDoc) {
       addNotification(
         'Falta seleccionar insumos',
         'Selecciona al menos un insumo con cantidad mayor a 0 para ingresar al Kardex.',
         'warning'
       );
+      return;
+    }
+    if (validItems.length === 0 && (!Number.isFinite(purchaseTotal) || purchaseTotal <= 0)) {
+      addNotification('Monto requerido', 'Ingresa un total mayor a cero para el vale provisional.', 'warning');
       return;
     }
 
@@ -176,9 +186,9 @@ export const PurchasesScreen: React.FC = () => {
       supplierName: supplierName.trim(),
       supplierRuc: supplierRuc.trim() || (isProvisionalDoc ? 'PENDIENTE' : '20500000000'),
       items: validItems,
-      subtotal: draftSubtotal,
-      igv: draftIgv,
-      total: draftTotal,
+      subtotal: emptyProvisional ? +(purchaseTotal / 1.18).toFixed(2) : draftSubtotal,
+      igv: emptyProvisional ? +(purchaseTotal - +(purchaseTotal / 1.18).toFixed(2)).toFixed(2) : draftIgv,
+      total: purchaseTotal,
       paymentStatus:
         paymentMode === 'banco'
           ? 'Transferencia Bancaria'
@@ -197,6 +207,7 @@ export const PurchasesScreen: React.FC = () => {
     setSupplierName('');
     setSupplierRuc('');
     setNotes('');
+    setManualTotal('');
     setIsProvisionalDoc(false);
     setPaymentMode('caja');
     setSelectedBankId('');
@@ -208,18 +219,34 @@ export const PurchasesScreen: React.FC = () => {
     setRegInvoiceNumber('');
     setRegSupplierRuc(p.supplierRuc !== 'PENDIENTE' ? p.supplierRuc : '');
     setRegNotes('');
+    setRegItems([]);
     setIsRegularizeModalOpen(true);
   };
 
   const handleConfirmRegularization = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPurchaseToRegularize || !regInvoiceNumber.trim()) return;
+    if (!regSupplierRuc.trim()) {
+      addNotification('Proveedor pendiente', 'Ingresa el RUC del proveedor para regularizar.', 'warning');
+      return;
+    }
+    if (selectedPurchaseToRegularize.id.startsWith('pur-')) {
+      addNotification('Vale pendiente de sincronización', 'Espera a que el vale se guarde en el servidor antes de pasarlo a limpio.', 'warning');
+      return;
+    }
+    if (selectedPurchaseToRegularize.items.length === 0 &&
+      (regItems.length === 0 || regItems.some((item) => !item.insumoId || item.quantity <= 0) ||
+        Math.round(regTotal * 100) !== Math.round(selectedPurchaseToRegularize.total * 100))) {
+      addNotification('Detalle pendiente', 'Agrega insumos cuyo total coincida con el vale.', 'warning');
+      return;
+    }
 
     regularizePurchase(
       selectedPurchaseToRegularize.id,
       regInvoiceNumber.trim().toUpperCase(),
-      regSupplierRuc.trim() || undefined,
-      regNotes.trim() || undefined
+      regSupplierRuc.trim(),
+      regNotes.trim() || undefined,
+      selectedPurchaseToRegularize.items.length === 0 ? regItems : undefined
     );
 
     setIsRegularizeModalOpen(false);
@@ -359,7 +386,7 @@ export const PurchasesScreen: React.FC = () => {
         </div>
 
         <div className="relative w-full sm:w-64">
-          <span className="material-symbols-outlined absolute left-3 top-2.5 text-ink-muted-4 text-[18px]">
+          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-ink-muted-4 text-[18px]">
             search
           </span>
           <input
@@ -500,7 +527,7 @@ export const PurchasesScreen: React.FC = () => {
       {/* Modal: Regularize Provisional Purchase */}
       {isRegularizeModalOpen && selectedPurchaseToRegularize && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-surface-scrim backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="bg-panel border border-edge-outline rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4">
+          <div className="bg-panel border border-edge-outline rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-edge-outline-2 pb-3">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-[24px] text-ink-warning-3">edit_document</span>
@@ -540,6 +567,26 @@ export const PurchasesScreen: React.FC = () => {
             </div>
 
             <form onSubmit={handleConfirmRegularization} className="space-y-3.5">
+              {selectedPurchaseToRegularize.items.length === 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <strong className="text-[12px] text-ink-strong">Insumos de la boleta o factura</strong>
+                    <button type="button" className="text-[12px] text-ink-brand font-bold" onClick={() => setRegItems((prev) => [...prev, { insumoId: '', insumoName: '', quantity: 1, unit: 'kg', unitCost: 0, totalCost: 0 }])}>Agregar insumo</button>
+                  </div>
+                  {regItems.map((item, idx) => (
+                    <div key={idx} className="grid grid-cols-[1fr_65px_80px_24px] gap-1 items-center">
+                      <select aria-label="Insumo" value={item.insumoId} className="min-w-0 bg-panel-29 border border-edge-outline rounded-lg p-1.5 text-[12px]" onChange={(e) => {
+                        const ins = insumos.find((row) => row.id === e.target.value);
+                        setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, insumoId: ins?.id || '', insumoName: ins?.name || '', unit: ins?.unit || 'kg', unitCost: ins?.costPerUnit || 0, totalCost: +((ins?.costPerUnit || 0) * row.quantity).toFixed(2) } : row));
+                      }}><option value="">Insumo...</option>{insumos.filter((ins) => insumoSelectable(ins) && (ins.companyId === selectedPurchaseToRegularize.companyId || ins.companyId === 'ambas')).map((ins) => <option key={ins.id} value={ins.id}>{ins.name} ({ins.unit})</option>)}</select>
+                      <input aria-label="Cantidad" type="number" min="0.01" step="0.01" value={item.quantity} className="min-w-0 bg-panel-29 border border-edge-outline rounded-lg p-1.5 text-[12px]" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, quantity: Number(e.target.value), totalCost: +(Number(e.target.value) * row.unitCost).toFixed(2) } : row))} />
+                      <input aria-label="Costo unitario" type="number" min="0" step="0.01" value={item.unitCost} className="min-w-0 bg-panel-29 border border-edge-outline rounded-lg p-1.5 text-[12px]" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, unitCost: Number(e.target.value), totalCost: +(Number(e.target.value) * row.quantity).toFixed(2) } : row))} />
+                      <button type="button" aria-label="Quitar insumo" onClick={() => setRegItems((prev) => prev.filter((_, index) => index !== idx))}>×</button>
+                    </div>
+                  ))}
+                  <p className="text-[12px] text-ink-muted-2">Detalle con IGV: S/ {regTotal.toFixed(2)} · Vale: S/ {selectedPurchaseToRegularize.total.toFixed(2)}</p>
+                </div>
+              )}
               <div>
                 <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                   N° de Factura / Boleta Oficial *
@@ -561,6 +608,7 @@ export const PurchasesScreen: React.FC = () => {
                 <input
                   type="text"
                   placeholder="Ej. 20601829401"
+                  required
                   value={regSupplierRuc}
                   onChange={(e) => setRegSupplierRuc(e.target.value)}
                   className="w-full bg-panel-29 border border-edge-outline rounded-xl px-3 py-2 text-[13px] font-mono text-ink-strong focus:outline-none focus:border-edge-brand"
@@ -846,6 +894,7 @@ export const PurchasesScreen: React.FC = () => {
 
               {/* Items List */}
               <div className="space-y-2">
+                {isProvisionalDoc && <p className="text-[12px] text-ink-muted-2">Puedes dejar los insumos pendientes y registrarlos al pasar el vale a limpio. El Kardex no cambiará hasta entonces.</p>}
                 <div className="flex items-center justify-between">
                   <span className="text-[12px] font-bold text-ink-strong">Insumos a Ingresar al Kardex:</span>
                   <button
@@ -866,7 +915,7 @@ export const PurchasesScreen: React.FC = () => {
                     >
                       <div className="flex-1 min-w-[140px]">
                         <select
-                          required
+                          required={!isProvisionalDoc}
                           value={it.insumoId}
                           onChange={(e) => handleItemChange(idx, 'insumoId', e.target.value)}
                           className="w-full bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-1.5 text-[12px] text-ink-strong focus:outline-none"
@@ -923,9 +972,12 @@ export const PurchasesScreen: React.FC = () => {
               </div>
 
               {/* Total Calculation Strip */}
+              {emptyProvisional && <label className="block text-[12px] font-bold text-ink-strong">Monto total del vale (S/)
+                <input type="number" min="0.01" step="0.01" required value={manualTotal} onChange={(e) => setManualTotal(e.target.value)} className="mt-1 w-full bg-panel-30 border border-edge-outline rounded-xl px-3 py-2 text-[14px] text-ink-strong" />
+              </label>}
               <div className="bg-panel-29 p-3.5 rounded-xl border border-edge-outline-2 flex items-center justify-between text-[13px]">
-                <span className="text-ink-muted-5 font-bold">Total a Registrar en Kardex y Contabilidad:</span>
-                <span className="text-[20px] font-black text-ink-success">S/ {draftTotal.toFixed(2)}</span>
+                <span className="text-ink-muted-5 font-bold">{emptyProvisional ? 'Total del vale (Kardex pendiente):' : 'Total a Registrar en Kardex y Contabilidad:'}</span>
+                <span className="text-[20px] font-black text-ink-success">S/ {(Number.isFinite(purchaseTotal) ? purchaseTotal : 0).toFixed(2)}</span>
               </div>
 
               {/* Action Buttons */}

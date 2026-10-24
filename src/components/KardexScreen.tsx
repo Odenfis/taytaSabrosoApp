@@ -287,7 +287,7 @@ export const KardexScreen: React.FC = () => {
         <div className="flex items-center gap-3 w-full md:w-auto flex-wrap">
           {/* Search bar */}
           <div className="relative flex-1 md:w-64">
-            <span className="material-symbols-outlined absolute left-3 top-2.5 text-ink-muted text-[18px]">
+            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-ink-muted text-[18px]">
               search
             </span>
             <input

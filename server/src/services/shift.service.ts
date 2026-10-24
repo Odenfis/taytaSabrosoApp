@@ -29,18 +29,22 @@ export async function switchCompanyShift(input: {
 
     // Transacciones del turno vigente (o sin turno asignado)
     const compTxs = await tx.transaction.findMany({
-      where: { companyId: input.companyId },
+      where: { companyId: input.companyId, isDeleted: false,
+        ...(shiftState ? { timestamp: { gte: shiftState.openedUtc } } : {}) },
     });
     const turnTxs = compTxs.filter((t) => !t.shift || t.shift === currentShift);
 
     const cashSales = turnTxs
-      .filter((t) => t.isIncome && (t.paymentMethod === 'Efectivo' || !t.bankAccountId))
+      .filter((t) => t.isIncome && t.type.startsWith('Venta (') && !t.bankAccountId)
+      .reduce((sum, t) => sum + toNum(t.amount), 0);
+    const cashIncome = turnTxs
+      .filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago' && !t.bankAccountId)
       .reduce((sum, t) => sum + toNum(t.amount), 0);
 
     const cardSales = turnTxs
       .filter(
         (t) =>
-          t.isIncome &&
+          t.isIncome && t.type.startsWith('Venta (') &&
           (t.paymentMethod === 'Tarjeta' ||
             (t.description || '').toLowerCase().includes('tarjeta'))
       )
@@ -49,7 +53,7 @@ export async function switchCompanyShift(input: {
     const walletSales = turnTxs
       .filter(
         (t) =>
-          t.isIncome &&
+          t.isIncome && t.type.startsWith('Venta (') &&
           (t.paymentMethod === 'Billetera Digital' ||
             (t.description || '').toLowerCase().includes('yape') ||
             (t.description || '').toLowerCase().includes('plin'))
@@ -58,14 +62,17 @@ export async function switchCompanyShift(input: {
 
     const totalSales = round2(cashSales + cardSales + walletSales);
     const totalExpenses = turnTxs
-      .filter((t) => !t.isIncome)
+      .filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago')
       .reduce((sum, t) => sum + toNum(t.amount), 0);
     // Regla de gaveta: solo los egresos SIN cuenta bancaria salen del efectivo
     // físico (los pagados desde banco decrementan el banco, no la caja).
     const cashExpenses = turnTxs
-      .filter((t) => !t.isIncome && !t.bankAccountId)
+      .filter((t) => !t.isIncome && !t.bankAccountId && t.type !== 'Reclasificación de Pago')
       .reduce((sum, t) => sum + toNum(t.amount), 0);
-    const systemCashExpected = round2(initialCash + cashSales - cashExpenses);
+    const cashReclassifications = turnTxs
+      .filter((t) => t.type === 'Reclasificación de Pago' && !t.bankAccountId)
+      .reduce((sum, t) => sum + (t.isIncome ? 1 : -1) * toNum(t.amount), 0);
+    const systemCashExpected = round2(initialCash + cashIncome - cashExpenses + cashReclassifications);
     const difference = round2(input.reportedCash - systemCashExpected);
 
     // Ingresos por cuenta bancaria que no son tarjeta ni billetera digital
@@ -188,8 +195,9 @@ export async function listTransactions(companyId?: string) {
     },
     orderBy: { timestamp: 'desc' },
     take: 1000,
+    include: { _count: { select: { corrections: true } } },
   });
-  return plain(transactions);
+  return plain(transactions.map(({ _count, ...transaction }) => ({ ...transaction, correctionCount: _count.corrections })));
 }
 
 export async function currentShiftForCompany(companyId: string) {

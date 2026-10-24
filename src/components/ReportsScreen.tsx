@@ -13,7 +13,7 @@ export const ReportsScreen: React.FC = () => {
     let yape = 0;
 
     transactions.forEach((tx) => {
-      if (!tx.isIncome) return;
+      if (!tx.isIncome || tx.type === 'Reclasificación de Pago') return;
       const isDigitalWallet =
         !tx.bankAccountId &&
         ((tx.paymentMethod ?? '').toLowerCase().includes('yape') ||

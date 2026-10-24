@@ -790,6 +790,11 @@
 :root[data-theme="light"] :is(input, select, textarea):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 :root[data-theme="light"] .ambient-bg { background-image: radial-gradient(circle at 15% 50%, rgb(130 59 25 / .04), transparent 25%), radial-gradient(circle at 85% 30%, rgb(235 194 70 / .06), transparent 25%); }
 
+/* Selected bank filter: keep its balance and alias legible on the terracotta fill. */
+:root[data-theme="light"] #cash-ledger-screen .ledger-bank-filter[aria-pressed="true"] :is(.ledger-bank-filter-balance, .ledger-bank-filter-alias) {
+  color: var(--color-ink-on-brand);
+}
+
 @theme { --color-payment-start: #823b19; }
 :root[data-theme="light"] { --color-payment-start: #e7ab83; }
 .shadow-ui-1 { --tw-shadow: var(--shadow-ui-1); }

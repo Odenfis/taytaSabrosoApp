@@ -25,6 +25,8 @@ import {
   createManualTransaction,
 } from '../services/shift.service.js';
 import { notifyOrderState, notifyTableState } from '../lib/realtime.js';
+import { correctPayment, listPaymentCorrections } from '../services/payment-correction.service.js';
+import { prisma } from '../lib/prisma.js';
 import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
 
@@ -280,7 +282,13 @@ router.post('/purchases', async (req, res, next) => {
         bankAccountAlias: z.string().optional(),
         notes: z.string().optional(),
         clientOpId: z.string().optional(),
-        items: z.array(itemSchema).min(1),
+        items: z.array(itemSchema),
+      })
+      .refine((value) => value.documentStatus === 'provisional' || value.items.length > 0, {
+        message: 'La compra formal requiere al menos un insumo.', path: ['items'],
+      })
+      .refine((value) => value.items.length > 0 || value.total > 0, {
+        message: 'El vale sin insumos requiere un monto positivo.', path: ['total'],
       })
       .parse(req.body);
     res.status(201).json(await createPurchase(body));
@@ -301,6 +309,11 @@ router.post('/purchases/:id/regularize', async (req, res, next) => {
         supplierRuc: z.string().min(1),
         notes: z.string().optional(),
         clientOpId: z.string().optional(),
+        items: z.array(z.object({
+          insumoId: z.string().min(1), insumoName: z.string().min(1),
+          quantity: z.number().positive(), unit: z.string().min(1),
+          unitCost: z.number().nonnegative(), totalCost: z.number().nonnegative(),
+        })).optional(),
       })
       .parse(req.body);
     const regularized = await regularizePurchase(id, {
@@ -394,6 +407,38 @@ router.get('/transactions', async (req, res, next) => {
 });
 
 // Transacciones manuales de Caja (Caja Chica / Retiro de Caja / Ingreso Extra / Ajuste de Saldo)
+router.get('/transactions/:id/corrections', async (req, res, next) => {
+  try {
+    const { id } = idParam.parse(req.params);
+    const sale = await prisma.transaction.findUnique({ where: { id }, select: { companyId: true } });
+    const user = req.auth!.user;
+    if (!sale?.companyId || (user.companyId && user.companyId !== sale.companyId) ||
+        (user.assignedCompanyId && user.assignedCompanyId !== sale.companyId)) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Cobro no encontrado.' } }); return;
+    }
+    res.json(await listPaymentCorrections(id));
+  } catch (err) { next(err); }
+});
+
+router.post('/transactions/:id/corrections', async (req, res, next) => {
+  try {
+    const { id } = idParam.parse(req.params);
+    const body = z.object({
+      correctionId: z.string().uuid(), supervisorPin: z.string().min(1).max(100),
+      expectedMethodId: z.string().nullable(), expectedBankAccountId: z.string().nullable(),
+      expectedReference: z.string().nullable(), newMethodId: z.string().min(1),
+      referenceNumber: z.string().max(100).nullable(), reason: z.string().trim().min(5).max(500),
+    }).parse(req.body);
+    res.status(201).json(await correctPayment({
+      transactionId: id, operatorId: req.auth!.user.id, correctionId: body.correctionId,
+      supervisorPin: body.supervisorPin, expectedMethodId: body.expectedMethodId ?? null,
+      expectedBankAccountId: body.expectedBankAccountId ?? null,
+      expectedReference: body.expectedReference ?? null, newMethodId: body.newMethodId,
+      referenceNumber: body.referenceNumber ?? null, reason: body.reason,
+    }));
+  } catch (err) { next(err); }
+});
+
 router.post('/transactions', async (req, res, next) => {
   const op = oplog(req, 'transaccion', 'crear_transaccion');
   try {

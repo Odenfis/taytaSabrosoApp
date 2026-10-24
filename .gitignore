@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 .claude/
+/deploy/client/app.env
+/deploy/client/initial-config.json

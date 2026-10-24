@@ -1,0 +1,21 @@
+{
+  "companies": {
+    "el-tayta": {
+      "name": "RAZÓN SOCIAL REAL EL TAYTA",
+      "tradeName": "El Tayta",
+      "ruc": "00000000001",
+      "address": "DIRECCIÓN REAL EL TAYTA",
+      "specialty": "Restaurante",
+      "tables": [{ "number": "1", "capacity": 4, "zone": "Salón Principal" }]
+    },
+    "el-sabroso": {
+      "name": "RAZÓN SOCIAL REAL EL SABROSO",
+      "tradeName": "El Sabroso",
+      "ruc": "00000000002",
+      "address": "DIRECCIÓN REAL EL SABROSO",
+      "specialty": "Restaurante",
+      "tables": [{ "number": "1", "capacity": 4, "zone": "Salón Principal" }]
+    }
+  },
+  "administrator": { "name": "NOMBRE DEL ADMINISTRADOR", "pin": "CAMBIAR_PIN" }
+}

@@ -53,6 +53,7 @@ model Company {
   users           User[]
   clientOps       ClientOp[]
   numbering       NumberingSequence[]
+  paymentCorrections PaymentCorrection[]
 
   @@map("empresas")
 }
@@ -107,6 +108,8 @@ model User {
 
   company  Company?  @relation(fields: [companyId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   sessions Session[]
+  correctionsOperated PaymentCorrection[] @relation("CorrectionOperator")
+  correctionsAuthorized PaymentCorrection[] @relation("CorrectionAuthorizer")
 
   @@index([companyId])
   @@map("usuarios")
@@ -265,6 +268,8 @@ model Transaction {
   bankAccount      BankAccount?         @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   paymentMethodRef CustomPaymentMethod? @relation(fields: [customPaymentMethodId], references: [id], onUpdate: NoAction, onDelete: NoAction)
   purchase         Purchase?            @relation(fields: [purchaseId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  corrections      PaymentCorrection[] @relation("CorrectedSale")
+  adjustmentForCorrections PaymentCorrection[] @relation("CorrectionAdjustment")
 
   @@index([companyId])
   @@index([timestamp])
@@ -272,6 +277,42 @@ model Transaction {
   @@index([bankAccountId])
   @@index([purchaseId])
   @@map("transacciones")
+}
+
+// Historial inmutable de reclasificaciones de cobros ya efectuados.
+model PaymentCorrection {
+  id                    String   @id @db.NVarChar(36)
+  companyId             String   @map("empresa_id") @db.NVarChar(36)
+  transactionId         String   @map("transaccion_id") @db.NVarChar(36)
+  operatorId            String   @map("operador_id") @db.NVarChar(36)
+  authorizerId          String   @map("autorizador_id") @db.NVarChar(36)
+  oldMethodId           String?  @map("metodo_anterior_id") @db.NVarChar(36)
+  oldMethodName         String?  @map("metodo_anterior") @db.NVarChar(150)
+  oldBankAccountId      String?  @map("cuenta_anterior_id") @db.NVarChar(36)
+  oldBankAccountAlias   String?  @map("alias_cuenta_anterior") @db.NVarChar(200)
+  oldReference          String?  @map("referencia_anterior") @db.NVarChar(100)
+  oldAmountReceived     Decimal? @map("recibido_anterior") @db.Decimal(12, 2)
+  oldChange             Decimal? @map("vuelto_anterior") @db.Decimal(12, 2)
+  newMethodId           String   @map("metodo_nuevo_id") @db.NVarChar(36)
+  newMethodName         String   @map("metodo_nuevo") @db.NVarChar(150)
+  newBankAccountId      String?  @map("cuenta_nueva_id") @db.NVarChar(36)
+  newBankAccountAlias   String?  @map("alias_cuenta_nueva") @db.NVarChar(200)
+  newReference          String?  @map("referencia_nueva") @db.NVarChar(100)
+  reason                String   @map("motivo") @db.NVarChar(500)
+  amount                Decimal  @map("monto") @db.Decimal(12, 2)
+  closedShift           Boolean  @map("turno_cerrado")
+  adjustmentTransactionId String? @map("ajuste_transaccion_id") @db.NVarChar(36)
+  createdAt             DateTime @default(now()) @map("creado_utc") @db.DateTime2
+
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  transaction Transaction @relation("CorrectedSale", fields: [transactionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  adjustmentTransaction Transaction? @relation("CorrectionAdjustment", fields: [adjustmentTransactionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  operator    User        @relation("CorrectionOperator", fields: [operatorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  authorizer  User        @relation("CorrectionAuthorizer", fields: [authorizerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([transactionId, createdAt])
+  @@index([companyId, createdAt])
+  @@map("correcciones_pago")
 }
 
 // ============================ FINANZAS ============================

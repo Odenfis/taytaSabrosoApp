@@ -17,6 +17,7 @@ import {
   Insumo,
   Recipe,
   Purchase,
+  PurchaseItem,
   KardexMovement,
   KardexMovementType,
   PurchaseCategory,
@@ -233,6 +234,7 @@ interface POSContextType {
     customPaymentMethodId?: string,
     referenceNumber?: string
   ) => void;
+  correctSalePayment: (transaction: Transaction, correctionId: string, newMethodId: string, referenceNumber: string, reason: string, supervisorPin: string) => Promise<void>;
   addNewTable: (number: string, capacity: number, zone: Zone) => void;
   // Compras & Kardex actions
   addPurchase: (newPurchase: Omit<Purchase, 'id' | 'time'>) => void;
@@ -240,7 +242,8 @@ interface POSContextType {
     purchaseId: string,
     invoiceNumber: string,
     supplierRuc: string,
-    notes?: string
+    notes?: string,
+    items?: PurchaseItem[]
   ) => void;
   addKardexAdjustment: (
     insumoId: string,
@@ -335,7 +338,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   );
 
   // Empresas: catálogo real del backend (login / me). Fallback al demo local.
-  const [companies, setCompanies] = useState<Company[]>(COMPANIES);
+  const [companies, setCompanies] = useState<Company[]>(import.meta.env.PROD ? [] : COMPANIES);
 
   const [activeCompanyId, setActiveCompanyId] = useState<CompanyId | 'todas'>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_COMPANY);
@@ -344,14 +347,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [catalogTarget, setCatalogTarget] = useState<{ productId: string; action: 'createRecipe' | 'viewRecipe' | 'editProduct' } | null>(null);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('mesas');
-  const [selectedTableId, setSelectedTableId] = useState<string | null>('t-02');
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
 
   const [tables, setTables] = useState<Table[]>(() => {
-    return safeParse(STORAGE_KEYS.TABLES, INITIAL_TABLES);
+    return safeParse(STORAGE_KEYS.TABLES, import.meta.env.PROD ? [] : INITIAL_TABLES);
   });
 
   const [products, setProducts] = useState<Product[]>(() => {
-    return overlayProducts(safeParse(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS), []);
+    return overlayProducts(safeParse(STORAGE_KEYS.PRODUCTS, import.meta.env.PROD ? [] : INITIAL_PRODUCTS), []);
   });
 
   const [productPendingOps, setProductPendingOps] = useState<PendingOp[]>(productPending);
@@ -364,37 +367,37 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const [orders, setOrders] = useState<Record<string, Order>>(() => {
-    return safeParse(STORAGE_KEYS.ORDERS, INITIAL_ORDERS);
+    return safeParse(STORAGE_KEYS.ORDERS, import.meta.env.PROD ? {} : INITIAL_ORDERS);
   });
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    return safeParse(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+    return safeParse(STORAGE_KEYS.TRANSACTIONS, import.meta.env.PROD ? [] : INITIAL_TRANSACTIONS);
   });
 
   const [insumos, setInsumos] = useState<Insumo[]>(() => {
-    return safeParse(STORAGE_KEYS.INSUMOS, INITIAL_INSUMOS);
+    return safeParse(STORAGE_KEYS.INSUMOS, import.meta.env.PROD ? [] : INITIAL_INSUMOS);
   });
 
   const [recipes, setRecipes] = useState<Recipe[]>(() => {
-    return overlayRecipes(safeParse(STORAGE_KEYS.RECIPES, INITIAL_RECIPES), []);
+    return overlayRecipes(safeParse(STORAGE_KEYS.RECIPES, import.meta.env.PROD ? [] : INITIAL_RECIPES), []);
   });
 
   const [purchases, setPurchases] = useState<Purchase[]>(() => {
-    return safeParse(STORAGE_KEYS.PURCHASES, INITIAL_PURCHASES);
+    return safeParse(STORAGE_KEYS.PURCHASES, import.meta.env.PROD ? [] : INITIAL_PURCHASES);
   });
 
   const [kardexMovements, setKardexMovements] = useState<KardexMovement[]>(() => {
-    return safeParse(STORAGE_KEYS.KARDEX, INITIAL_KARDEX);
+    return safeParse(STORAGE_KEYS.KARDEX, import.meta.env.PROD ? [] : INITIAL_KARDEX);
   });
 
   // Cuentas Bancarias
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => {
-    return safeParse(STORAGE_KEYS.BANK_ACCOUNTS, INITIAL_BANK_ACCOUNTS);
+    return safeParse(STORAGE_KEYS.BANK_ACCOUNTS, import.meta.env.PROD ? [] : INITIAL_BANK_ACCOUNTS);
   });
 
   // Métodos de Pago Personalizables
   const [paymentMethods, setPaymentMethods] = useState<CustomPaymentMethod[]>(() => {
-    return safeParse(STORAGE_KEYS.PAYMENT_METHODS, INITIAL_PAYMENT_METHODS);
+    return safeParse(STORAGE_KEYS.PAYMENT_METHODS, import.meta.env.PROD ? [] : INITIAL_PAYMENT_METHODS);
   });
 
   // Turnos por empresa (El cliente sólo maneja 2 turnos: Día y Noche)
@@ -405,12 +408,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Caja inicial vigente por empresa (turnos_empresa.caja_inicial del server).
   // Alimenta el saldo "Efectivo en Caja" del Libro de Caja.
   const [companyShiftCash, setCompanyShiftCash] = useState<Record<CompanyId, number>>({
-    'el-tayta': 350,
-    'el-sabroso': 350,
+    'el-tayta': import.meta.env.PROD ? 0 : 350,
+    'el-sabroso': import.meta.env.PROD ? 0 : 350,
+  });
+  const [companyShiftOpenedUtc, setCompanyShiftOpenedUtc] = useState<Record<CompanyId, number>>({
+    'el-tayta': 0, 'el-sabroso': 0,
   });
 
   const [shiftRecords, setShiftRecords] = useState<ShiftRecord[]>(() => {
-    return safeParse(STORAGE_KEYS.SHIFT_RECORDS, [
+    return safeParse(STORAGE_KEYS.SHIFT_RECORDS, import.meta.env.PROD ? [] : [
       {
         id: 'shift-rec-01',
         companyId: 'el-tayta',
@@ -438,7 +444,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Configuración de Impresoras Térmicas
   const [printers, setPrinters] = useState<ThermalPrinterConfig[]>(() => {
-    return safeParse(STORAGE_KEYS.PRINTERS, INITIAL_PRINTERS);
+    return safeParse(STORAGE_KEYS.PRINTERS, import.meta.env.PROD ? [] : INITIAL_PRINTERS);
   });
 
   const [isPrinterTestModalOpen, setIsPrinterTestModalOpen] = useState(false);
@@ -508,6 +514,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         result[s.companyId as CompanyId] = s.initialCash;
       }
     });
+    return result;
+  };
+  const mapCompanyShiftOpened = (shifts: CompanyShiftDTO[]): Record<CompanyId, number> => {
+    const result: Record<CompanyId, number> = { 'el-tayta': 0, 'el-sabroso': 0 };
+    shifts.forEach((s) => { if (s?.companyId) result[s.companyId as CompanyId] = Date.parse(s.openedUtc) || 0; });
     return result;
   };
 
@@ -1227,6 +1238,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCompanies(res.companies);
         setCompanyShifts(mapCompanyShifts(res.companyShifts));
         setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
+        setCompanyShiftOpenedUtc(mapCompanyShiftOpened(res.companyShifts));
         loadCatalogs();
         loadOperations();
       })
@@ -1539,6 +1551,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...prev,
       [toCompanyId(e.companyId)]: e.initialCash,
     }));
+    setCompanyShiftOpenedUtc((prev) => ({ ...prev, [toCompanyId(e.companyId)]: Date.parse(e.updatedAt) || Date.now() }));
     void Promise.all([refreshShiftRecords(), refreshTransactions()]);
   };
 
@@ -1684,6 +1697,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCompanies(res.companies);
       setCompanyShifts(mapCompanyShifts(res.companyShifts));
       setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
+      setCompanyShiftOpenedUtc(mapCompanyShiftOpened(res.companyShifts));
 
       // Mantiene la empresa activa si sigue existiendo; si no, prioriza la
       // empresa asignada al usuario (o la primera del catálogo).
@@ -1753,7 +1767,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         id: 'el-tayta' as CompanyId,
         name: 'Grupo Gastronómico Tayta & Sabroso',
         tradeName: 'Tayta & Sabroso Holding',
-        ruc: '20601234567 / 20609876543',
+        ruc: companies.map((company) => company.ruc).join(' / '),
         specialty: 'Gestión Consolidada de Ambas Empresas',
         themeColor: '#ffb597',
         accentColor: '#823b19',
@@ -2970,6 +2984,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   };
 
+  // Sensitive financial correction: server-only, never queued or applied optimistically.
+  const correctSalePayment = async (
+    transaction: Transaction, correctionId: string, newMethodId: string, referenceNumber: string, reason: string, supervisorPin: string
+  ): Promise<void> => {
+    if (!offlineState.isOnline || offlineState.isSimulatedOffline) throw new Error('Esta corrección requiere conexión con el servidor.');
+    await apiClient.post(`/operations/transactions/${encodeURIComponent(transaction.id)}/corrections`, {
+      correctionId, supervisorPin, expectedMethodId: transaction.customPaymentMethodId ?? null,
+      expectedBankAccountId: transaction.bankAccountId ?? null, expectedReference: transaction.referenceNumber ?? null,
+      newMethodId, referenceNumber: referenceNumber.trim() || null, reason: reason.trim(),
+    });
+    await Promise.all([refreshTransactions(), refreshBankAccounts()]);
+    const correctedMethod = paymentMethods.find((method) => method.id === newMethodId);
+    if (correctedMethod && lastCompletedOrder?.id === transaction.orderId) {
+      setLastCompletedOrder((previous) => previous?.id === transaction.orderId ? {
+        ...previous, paymentMethod: correctedMethod.name, amountReceived: transaction.amount, change: 0,
+      } : previous);
+    }
+  };
+
   // Add New Table (Fase E5: write-through a POST /catalogs/tables; F5 persiste)
   const addNewTable = (number: string, capacity: number, zone: Zone) => {
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
@@ -3144,7 +3177,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         supplierName: completedPurchase.supplierName,
         supplierRuc: completedPurchase.supplierRuc || undefined,
         invoiceNumber: completedPurchase.invoiceNumber || undefined,
+        provisionalNoteNumber: completedPurchase.provisionalNoteNumber,
         documentStatus: completedPurchase.documentStatus,
+        subtotal: completedPurchase.subtotal,
+        igv: completedPurchase.igv,
+        paymentStatus: completedPurchase.paymentStatus,
         notes: completedPurchase.notes || undefined,
         paidFromCash: completedPurchase.paidFromCash,
         bankAccountId: completedPurchase.bankAccountId || undefined,
@@ -3167,7 +3204,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           supplierName: completedPurchase.supplierName,
           supplierRuc: completedPurchase.supplierRuc || undefined,
           invoiceNumber: completedPurchase.invoiceNumber || undefined,
+          provisionalNoteNumber: completedPurchase.provisionalNoteNumber,
           documentStatus: completedPurchase.documentStatus,
+          subtotal: completedPurchase.subtotal,
+          igv: completedPurchase.igv,
+          paymentStatus: completedPurchase.paymentStatus,
           notes: completedPurchase.notes || undefined,
           paidFromCash: completedPurchase.paidFromCash,
           bankAccountId: completedPurchase.bankAccountId || undefined,
@@ -3194,7 +3235,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     addNotification(
       'Compra Registrada con Éxito',
-      `${completedPurchase.documentStatus === 'provisional' ? 'Vale provisional' : 'Factura'} #${completedPurchase.invoiceNumber || completedPurchase.provisionalNoteNumber} ingresada al Kardex (+${completedPurchase.items.length} insumos).`,
+      `${completedPurchase.documentStatus === 'provisional' ? 'Vale provisional' : 'Factura'} #${completedPurchase.provisionalNoteNumber || completedPurchase.invoiceNumber} registrada. ${completedPurchase.items.length ? `Kardex: +${completedPurchase.items.length} insumos.` : 'Insumos pendientes de regularización.'}`,
       'success'
     );
   };
@@ -3204,7 +3245,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     purchaseId: string,
     invoiceNumber: string,
     supplierRuc: string,
-    notes?: string
+    notes?: string,
+    items?: PurchaseItem[]
   ) => {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setPurchases((prev) =>
@@ -3217,6 +3259,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             supplierRuc: supplierRuc.trim(),
             regularizedAt: `Hoy ${timeStr}`,
             regularizedBy: currentUser?.name || 'Carlos M.',
+            items: items ?? p.items,
             notes: notes ? `${p.notes || ''} [Regularizado: ${notes}]` : p.notes,
           };
         }
@@ -3235,19 +3278,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       clientOpId,
       entity: 'purchase',
       op: 'regularizePurchase',
-      queuePayload: { purchaseId, invoiceNumber: invoiceNumber.trim(), supplierRuc: supplierRuc.trim(), notes, clientOpId },
+      queuePayload: { purchaseId, invoiceNumber: invoiceNumber.trim(), supplierRuc: supplierRuc.trim(), notes, items, clientOpId },
       endpointOp: async () => {
         const res = await apiClient.post<PurchaseDTO>(`/operations/purchases/${purchaseId}/regularize`, {
           invoiceNumber: invoiceNumber.trim(),
           supplierRuc: supplierRuc.trim(),
           notes: notes || undefined,
+          items,
+          clientOpId,
         });
         const serverPurchase = mapPurchase(res);
         setPurchases((prev) =>
           prev.map((p) => (p.id === serverPurchase.id ? serverPurchase : p))
         );
-        void refreshKardex();
-        void refreshTransactions();
+        void Promise.all([refreshInsumos(), refreshKardex(), refreshTransactions(), refreshBankAccounts()]);
       },
     });
   };
@@ -3265,11 +3309,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const compTxs = transactions.filter(
-      (t) => t.companyId === companyId && (!t.shift || t.shift === currentShift)
+      (t) => t.companyId === companyId && t.timestamp >= companyShiftOpenedUtc[companyId] && (!t.shift || t.shift === currentShift)
     );
 
     const cashSales = compTxs
-      .filter((t) => t.isIncome && isCashMovement(t))
+      .filter((t) => t.isIncome && t.type.startsWith('Venta (') && isCashMovement(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+    const cashIncome = compTxs
+      .filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago' && isCashMovement(t))
       .reduce((sum, t) => sum + t.amount, 0);
 
     const cardSales = compTxs
@@ -3295,13 +3342,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const totalSales = cashSales + cardSales + walletSales;
 
     const totalExpenses = compTxs
-      .filter((t) => !t.isIncome)
+      .filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago')
       .reduce((sum, t) => sum + t.amount, 0);
 
     // Regla de gaveta: solo los egresos SIN cuenta bancaria salen de la caja
     // efectivo (los pagados desde banco no tocan la gaveta).
     const cashExpenses = compTxs
-      .filter((t) => !t.isIncome && isCashMovement(t))
+      .filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago' && isCashMovement(t))
       .reduce((sum, t) => sum + t.amount, 0);
 
     // Gap #6 fix: caja inicial desde el último arqueo local (el server usa su
@@ -3320,7 +3367,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           t.paymentMethod !== 'Yape / Plin'
       )
       .reduce((sum, t) => sum + t.amount, 0);
-    const systemCashExpected = +(initialCash + cashSales - cashExpenses).toFixed(2);
+    const reclassificationCash = compTxs.filter((t) => t.type === 'Reclasificación de Pago' && isCashMovement(t))
+      .reduce((sum, t) => sum + (t.isIncome ? t.amount : -t.amount), 0);
+    const systemCashExpected = +(initialCash + cashIncome - cashExpenses + reclassificationCash).toFixed(2);
     const difference = +(reportedCash - systemCashExpected).toFixed(2);
 
     const newRecord: ShiftRecord = {
@@ -3356,6 +3405,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...prev,
       [companyId]: initialCashForNext,
     }));
+    setCompanyShiftOpenedUtc((prev) => ({ ...prev, [companyId]: now.getTime() }));
 
     if (difference !== 0) {
       const diffTx: Transaction = {
@@ -4094,6 +4144,7 @@ Doble Alto: PEDIDO EXPRESS #8841
 
   // Reset to Demo Data
   const resetToDemoData = () => {
+    if (import.meta.env.PROD) return;
     setTables(INITIAL_TABLES);
     setProducts(INITIAL_PRODUCTS);
     setOrders(INITIAL_ORDERS);
@@ -4127,12 +4178,14 @@ Doble Alto: PEDIDO EXPRESS #8841
     let cashEgresos = 0;
 
     filteredTransactions.forEach((tx) => {
+      const isReclassification = tx.type === 'Reclasificación de Pago';
+      const inCurrentShift = !tx.companyId || tx.timestamp >= companyShiftOpenedUtc[tx.companyId];
       if (tx.isIncome) {
-        ingresos += tx.amount;
-        if (isCashMovement(tx)) cashIngresos += tx.amount;
+        if (!isReclassification) ingresos += tx.amount;
+        if (inCurrentShift && isCashMovement(tx)) cashIngresos += tx.amount;
       } else {
-        egresos += tx.amount;
-        if (isCashMovement(tx)) cashEgresos += tx.amount;
+        if (!isReclassification) egresos += tx.amount;
+        if (inCurrentShift && isCashMovement(tx)) cashEgresos += tx.amount;
       }
     });
 
@@ -4148,7 +4201,7 @@ Doble Alto: PEDIDO EXPRESS #8841
       totalEgresos: +egresos.toFixed(2),
       saldoActual: +(initialCash + cashIngresos - cashEgresos).toFixed(2),
     };
-  }, [filteredTransactions, activeCompanyId, companyShiftCash]);
+  }, [filteredTransactions, activeCompanyId, companyShiftCash, companyShiftOpenedUtc]);
 
   // FINANCIAL RATIOS & EXPENSE RATIOS ENGINE ("¿Se está pasando de gastos?")
   const getCompanyAnalysis = (cid: CompanyId | 'todas'): ExpenseRatioAnalysis => {
@@ -4158,10 +4211,10 @@ Doble Alto: PEDIDO EXPRESS #8841
       (o) => cid === 'todas' || o.companyId === cid
     );
 
-    const totalSales = txs.filter((t) => t.isIncome).reduce((sum, t) => sum + t.amount, 0);
+    const totalSales = txs.filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago').reduce((sum, t) => sum + t.amount, 0);
     const totalPurchases = purs.reduce((sum, p) => sum + p.total, 0);
     const operatingExpenses = txs
-      .filter((t) => !t.isIncome && t.type !== 'Pago Proveedor')
+      .filter((t) => !t.isIncome && t.type !== 'Pago Proveedor' && t.type !== 'Reclasificación de Pago')
       .reduce((sum, t) => sum + t.amount, 0);
 
     // Calculate theoretical cost of sold dishes from recipes
@@ -4334,6 +4387,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         pendingKitchenConfirm,
         completePayment,
         addManualTransaction,
+        correctSalePayment,
         addNewTable,
         addPurchase,
         regularizePurchase,

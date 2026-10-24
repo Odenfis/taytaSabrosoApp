@@ -80,7 +80,7 @@ async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCall
       case 'createPurchase':
         return apiClient.post('/operations/purchases', pick(payload, ['companyId', 'category', 'supplierName', 'supplierRuc', 'invoiceNumber', 'documentStatus', 'provisionalNoteNumber', 'notes', 'shift', 'subtotal', 'igv', 'total', 'paymentStatus', 'paidFromCash', 'bankAccountId', 'bankAccountAlias', 'items', 'clientOpId']));
       case 'regularizePurchase':
-        return apiClient.post(`/operations/purchases/${String(payload.purchaseId)}/regularize`, pick(payload, ['invoiceNumber', 'supplierRuc', 'notes', 'clientOpId']));
+        return apiClient.post(`/operations/purchases/${String(payload.purchaseId)}/regularize`, pick(payload, ['invoiceNumber', 'supplierRuc', 'notes', 'items', 'clientOpId']));
       case 'switchShift':
         return apiClient.post('/operations/shifts/switch', pick(payload, ['companyId', 'targetShift', 'reportedCash', 'initialCashForNext', 'notes', 'clientOpId']));
       case 'kardexAdjustment':

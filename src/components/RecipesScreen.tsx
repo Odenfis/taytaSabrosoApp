@@ -250,7 +250,7 @@ export const RecipesScreen: React.FC = () => {
         <div className="w-full md:w-80 lg:w-96 border-r border-edge-outline-3 flex flex-col bg-panel-22 overflow-hidden">
           <div className="p-3 border-b border-edge-outline-5">
             <div className="relative">
-              <span className="material-symbols-outlined absolute left-2.5 top-2.5 text-ink-muted text-[18px]">
+              <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-ink-muted text-[18px]">
                 search
               </span>
               <input

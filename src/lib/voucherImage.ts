@@ -8,6 +8,7 @@ export interface VoucherHeader {
   name: string;
   ruc: string;
   slogan: string;
+  address: string;
 }
 
 const TICKET_WIDTH = 320; // ~80mm a 96dpi
@@ -44,9 +45,9 @@ function buildLines(order: Order, header: VoucherHeader, isPaid: boolean): Line[
   lines.push({ text: header.name.toUpperCase(), lineGap: 0, bold: true, center: true, size: 15 });
   lines.push({ text: header.slogan, lineGap: 2, center: true, size: 10 });
   lines.push({ text: `RUC: ${header.ruc}`, lineGap: 2, center: true, size: 10 });
-  lines.push({ text: 'Av. Principal 450, Lima', lineGap: 2, center: true, size: 10 });
+  for (const line of wrap(header.address, 38)) lines.push({ text: line, lineGap: 2, center: true, size: 10 });
   if (isPaid) {
-    lines.push({ text: `BOLETA ELECTRÓNICA #${order.ticketNumber}`, lineGap: 6, bold: true, center: true, size: 12 });
+    lines.push({ text: `TICKET INTERNO #${order.ticketNumber}`, lineGap: 6, bold: true, center: true, size: 12 });
   } else {
     lines.push({ text: 'COMANDA / CUENTA PRE-VENTA', lineGap: 6, bold: true, center: true, size: 12 });
   }
@@ -92,7 +93,7 @@ function buildLines(order: Order, header: VoucherHeader, isPaid: boolean): Line[
   lines.push({ text: dash, lineGap: 6, size: 10 });
   lines.push({ text: '¡Gracias por su preferencia!', lineGap: 2, center: true, size: 10 });
   lines.push({
-    text: isPaid ? 'Representación de la Boleta Electrónica' : 'Documento no válido como comprobante de pago',
+    text: 'Documento no válido como comprobante de pago',
     lineGap: 2, center: true, size: 8,
   });
   return lines;

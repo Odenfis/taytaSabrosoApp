@@ -1,0 +1,42 @@
+services:
+  app:
+    image: tayta-sabroso:${APP_VERSION:-local}
+    platform: linux/amd64
+    build: .
+    env_file: ./deploy/client/app.env
+    restart: unless-stopped
+    networks: [internal]
+
+  web:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      POS_HOSTNAME: ${POS_HOSTNAME:?Defina POS_HOSTNAME en .env}
+    volumes:
+      - ./deploy/client/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [internal]
+
+  setup:
+    image: tayta-sabroso:${APP_VERSION:-local}
+    platform: linux/amd64
+    build: .
+    env_file: ./deploy/client/app.env
+    profiles: [setup]
+    volumes:
+      - ./deploy/client/initial-config.json:/run/initial-config.json:ro
+    command: ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node --import tsx prisma/init-client.ts /run/initial-config.json"]
+    networks: [internal]
+
+networks:
+  internal:
+volumes:
+  caddy_data:
+  caddy_config:

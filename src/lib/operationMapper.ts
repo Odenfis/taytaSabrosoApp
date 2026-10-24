@@ -76,6 +76,7 @@ export interface TransactionDTO {
   ticketNumber: string | null;
   clientOpId: string | null;
   isDeleted?: boolean;
+  correctionCount?: number;
 }
 
 export interface PurchaseItemDTO {
@@ -236,6 +237,7 @@ export function mapTransaction(dto: TransactionDTO): Transaction {
     orderId: dto.orderId ?? undefined,
     ticketNumber: dto.ticketNumber ?? undefined,
     clientOpId: dto.clientOpId ?? undefined,
+    correctionCount: dto.correctionCount ?? 0,
   };
 }
 

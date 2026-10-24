@@ -27,9 +27,9 @@ export function createApp() {
     version: '0.1.0',
     endpoints: {
       health: '/health',
-      auth: ['POST /api/auth/login', 'GET /api/auth/me', 'POST /api/auth/logout'],
+      auth: ['POST /api/auth/login', 'GET /api/auth/me', 'PATCH /api/auth/pin', 'POST /api/auth/logout'],
       catalogs: ['/api/catalogs/companies', '/api/catalogs/tables', '/api/catalogs/products', '/api/catalogs/insumos', '/api/catalogs/recipes', '/api/catalogs/bank-accounts', '/api/catalogs/payment-methods', '/api/catalogs/printers'],
-      operations: ['/api/operations/orders/active', '/api/operations/orders/open', '/api/operations/purchases', '/api/operations/kardex', '/api/operations/shifts/records', '/api/operations/transactions'],
+      operations: ['/api/operations/orders/active', '/api/operations/orders/open', '/api/operations/purchases', '/api/operations/kardex', '/api/operations/shifts/records', '/api/operations/transactions', 'GET /api/operations/transactions/:id/corrections', 'POST /api/operations/transactions/:id/corrections'],
       reports: ['/api/reports/ratios', '/api/reports/summary'],
     },
     time: new Date().toISOString(),
@@ -49,6 +49,14 @@ export function createApp() {
   });
 
   app.use('/api', routes);
+
+  // La aplicación compilada comparte origen con la API en producción.
+  const spaDir = path.join(publicDir, 'app');
+  app.use(express.static(spaDir));
+  app.get('/{*path}', (req, res, next) => {
+    if (req.accepts('html')) return res.sendFile(path.join(spaDir, 'index.html'));
+    next();
+  });
 
   app.use(notFound);
   app.use(errorHandler);

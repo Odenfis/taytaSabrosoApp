@@ -1,0 +1,5 @@
+{$POS_HOSTNAME} {
+  tls internal
+  encode zstd gzip
+  reverse_proxy app:4000
+}

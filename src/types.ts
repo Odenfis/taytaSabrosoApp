@@ -167,7 +167,8 @@ export type TransactionType =
   | 'Caja Chica'
   | 'Retiro de Caja'
   | 'Ingreso Extra'
-  | 'Ajuste de Saldo';
+  | 'Ajuste de Saldo'
+  | 'Reclasificación de Pago';
 
 export type PaymentMethod = 'Efectivo' | 'Tarjeta' | 'Yape / Plin';
 
@@ -191,6 +192,7 @@ export interface Transaction {
   orderId?: string;
   ticketNumber?: string;
   clientOpId?: string;
+  correctionCount?: number;
 }
 
 export interface NotificationItem {

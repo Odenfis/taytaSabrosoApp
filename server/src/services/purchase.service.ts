@@ -37,6 +37,9 @@ export interface CreatePurchaseInput {
 
 // Registra compra + movimientos Kardex ENTRADA_COMPRA + costo promedio ponderado + libro de caja.
 export async function createPurchase(input: CreatePurchaseInput) {
+  if (input.items.length === 0 && (input.documentStatus !== 'provisional' || input.total <= 0)) {
+    throw new AppError('Solo un vale provisional con monto positivo puede guardarse sin insumos.', 400, 'PURCHASE_ITEMS_REQUIRED');
+  }
   return inventoryTransaction(async (tx) => {
     const { items, ...data } = input;
     const { time, date, utc } = nowParts();
@@ -270,13 +273,27 @@ export async function createPurchase(input: CreatePurchaseInput) {
 // Pasar un vale provisional a documento formal (regularizar).
 export async function regularizePurchase(
   purchaseId: string,
-  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string }
+  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string; items?: CreatePurchaseInput['items'] }
 ) {
   return inventoryTransaction(async (tx) => {
-    const purchase = await tx.purchase.findFirst({ where: { id: purchaseId, isDeleted: false } });
+    await tx.$queryRaw`SELECT [id] FROM [dbo].[compras] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${purchaseId}`;
+    const purchase = await tx.purchase.findFirst({ where: { id: purchaseId, isDeleted: false }, include: { items: true } });
     if (!purchase) throw new AppError('Compra no encontrada.', 404, 'NOT_FOUND');
     if (purchase.documentStatus === 'regularizado') {
+      if (purchase.invoiceNumber === input.invoiceNumber.trim() && purchase.items.length > 0) return purchase;
       throw new AppError('La compra ya fue regularizada.', 409, 'ALREADY_REGULARIZED');
+    }
+    const addingItems = purchase.items.length === 0;
+    if (addingItems) {
+      if (!input.items?.length) throw new AppError('Ingrese los insumos de la boleta o factura.', 400, 'PURCHASE_ITEMS_REQUIRED');
+      const detailTotal = round2(input.items.reduce((sum, item) => sum + item.totalCost, 0) * 1.18);
+      if (detailTotal !== round2(toNum(purchase.total))) throw new AppError('El detalle debe coincidir con el total del vale.', 400, 'PURCHASE_TOTAL_MISMATCH');
+      const selected = await requireActiveInsumos(tx, input.items.map((item) => item.insumoId), purchase.companyId);
+      for (const item of input.items) {
+        const insumo = selected.find((row) => row.id === item.insumoId);
+        if (!insumo || insumo.unit !== item.unit) throw new AppError('La unidad de compra no coincide con el insumo.', 409, 'INSUMO_UNIT_MISMATCH');
+        if (round2(item.quantity * item.unitCost) !== round2(item.totalCost)) throw new AppError('El costo del detalle es inconsistente.', 400, 'PURCHASE_ITEM_TOTAL_MISMATCH');
+      }
     }
 
     const { time, date, utc } = nowParts();
@@ -300,6 +317,42 @@ export async function regularizePurchase(
         notes: notes || null,
       },
     });
+
+    if (addingItems) {
+      for (const item of input.items!) {
+        const insumo = await tx.insumo.findUniqueOrThrow({ where: { id: item.insumoId! } });
+        const stockBefore = toNum(insumo.currentStock);
+        const stockAfter = round2(stockBefore + item.quantity);
+        await tx.purchaseItem.create({ data: {
+          id: randomUUID(), purchaseId: purchase.id, insumoId: item.insumoId,
+          insumoName: item.insumoName, quantity: item.quantity, unit: item.unit,
+          unitCost: item.unitCost, totalCost: item.totalCost,
+        } });
+        await tx.kardexMovement.create({ data: {
+          id: randomUUID(), companyId: purchase.companyId, timestamp: utc, date, time,
+          insumoId: item.insumoId, insumoName: item.insumoName, type: 'ENTRADA_COMPRA',
+          referenceDoc: `Compra Factura #${formalInvoice} (${purchase.supplierName})${trace}`,
+          quantity: item.quantity, unit: item.unit, unitCost: item.unitCost,
+          totalCost: item.totalCost, stockBefore, stockAfter,
+          notes: notes ?? undefined, clientOpId: randomUUID(), purchaseId: purchase.id,
+        } });
+        const newStock = stockBefore + item.quantity;
+        const weightedCost = newStock > 0
+          ? round2((stockBefore * toNum(insumo.costPerUnit) + item.quantity * item.unitCost) / newStock)
+          : item.unitCost;
+        await tx.insumo.update({ where: { id: insumo.id }, data: {
+          version: { increment: 1 }, currentStock: stockAfter, costPerUnit: weightedCost,
+          lastPurchaseDate: `${date} ${time}`, lastPurchaseUtc: utc,
+        } });
+        notifyInventoryAfterCommit(tx, () => emitKardexChanged(purchase.companyId, {
+          insumoId: item.insumoId ?? null, insumoName: item.insumoName, companyId: purchase.companyId,
+          type: 'ENTRADA_COMPRA', quantity: item.quantity, unit: item.unit,
+          unitCost: item.unitCost, totalCost: item.totalCost, stockBefore, stockAfter,
+          referenceDoc: `Compra Factura #${formalInvoice} (${purchase.supplierName})${trace}`,
+          updatedAt: utc.toISOString(),
+        }));
+      }
+    }
 
     // Propaga el folio formal hacia Kardex y libro de caja (con huella del vale provisional).
     await tx.kardexMovement.updateMany({
@@ -344,7 +397,7 @@ export async function regularizePurchase(
       updatedAt: utc.toISOString(),
     }));
 
-    return updated;
+    return tx.purchase.findUniqueOrThrow({ where: { id: updated.id }, include: { items: true } });
   }).then((p) => plain(p));
 }
 
