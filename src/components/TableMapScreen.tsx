@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Zone, TableStatus, Table, CompanyId } from '../types';
 import { NewTableModal } from './NewTableModal';
@@ -18,12 +18,16 @@ export const TableMapScreen: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<TableStatus | 'all'>('all');
   const [isNewTableModalOpen, setIsNewTableModalOpen] = useState(false);
 
-  const zones: { id: Zone | 'Todos'; label: string }[] = [
-    { id: 'Todos', label: 'Todas las Zonas' },
-    { id: 'Salón Principal', label: 'Salón Principal' },
-    { id: 'Zona Brasas', label: 'Zona Brasas' },
-    { id: 'Terraza', label: 'Terraza' },
-    { id: 'Barra', label: 'Barra' },
+  useEffect(() => setSelectedZone('Todos'), [activeCompanyId]);
+
+  const zones: { id: Zone | 'Todos'; label: string }[] = activeCompanyId !== 'el-sabroso' ? [
+    { id: 'Todos', label: 'Todos' }, { id: 'Primer Piso', label: 'Primer Piso' },
+    { id: 'Mezanine', label: 'Mezanine' }, { id: 'Jardín', label: 'Jardín' },
+    { id: 'Terraza', label: 'Terraza' }, { id: 'Barra', label: 'Barra' },
+    { id: 'Delivery', label: 'Delivery' }, { id: 'Llevar', label: 'Llevar' },
+  ] : [
+    { id: 'Todos', label: 'Todas las Zonas' }, { id: 'Salón Principal', label: 'Salón Principal' },
+    { id: 'Zona Brasas', label: 'Zona Brasas' }, { id: 'Terraza', label: 'Terraza' }, { id: 'Barra', label: 'Barra' },
   ];
 
   // Filtered tables by active company, zone, status, and search
@@ -84,6 +88,13 @@ export const TableMapScreen: React.FC = () => {
             <span className="material-symbols-outlined text-[16px]">local_bar</span>
             <span>Venta Barra</span>
           </button>
+
+          {activeCompanyId !== 'el-sabroso' && (['Delivery', 'Llevar'] as const).map((zone) => (
+            <button key={zone} onClick={() => openQuickOrder(zone)}
+              className="px-3 py-2 rounded-xl bg-panel-7 hover:bg-panel-8 border border-edge-outline-2 text-[12px] font-bold">
+              + {zone}
+            </button>
+          ))}
 
           <button
             onClick={() => setIsNewTableModalOpen(true)}
@@ -210,7 +221,7 @@ export const TableMapScreen: React.FC = () => {
               {/* Table Header Row */}
               <div className="w-full flex justify-between items-start pt-1">
                 <span className="text-[10px] font-bold text-ink-muted-3 uppercase tracking-wider">
-                  {table.zone.includes('Barra') ? 'BARRA' : 'MESA'}
+                  {table.zone === 'Barra' ? 'SILLA' : table.zone === 'Delivery' || table.zone === 'Llevar' ? 'PEDIDO' : 'MESA'}
                 </span>
 
                 {activeCompanyId === 'todas' && (

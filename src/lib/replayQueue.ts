@@ -58,7 +58,7 @@ async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCall
       case 'openOrder':
         return apiClient.post('/operations/orders/open', pick(payload, ['tableId', 'waiter', 'clientOpId']));
       case 'quickOrder':
-        return apiClient.post('/operations/orders/quick-bar', pick(payload, ['companyId', 'waiter', 'clientOpId']));
+        return apiClient.post('/operations/orders/quick-bar', pick(payload, ['companyId', 'zone', 'waiter', 'clientOpId']));
       case 'cancelOpening':
         return apiClient.post('/operations/orders/cancel-opening', { openingClientOpId: payload.openingClientOpId });
       case 'addItem':

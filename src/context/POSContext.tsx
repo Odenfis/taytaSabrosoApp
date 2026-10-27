@@ -653,7 +653,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (dto.isDeleted || dto.status === 'anulado') {
       closedOrderIdsRef.current.add(dto.id);
       setOrders((prev) => { const next = { ...prev }; delete next[dto.id]; return next; });
-      setTables((prev) => prev.map((t) => releaseOrderTable(t, dto.id)));
+      setTables((prev) => prev.map((t) => releaseOrderTable(t, dto.id))
+        .filter((t) => !(['Delivery', 'Llevar'].includes(t.zone) && t.id === dto.tableId && t.status === 'libre')));
       return;
     }
     if (closedOrderIdsRef.current.has(dto.id)) return;
@@ -671,7 +672,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (settled.cancelled || !settled.order) {
       if (settled.order) reconcileOrderResult(settled.order);
       setOrders((prev) => { const next = { ...prev }; delete next[tmpOrderId]; return next; });
-      setTables((prev) => prev.map((t) => releaseOrderTable(t, tmpOrderId)));
+      setTables((prev) => prev.map((t) => releaseOrderTable(t, tmpOrderId))
+        .filter((t) => !(['Delivery', 'Llevar'].includes(t.zone) && t.id === tmpTableId && t.status === 'libre')));
       delete tmpOrderItemsRef.current[tmpOrderId];
       delete tmpOrderOpRef.current[tmpOrderId];
       return null;
@@ -1052,6 +1054,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       if (result.disposition === 'ok') {
         if ((result.data as OrderDTO)?.id && (opItem.entity === 'orderItem' || opItem.op === 'cancelOpening')) reconcileOrderResult(result.data as OrderDTO);
+        if (opItem.op === 'payOrder') {
+          const paid = result.data as { order: OrderDTO; transaction: TransactionDTO };
+          if (paid.order) {
+            const serverOrder = mapOrder(paid.order);
+            const original = opItem.payload as Record<string, unknown>;
+            setLastCompletedOrder((current) => current?.id === (payload.orderId as string) || current?.id === original.orderId ||
+              current?.tableId === (payload.tableId as string) || current?.tableId === original.tableId
+              ? serverOrder : current);
+            setTables((prev) => prev.filter((t) => !(t.id === paid.order.tableId && ['Delivery', 'Llevar'].includes(t.zone))));
+          }
+        }
         if (opItem.entity === 'catalog') {
           reconcileCatalogCreate(
             opItem.op,
@@ -1301,19 +1314,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const local = tablesRef.current.find((t) => t.id === e.tableId);
     if (e.status === 'libre' && e.sourceOrderId && local?.currentOrderId && local.currentOrderId !== e.sourceOrderId) return;
     if (!local) {
-      // Mesa creada por otro terminal (barra quick-bar): agregarla si aplica.
       if (e.companyId !== activeCompanyId && activeCompanyId !== 'todas') return;
-        const incoming: Table = {
-        id: e.tableId,
-        companyId: e.companyId as CompanyId,
-        number: e.tableId.slice(-2),
-        capacity: 2,
-        zone: 'Barra',
-        status: (e.status as Table['status']) ?? 'ocupada',
-        currentOrderId: e.currentOrderId ?? undefined,
-        waiter: e.waiter ?? undefined,
-      };
-      setTables((prev) => (prev.some((t) => t.id === e.tableId) ? prev : [...prev, incoming]));
+      void apiClient.get<TableDTO[]>('/catalogs/tables').then((rows) => {
+        const found = rows.find((row) => row.id === e.tableId);
+        if (found) setTables((prev) => prev.some((t) => t.id === found.id) ? prev : [...prev, mapTable(found)]);
+      }).catch(() => undefined);
     } else {
       // No pisar mi trabajo offline pendiente ni mis mesas temporales locales.
       if (local.id.startsWith('t-express-') || local.id.startsWith('t-custom-')) return;
@@ -1332,7 +1337,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 minutesElapsed: e.status === 'libre' ? undefined : (t.minutesElapsed ?? 1),
               }
             : t
-        )
+        ).filter((t) => !(e.status === 'libre' && ['Delivery', 'Llevar'].includes(t.zone) && t.id === e.tableId))
       );
       if (e.status === 'libre' && oldOrderId && !oldOrderId.startsWith('order-tmp-')) {
         setOrders((prev) => {
@@ -1916,29 +1921,35 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const openQuickOrder = (zone: Zone = 'Barra') => {
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
-    const freeBarra =
+    if ((zone === 'Delivery' || zone === 'Llevar') && compId !== 'el-tayta') return;
+    const service = zone === 'Delivery' || zone === 'Llevar';
+    const freeBarra = !service && (
       tables.find(
         (t) => t.companyId === compId && t.zone === zone && t.status === 'libre'
       ) ||
-      tables.find((t) => t.companyId === compId && t.status === 'libre');
+      (compId === 'el-tayta' ? undefined : tables.find((t) => t.companyId === compId && t.status === 'libre')));
 
     if (freeBarra) {
       selectAndOpenTable(freeBarra.id);
     } else {
+      if (zone === 'Barra' && compId === 'el-tayta') {
+        addNotification('Barra completa', 'Las ocho sillas de Barra están ocupadas.', 'warning');
+        return;
+      }
       const newNum = `B${tables.filter((t) => t.zone === 'Barra').length + 1}`;
-      const newId = `t-express-${Date.now()}`;
+      const newId = `t-express-${newUuid()}`;
       const newTable: Table = {
         id: newId,
         companyId: compId,
-        number: newNum,
-        capacity: 2,
-        zone: 'Barra',
+        number: service ? 'Pendiente' : newNum,
+        capacity: service ? 1 : 2,
+        zone: service ? zone : 'Barra',
         status: 'libre',
       };
       setTables((prev) => [...prev, newTable]);
       setSelectedTableId(newId);
       setCurrentScreen('pedido');
-      addNotification(`Mesa ${newNum} lista`, 'Agrega productos para abrir la comanda de barra.', 'info');
+      addNotification(service ? `${zone} pendiente de número` : `Mesa ${newNum} lista`, 'Agrega productos para abrir la comanda.', 'info');
     }
   };
 
@@ -1999,7 +2010,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       orderId = tmpOrderId;
       currentOrder = createdOrder;
       const openingOp: PendingOp = { clientOpId: tmpClientOpId, entity: 'order', op: isExpressTmp ? 'quickOrder' : 'openOrder',
-        payload: isExpressTmp ? { companyId: table.companyId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId }
+        payload: isExpressTmp ? { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId }
           : { tableId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId }, createdAt: new Date().toISOString() };
       try { stageOrderOperation(openingOp); }
       catch (error) { addNotification('No se pudo guardar el pedido', (error as Error).message, 'warning'); return; }
@@ -2026,10 +2037,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           clientOpId: tmpClientOpId,
           entity: 'order',
           op: 'quickOrder',
-          queuePayload: { companyId: table.companyId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId },
+          queuePayload: { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId },
           endpointOp: async () => {
             const res = await apiClient.post<OrderDTO>('/operations/orders/quick-bar', {
               companyId: table.companyId,
+              zone: table.zone,
               waiter: waiterName,
               clientOpId: tmpClientOpId,
             });
@@ -2204,7 +2216,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               waiter: undefined,
             }
           : t
-      )
+      ).filter((t) => !(t.id === tableId && ['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre'))
     );
     setOrders((prev) => {
       const next = { ...prev };
@@ -2775,7 +2787,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               waiter: undefined,
             }
           : t
-      )
+      ).filter((t) => !(t.id === tableId && ['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre'))
     );
 
     // 3. Save finalized order

@@ -6,6 +6,7 @@ import { AppError, plain, round2, round3, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime.js';
 import { orderTotalsFromItems } from '../lib/orderTotals.js';
+import { isServiceZone } from '../lib/taytaTableLayout.js';
 
 function nowParts(timeStr?: string) {
   const now = new Date();
@@ -27,6 +28,19 @@ async function allocateTicket(tx: Prisma.TransactionClient, companyId: string): 
     data: { lastNumber: { increment: 1 } },
   });
   return seq.lastNumber;
+}
+
+async function allocateServiceTable(tx: Prisma.TransactionClient, companyId: string): Promise<string> {
+  await tx.numberingSequence.upsert({
+    where: { companyId_entity: { companyId, entity: 'service-table' } },
+    create: { companyId, entity: 'service-table', lastNumber: 35 },
+    update: {},
+  });
+  const sequence = await tx.numberingSequence.update({
+    where: { companyId_entity: { companyId, entity: 'service-table' } },
+    data: { lastNumber: { increment: 1 } },
+  });
+  return String(sequence.lastNumber).padStart(2, '0');
 }
 
 function recalcTotals(items: { price: number | Prisma.Decimal; quantity: number | Prisma.Decimal }[]) {
@@ -92,7 +106,8 @@ async function finishEmptyOrder(tx: Prisma.TransactionClient, orderId: string) {
   const final = { ...snapshot, status: 'anulado', isDeleted: true, subtotal: 0, igv: 0, total: 0, closedUtc: new Date(), closedAt: nowParts().time };
   if (order.tableId) {
     await tx.table.updateMany({ where: { id: order.tableId, currentOrderId: order.id },
-      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null } });
+      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null,
+        isDeleted: isServiceZone(order.zone) } });
   }
   if (order.dispatchHistoryKnown && !order.firstDispatchedUtc && order.status === 'abierto' && transactions.length === 0) {
     await saveReceipt(tx, `cancelled:${order.id}`, order.id, final);
@@ -277,8 +292,9 @@ export async function openOrderForTable(
 }
 
 // Pedido rápido en barra (reutiliza mesa libre de barra o crea una nueva).
-export async function createQuickBarOrder(input: { companyId: string; waiter?: string; clientOpId?: string }) {
+export async function createQuickBarOrder(input: { companyId: string; zone?: 'Barra' | 'Delivery' | 'Llevar'; waiter?: string; clientOpId?: string }) {
   const companyId = input.companyId;
+  const zone = input.zone ?? 'Barra';
   return orderTransaction(async (tx) => {
     if (input.clientOpId) {
       const cancelled = await readReceipt(tx, `opening:${input.clientOpId}`);
@@ -288,13 +304,19 @@ export async function createQuickBarOrder(input: { companyId: string; waiter?: s
       const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${input.clientOpId}` } });
       if (alias) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
     }
-    const freeBarra = await tx.table.findFirst({
-      where: { companyId, isDeleted: false, status: 'libre', zone: 'Barra' },
-      orderBy: { number: 'asc' },
-    });
-
-    let table = freeBarra;
-    if (!table) {
+    if (isServiceZone(zone) && companyId !== 'el-tayta') throw new AppError('Este ambiente solo está disponible en El Tayta.', 409, 'SERVICE_ZONE_COMPANY');
+    const freeBarra = isServiceZone(zone) ? [] : await tx.$queryRaw<{ id: string }[]>`
+      SELECT TOP (1) [id] FROM [dbo].[mesas] WITH (UPDLOCK, HOLDLOCK)
+      WHERE [empresa_id] = ${companyId} AND [esta_eliminado] = 0 AND [estado] = N'libre' AND [zona] = N'Barra'
+      ORDER BY [numero]`;
+    let table = freeBarra[0] ? await tx.table.findUnique({ where: { id: freeBarra[0].id } }) : null;
+    if (isServiceZone(zone)) {
+      table = await tx.table.create({ data: {
+        id: randomUUID(), companyId, number: await allocateServiceTable(tx, companyId), capacity: 1, zone, status: 'libre',
+      } });
+    } else if (!table && companyId === 'el-tayta') {
+      throw new AppError('Las ocho sillas de Barra están ocupadas.', 409, 'BAR_FULL');
+    } else if (!table) {
       const barraTables = await tx.table.findMany({ where: { companyId, zone: 'Barra' } });
       let max = 0;
       for (const t of barraTables) {
@@ -897,7 +919,8 @@ export async function payTable(tableId: string, input: PayTableInput) {
     // Liberar mesa
     await tx.table.update({
       where: { id: table.id },
-      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null },
+      data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null,
+        isDeleted: isServiceZone(table.zone) },
     });
 
     const finalized = await tx.order.findUnique({

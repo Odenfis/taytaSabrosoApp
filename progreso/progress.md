@@ -1,5 +1,13 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
+## Ambientes y mesas de El Tayta — 2026-10-27
+
+- Distribución solicitada: Primer Piso 01–05, Mezanine 06–12, Jardín 13–26, Terraza 27–35 (capacidad 4) y Barra B01–B08 (capacidad 1). Delivery y Llevar comparten una secuencia transaccional desde 36; cada mesa temporal se oculta al cobrar/anular y su número permanece en el pedido histórico. La cola offline conserva el ambiente y sustituye `Pendiente` por el número asignado al sincronizar.
+- El configurador `server/src/scripts/configure-tayta-tables.ts` informa estado `ready`, `blocked` o `already_configured`; exige respaldo y sincronización para aplicar, rechaza pedidos activos/conflictos, archiva las mesas antiguas libres y crea el nuevo catálogo en una transacción. `deploy/client/actualizar-cliente.bat` genera informes antes/después y solicita revisión antes de aplicar en la base del cliente.
+- En la base local `TaytaSabroso`, el informe previo encontró ocho mesas antiguas libres, cero pedidos activos y cero conflictos. Respaldo `TaytaSabroso_before_tables_20261027.bak` creado con `CHECKSUM`, comprobado con `RESTORE VERIFYONLY` y copiado a `/Users/waltermauromoncadarubio/Documents/TaytaSabroso_backups/` (SHA-256 coincidente). La configuración local se aplicó y el informe posterior indicó `already_configured`.
+- Validación: 55 pruebas cliente, 31 servidor y 18 escenarios SQL/API/realtime de pedidos aprobados; prueba SQL aislada cubrió bloqueo por pedido activo, respaldo obligatorio, configuración idempotente, ocho sillas ocupadas sin crear B09, aperturas simultáneas Delivery/Llevar 36–37, reintento, cobro/anulación e historial. Imagen Docker `linux/amd64` construida y ejecutó el informe de mesas en modo de solo lectura contra la base local.
+- La instalación Windows del cliente sigue pendiente de informe propio, respaldo nuevo y aplicación supervisada; los datos locales no se copiaron al cliente.
+
 ## Saldos negativos de insumos — 2026-10-27
 
 - Entrega para cliente en preparación: la imagen Docker incluye el conciliador compilado en `dist/scripts/` y `actualizar-cliente.bat` se amplió para generar informe previo, pausar para revisión, aplicar solo casos verificables y generar informe posterior antes de reabrir la aplicación. Los informes se guardan en `deploy/client/reports/` fuera de Git; no se ha ejecutado el `.bat` en Windows ni aplicado la conciliación del cliente.

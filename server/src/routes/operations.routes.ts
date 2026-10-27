@@ -97,7 +97,7 @@ router.post('/orders/quick-bar', async (req, res, next) => {
   const op = oplog(req, 'pedido', 'abrir_barra_rapida');
   try {
     const body = z
-      .object({ companyId: z.string().min(1), waiter: z.string().optional(), clientOpId: z.string().optional() })
+      .object({ companyId: z.string().min(1), zone: z.enum(['Barra', 'Delivery', 'Llevar']).optional(), waiter: z.string().optional(), clientOpId: z.string().optional() })
       .parse(req.body);
     const order = await createQuickBarOrder(body);
     op.ok(order);

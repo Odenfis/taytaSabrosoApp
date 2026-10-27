@@ -90,7 +90,7 @@ export interface ApiErrorResponse {
 
 export type TableStatus = 'libre' | 'ocupada' | 'por_cobrar';
 
-export type Zone = 'Salón Principal' | 'Terraza' | 'Barra' | 'Zona Brasas';
+export type Zone = 'Salón Principal' | 'Terraza' | 'Barra' | 'Zona Brasas' | 'Primer Piso' | 'Mezanine' | 'Jardín' | 'Delivery' | 'Llevar';
 
 export interface Table {
   id: string;

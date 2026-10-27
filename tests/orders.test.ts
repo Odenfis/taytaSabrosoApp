@@ -25,6 +25,18 @@ test('liberación tardía de un pedido anterior conserva mesa reabierta', () => 
   assert.equal(releaseOrderTable(table, 'new').status, 'libre');
   assert.equal(releaseOrderTable(table, 'new').currentOrderId, undefined);
 });
+test('replay de Delivery conserva ambiente e identificador de apertura', async () => {
+  let request: { url: string; body: Record<string, unknown> } | null = null;
+  mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    request = { url, body: JSON.parse(init.body as string) };
+    return response({ id: 'order', tableNumber: '36' });
+  });
+  const op: PendingOp = { clientOpId: 'delivery-opening', entity: 'order', op: 'quickOrder',
+    payload: { companyId: 'el-tayta', zone: 'Delivery', waiter: 'Prueba', clientOpId: 'delivery-opening' }, createdAt: new Date().toISOString() };
+  assert.equal((await replayCall(op, op.payload as Record<string, unknown>)).disposition, 'ok');
+  assert.deepEqual(request, { url: '/api/operations/orders/quick-bar',
+    body: { companyId: 'el-tayta', zone: 'Delivery', waiter: 'Prueba', clientOpId: 'delivery-opening' } });
+});
 test('borrador retirado durante apertura llama cancelación, sin flush de productos', async () => {
   const calls: string[] = [];
   mock.method(globalThis, 'fetch', async (url: string) => { calls.push(url); return response({ id: 'order', isDeleted: true, status: 'anulado', items: [] }); });

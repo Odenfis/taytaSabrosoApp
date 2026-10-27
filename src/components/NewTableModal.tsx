@@ -8,7 +8,7 @@ interface NewTableModalProps {
 }
 
 export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose }) => {
-  const { addNewTable, openQuickOrder } = usePOS();
+  const { addNewTable, openQuickOrder, activeCompanyId } = usePOS();
   const [tableNumber, setTableNumber] = useState('');
   const [capacity, setCapacity] = useState('4');
   const [zone, setZone] = useState<Zone>('Salón Principal');
@@ -39,11 +39,20 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose })
           </button>
         </div>
 
+        {activeCompanyId !== 'el-sabroso' && <div className="grid grid-cols-2 gap-3">
+          {(['Delivery', 'Llevar'] as const).map((serviceZone) => <button key={serviceZone} type="button"
+            onClick={() => { openQuickOrder(serviceZone); onClose(); }}
+            className="bg-surface-brand-solid text-ink-on-brand rounded-xl px-3 py-3 font-bold">
+            Nuevo {serviceZone}
+          </button>)}
+          <p className="col-span-2 text-xs text-ink-muted-2">El número se asigna al sincronizar, desde la mesa 36.</p>
+        </div>}
+
         {/* Quick Order Shortcut */}
         <div className="bg-panel-3 border border-edge-outline-2 rounded-xl p-4 flex items-center justify-between">
           <div>
-            <h3 className="text-[14px] font-bold text-ink-gold">Pedido Rápido (Barra / Para Llevar)</h3>
-            <p className="text-[12px] text-ink-muted-5 mt-0.5">Abre una comanda exprés sin asignar mesa física.</p>
+            <h3 className="text-[14px] font-bold text-ink-gold">Pedido Rápido de Barra</h3>
+            <p className="text-[12px] text-ink-muted-5 mt-0.5">Usa una silla de Barra disponible.</p>
           </div>
           <button
             type="button"
@@ -64,7 +73,7 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose })
         </div>
 
         {/* Create Physical Table Form */}
-        <form onSubmit={handleCreateTable} className="space-y-4">
+        {activeCompanyId === 'el-sabroso' && <form onSubmit={handleCreateTable} className="space-y-4">
           <div>
             <label className="text-[13px] font-semibold text-ink-body block mb-1.5">
               Número / Identificador de Mesa
@@ -129,7 +138,7 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose })
               Crear Mesa
             </button>
           </div>
-        </form>
+        </form>}
       </div>
     </div>
   );
