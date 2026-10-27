@@ -24,6 +24,10 @@ docker compose -f compose.client.yml ps
 
 Registre el SHA de la imagen, el commit de Git y la fecha de entrega. El servicio `setup` aplica migraciones y después crea los datos iniciales en una sola transacción. En futuras actualizaciones use `docker compose -f compose.client.yml run --rm --no-deps setup ./node_modules/.bin/prisma migrate deploy` **sin ejecutar el inicializador**; haga primero un respaldo. Mantenga el mismo `JWT_SECRET`, nombre LAN y volúmenes de Caddy.
 
+## Actualización de una instalación existente
+
+En PowerShell, desde cualquier carpeta, ejecute `& "RUTA_AL_REPOSITORIO\deploy\client\actualizar-cliente.bat"`. El archivo comprueba Docker, Git, rama `main`, configuración local y migraciones; descarga el commit, construye la imagen, solicita confirmar el respaldo SQL y la sincronización de terminales, detiene la aplicación, aplica y comprueba las migraciones, recrea los contenedores y muestra el commit y la imagen activos. **No crea el respaldo ni inicia los datos del cliente**. Si falla la migración, deja la aplicación detenida para evitar ventas con versiones incompatibles. Después recargue cada navegador con `Ctrl+F5` y compruebe compras y cobros. Si la terminal aún muestra la versión antigua, conserve la salida del archivo para comparar el commit y la imagen del contenedor.
+
 Si se construye en una Mac con CPU ARM para trasladar la imagen a Windows x64, construya explícitamente `linux/amd64` y exporte la imagen con `docker save`; en Windows impórtela con `docker load`. No distribuya la imagen ARM local de desarrollo.
 
 ## HTTPS en las terminales
