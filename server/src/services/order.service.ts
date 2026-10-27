@@ -712,7 +712,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
       for (const insumoId of Object.keys(deductionByInsumo)) {
         const insumo = await tx.insumo.findUnique({ where: { id: insumoId } });
         if (!insumo) continue;
-        const newStock = Math.max(0, round2(toNum(insumo.currentStock) - deductionByInsumo[insumoId]));
+        const newStock = round2(toNum(insumo.currentStock) - deductionByInsumo[insumoId]);
         await tx.insumo.update({ where: { id: insumoId }, data: { currentStock: newStock, version: { increment: 1 } } });
       }
     }

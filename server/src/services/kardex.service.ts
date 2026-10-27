@@ -14,7 +14,7 @@ function nowParts() {
 }
 
 // Ajuste de inventario / merma. Réplica fiel de la demo:
-// AJUSTE_MERMA = salida negativa, ENTRADA_COMPRA = entrada positiva, stock nunca negativo.
+// AJUSTE_MERMA = salida negativa, ENTRADA_COMPRA = entrada positiva.
 export async function addKardexAdjustment(input: {
   insumoId: string;
   quantity: number;
@@ -47,7 +47,7 @@ export async function addKardexAdjustment(input: {
     const stockBefore = toNum(insumo.currentStock);
     const stockDelta =
       input.type === 'AJUSTE_MERMA' ? -Math.abs(input.quantity) : Math.abs(input.quantity);
-    const stockAfter = Math.max(0, round2(stockBefore + stockDelta));
+    const stockAfter = round2(stockBefore + stockDelta);
     const unitCost = toNum(insumo.costPerUnit);
     const totalCost = round2(Math.abs(input.quantity) * unitCost);
 

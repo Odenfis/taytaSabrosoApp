@@ -1868,7 +1868,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setInsumos((prev) =>
         prev.map((ins) => {
           if (stockDeductions[ins.id]) {
-            const newStock = Math.max(0, +(ins.currentStock - stockDeductions[ins.id]).toFixed(2));
+            const newStock = +(ins.currentStock - stockDeductions[ins.id]).toFixed(2);
             return {
               ...ins,
               currentStock: newStock,
@@ -3100,7 +3100,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           const totalNewCost = itemPurchased.totalCost;
           const newTotalStock = ins.currentStock + itemPurchased.quantity;
           const weightedCost =
-            newTotalStock > 0
+            ins.currentStock > 0 && newTotalStock > 0
               ? +((totalOldCost + totalNewCost) / newTotalStock).toFixed(2)
               : (itemPurchased.quantity ? itemPurchased.totalCost / itemPurchased.quantity : 0);
 
@@ -3254,9 +3254,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       setInsumos((prev) => prev.map((insumo) => {
         const delta = deltas.get(insumo.id) || 0;
-        return delta && insumo.currentStock > 0 ? {
-          ...insumo, costPerUnit: +(insumo.costPerUnit + delta / insumo.currentStock).toFixed(2),
-        } : insumo;
+        if (!delta) return insumo;
+        const revised = items.find((item) => item.insumoId === insumo.id);
+        return { ...insumo, costPerUnit: insumo.currentStock > 0
+          ? +(insumo.costPerUnit + delta / insumo.currentStock).toFixed(2)
+          : revised ? +(revised.totalCost / revised.quantity).toFixed(2) : insumo.costPerUnit };
       }));
       setKardexMovements((prev) => {
         const used = new Set<string>();
@@ -3280,7 +3282,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const cost = added.reduce((sum, item) => sum + item.totalCost, 0);
         const stock = insumo.currentStock + quantity;
         return { ...insumo, currentStock: stock,
-          costPerUnit: stock > 0 ? +((insumo.currentStock * insumo.costPerUnit + cost) / stock).toFixed(2) : insumo.costPerUnit };
+          costPerUnit: insumo.currentStock > 0 && stock > 0 ? +((insumo.currentStock * insumo.costPerUnit + cost) / stock).toFixed(2) : +(cost / quantity).toFixed(2) };
       }));
       setKardexMovements((prev) => [...items.map((item, index) => {
         const insumo = insumos.find((row) => row.id === item.insumoId);
@@ -4000,7 +4002,7 @@ Doble Alto: PEDIDO EXPRESS #8841
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const stockBefore = insumo.currentStock;
     const stockDelta = type === 'AJUSTE_MERMA' ? -Math.abs(quantity) : Math.abs(quantity);
-    const stockAfter = Math.max(0, +(stockBefore + stockDelta).toFixed(2));
+    const stockAfter = +(stockBefore + stockDelta).toFixed(2);
     const totalCost = +(Math.abs(quantity) * insumo.costPerUnit).toFixed(2);
 
     const compId: CompanyId =

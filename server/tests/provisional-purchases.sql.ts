@@ -7,6 +7,7 @@ assert.ok(process.env.DATABASE_URL?.includes(';database=' + database));
 const { prisma } = await import('../src/lib/prisma.js');
 const { createPurchase, regularizePurchase } = await import('../src/services/purchase.service.js');
 const { createInsumo } = await import('../src/services/insumo.service.js');
+const { addKardexAdjustment } = await import('../src/services/kardex.service.js');
 const companyId = 'el-tayta';
 const id = () => randomUUID();
 const number = (value: unknown) => Number(value);
@@ -85,6 +86,27 @@ try {
     items: [{ ...item, unitCost: 2.2, discount: 1, totalCost: 10 }], clientOpId: id() });
   assert.equal(number(formalDiscount.items[0].discount), 1);
   assert.equal(number((await prisma.kardexMovement.findFirstOrThrow({ where: { purchaseId: formalDiscount.id } })).unitCost), 2);
+  const deficit = await createInsumo({ id: id(), companyId, name: 'Tomate de prueba', category: 'Verduras & Frutas',
+    unit: 'kg', currentStock: 0, minStock: 0, costPerUnit: 7 });
+  await addKardexAdjustment({ insumoId: deficit.id, companyId, quantity: 2, type: 'AJUSTE_MERMA', reason: 'Déficit de prueba', clientOpId: id() });
+  const deficitLine = { insumoId: deficit.id, insumoName: deficit.name, quantity: 1, unit: 'kg', unitCost: 10, totalCost: 10 };
+  await createPurchase({ companyId, documentStatus: 'regularizado', invoiceNumber: 'DEF-1', supplierName: 'Proveedor', supplierRuc: '20111111111',
+    total: 11.8, items: [deficitLine], clientOpId: id() });
+  assert.equal(number((await prisma.insumo.findUniqueOrThrow({ where: { id: deficit.id } })).currentStock), -1);
+  await createPurchase({ companyId, documentStatus: 'regularizado', invoiceNumber: 'DEF-2', supplierName: 'Proveedor', supplierRuc: '20111111111',
+    total: 7.08, items: [{ ...deficitLine, quantity: 2, unitCost: 3, totalCost: 6 }], clientOpId: id() });
+  const replenished = await prisma.insumo.findUniqueOrThrow({ where: { id: deficit.id } });
+  assert.equal(number(replenished.currentStock), 1);
+  assert.equal(number(replenished.costPerUnit), 3);
+  const valeInsumo = await createInsumo({ id: id(), companyId, name: 'Tomate vale', category: 'Verduras & Frutas',
+    unit: 'kg', currentStock: 0, minStock: 0, costPerUnit: 7 });
+  await addKardexAdjustment({ insumoId: valeInsumo.id, companyId, quantity: 1, type: 'AJUSTE_MERMA', reason: 'Déficit vale', clientOpId: id() });
+  const vale = await createPurchase({ ...base, provisionalNoteNumber: 'VALE-DEFICIT', total: 7.08, items: [], clientOpId: id() });
+  await regularizePurchase(vale.id, { invoiceNumber: 'DEF-VALE', supplierRuc: '20111111111',
+    items: [{ insumoId: valeInsumo.id, insumoName: valeInsumo.name, quantity: 2, unit: 'kg', unitCost: 3, totalCost: 6 }], clientOpId: id() });
+  const valeReplenished = await prisma.insumo.findUniqueOrThrow({ where: { id: valeInsumo.id } });
+  assert.equal(number(valeReplenished.currentStock), 1);
+  assert.equal(number(valeReplenished.costPerUnit), 3);
   console.log('Vales: caja, banco, crédito, validación, atomicidad y reintento correctos.');
 } finally {
   await prisma.$disconnect();

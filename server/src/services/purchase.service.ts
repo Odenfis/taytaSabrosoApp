@@ -162,7 +162,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         const totalNewCost = toNum(item.totalCost);
         const newTotalStock = oldStock + toNum(item.quantity);
         const weightedCost =
-          newTotalStock > 0
+          oldStock > 0 && newTotalStock > 0
             ? round2((totalOldCost + totalNewCost) / newTotalStock)
             : effectiveUnitCost;
 
@@ -352,7 +352,7 @@ export async function regularizePurchase(
           notes: notes ?? undefined, clientOpId: randomUUID(), purchaseId: purchase.id,
         } });
         const newStock = stockBefore + item.quantity;
-        const weightedCost = newStock > 0
+        const weightedCost = stockBefore > 0 && newStock > 0
           ? round2((stockBefore * toNum(insumo.costPerUnit) + item.totalCost) / newStock)
           : checkedPurchaseLine(item).netUnitCost;
         await tx.insumo.update({ where: { id: insumo.id }, data: {
@@ -386,8 +386,9 @@ export async function regularizePurchase(
         if (delta !== 0 && old.insumoId) {
           const insumo = await tx.insumo.findUniqueOrThrow({ where: { id: old.insumoId } });
           const stock = toNum(insumo.currentStock);
-          if (stock > 0) await tx.insumo.update({ where: { id: old.insumoId }, data: {
-            version: { increment: 1 }, costPerUnit: round2(toNum(insumo.costPerUnit) + delta / stock),
+          await tx.insumo.update({ where: { id: old.insumoId }, data: {
+            version: { increment: 1 },
+            costPerUnit: stock > 0 ? round2(toNum(insumo.costPerUnit) + delta / stock) : round2(checkedPurchaseLine(item).netUnitCost),
           } });
         }
       }

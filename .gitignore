@@ -9,3 +9,4 @@ coverage/
 .claude/
 /deploy/client/app.env
 /deploy/client/initial-config.json
+/deploy/client/reports/

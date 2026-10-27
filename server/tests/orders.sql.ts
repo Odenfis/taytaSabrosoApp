@@ -116,13 +116,25 @@ await check('despacho sin receta conserva anulación y fecha de primer despacho'
 const ingredient = await prisma.insumo.create({ data: { id: id(), companyId, code: 'TEST', name: 'Agua insumo', category: 'Otros', unit: 'un', currentStock: 100, minStock: 1, costPerUnit: 2 } });
 await prisma.recipe.create({ data: { id: id(), companyId, productId: product.id, productName: product.name, category: 'bebidas', salePrice: 5, totalCost: 2, theoreticalFoodCostPct: 40, portions: 1,
   ingredients: { create: { id: id(), insumoId: ingredient.id, insumoName: ingredient.name, quantity: 1, unit: 'un', costPerUnit: 2, subtotalCost: 2 } } } });
+await check('despacho persiste saldo negativo, reintento no duplica y devolución lo revierte', async () => {
+  await prisma.insumo.update({ where: { id: ingredient.id }, data: { currentStock: 0 } });
+  const order = await withItem();
+  await orders.sendToKitchen(order.id);
+  await orders.sendToKitchen(order.id);
+  assert.equal(Number((await prisma.insumo.findUniqueOrThrow({ where: { id: ingredient.id } })).currentStock), -1);
+  assert.equal(await prisma.kardexMovement.count({ where: { insumoId: ingredient.id, type: 'SALIDA_VENTA_POS' } }), 1);
+  await orders.removeItemFromOrder(order.id, order.items[0].id);
+  assert.equal(Number((await prisma.insumo.findUniqueOrThrow({ where: { id: ingredient.id } })).currentStock), 0);
+  await prisma.insumo.update({ where: { id: ingredient.id }, data: { currentStock: 100 } });
+});
 await check('despacho con receta y devolución se registran una sola vez tras respuesta perdida', async () => {
+  const returnsBefore = await prisma.kardexMovement.count({ where: { type: 'ENTRADA_DEVOLUCION_VENTA_POS' } });
   const order = await withItem(2); await orders.sendToKitchen(order.id);
   assert.equal(Number((await prisma.insumo.findUniqueOrThrow({ where: { id: ingredient.id } })).currentStock), 98);
   await orders.removeItemFromOrder(order.id, order.items[0].id, 'lost-response');
   await orders.removeItemFromOrder(order.id, order.items[0].id, 'lost-response');
   assert.equal(Number((await prisma.insumo.findUniqueOrThrow({ where: { id: ingredient.id } })).currentStock), 100);
-  assert.equal(await prisma.kardexMovement.count({ where: { type: 'ENTRADA_DEVOLUCION_VENTA_POS' } }), 1);
+  assert.equal(await prisma.kardexMovement.count({ where: { type: 'ENTRADA_DEVOLUCION_VENTA_POS' } }), returnsBefore + 1);
 });
 await check('pedidos cobrados rechazan borrar, cantidad y notas sin tocar caja o stock', async () => {
   const order = await withItem(); await orders.sendToKitchen(order.id);
