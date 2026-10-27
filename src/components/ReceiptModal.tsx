@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { shareVoucherImage, VoucherHeader } from '../lib/voucherImage';
+import { isHistoricalAdditiveOrder } from '../lib/orderTotals';
 
 const WhatsAppIcon: React.FC = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
@@ -19,6 +20,7 @@ export const ReceiptModal: React.FC = () => {
     addNotification,
   } = usePOS();
   const isPaid = receiptMode === 'paid';
+  const historicalAdditive = lastCompletedOrder ? isHistoricalAdditiveOrder(lastCompletedOrder) : false;
   const [isSharing, setIsSharing] = useState(false);
 
   const companyHeader = useMemo<VoucherHeader>(() => {
@@ -148,11 +150,11 @@ export const ReceiptModal: React.FC = () => {
           {/* Totals */}
           <div className="space-y-1 text-[12px] text-zinc-700 pt-1">
             <div className="flex justify-between">
-              <span>Op. Gravada / Subtotal:</span>
+              <span>{historicalAdditive ? 'Op. Gravada / Subtotal:' : 'Subtotal sin IGV:'}</span>
               <span>S/ {lastCompletedOrder.subtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
-              <span>I.G.V. (18%):</span>
+              <span>{historicalAdditive ? 'I.G.V. (18%):' : 'IGV incluido (18%):'}</span>
               <span>S/ {lastCompletedOrder.igv.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-[16px] font-bold text-zinc-950 pt-1.5 border-t border-zinc-400">

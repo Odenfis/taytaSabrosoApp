@@ -5,6 +5,7 @@ import type { Prisma } from '@prisma/client';
 import { AppError, plain, round2, round3, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime.js';
+import { orderTotalsFromItems } from '../lib/orderTotals.js';
 
 function nowParts(timeStr?: string) {
   const now = new Date();
@@ -29,10 +30,7 @@ async function allocateTicket(tx: Prisma.TransactionClient, companyId: string): 
 }
 
 function recalcTotals(items: { price: number | Prisma.Decimal; quantity: number | Prisma.Decimal }[]) {
-  const subtotal = round2(items.reduce((acc, i) => acc + toNum(i.price) * toNum(i.quantity), 0));
-  const igv = round2(subtotal * 0.18);
-  const total = round2(subtotal + igv);
-  return { subtotal, igv, total };
+  return orderTotalsFromItems(items);
 }
 
 // El bloqueo SQL serializa todos los escritores de una comanda. El rango de

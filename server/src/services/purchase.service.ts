@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { AppError, plain, round2, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged, emitPurchaseChanged, emitTransactionChanged } from '../lib/realtime.js';
+import { checkedPurchaseLine, checkedPurchaseTotals } from '../lib/purchaseMath.js';
 
 function nowParts() {
   const now = new Date();
@@ -31,15 +32,21 @@ export interface CreatePurchaseInput {
   bankAccountId?: string;
   bankAccountAlias?: string;
   notes?: string;
-  items: { insumoId?: string | null; insumoName: string; quantity: number; unit: string; unitCost: number; totalCost: number }[];
+  items: { id?: string; insumoId?: string | null; insumoName: string; quantity: number; unit: string; unitCost: number; discount?: number; totalCost: number }[];
   clientOpId?: string;
 }
 
 // Registra compra + movimientos Kardex ENTRADA_COMPRA + costo promedio ponderado + libro de caja.
 export async function createPurchase(input: CreatePurchaseInput) {
+  if (!Number.isFinite(input.total) || input.total < 0 ||
+      (input.subtotal !== undefined && !Number.isFinite(input.subtotal)) ||
+      (input.igv !== undefined && !Number.isFinite(input.igv))) {
+    throw new AppError('Importe de compra inválido.', 400, 'PURCHASE_TOTAL_INVALID');
+  }
   if (input.items.length === 0 && (input.documentStatus !== 'provisional' || input.total <= 0)) {
     throw new AppError('Solo un vale provisional con monto positivo puede guardarse sin insumos.', 400, 'PURCHASE_ITEMS_REQUIRED');
   }
+  const totals = input.items.length ? checkedPurchaseTotals(input.items, input.subtotal, input.igv, input.total) : null;
   return inventoryTransaction(async (tx) => {
     const { items, ...data } = input;
     const { time, date, utc } = nowParts();
@@ -72,8 +79,8 @@ export async function createPurchase(input: CreatePurchaseInput) {
         date,
         time,
         shift: data.shift ?? 'Día',
-        subtotal: data.subtotal ?? round2(data.total / 1.18),
-        igv: data.igv ?? round2(data.total - data.total / 1.18),
+        subtotal: totals?.subtotal ?? data.subtotal ?? round2(data.total / 1.18),
+        igv: totals?.igv ?? data.igv ?? round2(data.total - data.total / 1.18),
         total: data.total,
         paymentStatus: data.paymentStatus ?? 'Pagado (Caja)',
         paidFromCash: data.paidFromCash ?? false,
@@ -89,6 +96,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
             quantity: it.quantity,
             unit: it.unit,
             unitCost: it.unitCost,
+            discount: it.discount ?? 0,
             totalCost: it.totalCost,
           })),
         },
@@ -98,6 +106,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
 
     // 1. Kardex ENTRADA_COMPRA + stock + costo promedio ponderado
     for (const item of purchase.items) {
+      const effectiveUnitCost = Math.round(toNum(item.totalCost) / toNum(item.quantity) * 10000) / 10000;
       const existingInsumo = item.insumoId
         ? await tx.insumo.findUnique({ where: { id: item.insumoId } })
         : null;
@@ -119,7 +128,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
           referenceDoc: `Compra Factura #${purchase.invoiceNumber || purchase.provisionalNoteNumber} (${purchase.supplierName})`,
           quantity: item.quantity,
           unit: item.unit,
-          unitCost: item.unitCost,
+        unitCost: effectiveUnitCost,
           totalCost: item.totalCost,
           stockBefore,
           stockAfter,
@@ -137,7 +146,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
         type: 'ENTRADA_COMPRA',
         quantity: toNum(item.quantity),
         unit: item.unit,
-        unitCost: toNum(item.unitCost),
+          unitCost: effectiveUnitCost,
         totalCost: toNum(item.totalCost),
         stockBefore: toNum(stockBefore),
         stockAfter: toNum(stockAfter),
@@ -150,12 +159,12 @@ export async function createPurchase(input: CreatePurchaseInput) {
         const oldStock = toNum(existingInsumo.currentStock);
         const oldCost = toNum(existingInsumo.costPerUnit);
         const totalOldCost = oldStock * oldCost;
-        const totalNewCost = toNum(item.quantity) * toNum(item.unitCost);
+        const totalNewCost = toNum(item.totalCost);
         const newTotalStock = oldStock + toNum(item.quantity);
         const weightedCost =
           newTotalStock > 0
             ? round2((totalOldCost + totalNewCost) / newTotalStock)
-            : item.unitCost;
+            : effectiveUnitCost;
 
         await tx.insumo.update({
           where: { id: existingInsumo.id },
@@ -286,14 +295,20 @@ export async function regularizePurchase(
     const addingItems = purchase.items.length === 0;
     if (addingItems) {
       if (!input.items?.length) throw new AppError('Ingrese los insumos de la boleta o factura.', 400, 'PURCHASE_ITEMS_REQUIRED');
-      const detailTotal = round2(input.items.reduce((sum, item) => sum + item.totalCost, 0) * 1.18);
-      if (detailTotal !== round2(toNum(purchase.total))) throw new AppError('El detalle debe coincidir con el total del vale.', 400, 'PURCHASE_TOTAL_MISMATCH');
       const selected = await requireActiveInsumos(tx, input.items.map((item) => item.insumoId), purchase.companyId);
       for (const item of input.items) {
         const insumo = selected.find((row) => row.id === item.insumoId);
         if (!insumo || insumo.unit !== item.unit) throw new AppError('La unidad de compra no coincide con el insumo.', 409, 'INSUMO_UNIT_MISMATCH');
-        if (round2(item.quantity * item.unitCost) !== round2(item.totalCost)) throw new AppError('El costo del detalle es inconsistente.', 400, 'PURCHASE_ITEM_TOTAL_MISMATCH');
       }
+    }
+    if (input.items) {
+      if (!addingItems && (input.items.length !== purchase.items.length ||
+          new Set(input.items.map((item) => item.id)).size !== purchase.items.length ||
+          input.items.some((item) => !purchase.items.some((old) => old.id === item.id && old.insumoId === item.insumoId &&
+            toNum(old.quantity) === item.quantity && old.unit === item.unit)))) {
+        throw new AppError('Los insumos y cantidades del vale deben conservarse.', 400, 'PURCHASE_ITEMS_CHANGED');
+      }
+      checkedPurchaseTotals(input.items, undefined, undefined, toNum(purchase.total));
     }
 
     const { time, date, utc } = nowParts();
@@ -326,20 +341,20 @@ export async function regularizePurchase(
         await tx.purchaseItem.create({ data: {
           id: randomUUID(), purchaseId: purchase.id, insumoId: item.insumoId,
           insumoName: item.insumoName, quantity: item.quantity, unit: item.unit,
-          unitCost: item.unitCost, totalCost: item.totalCost,
+          unitCost: item.unitCost, discount: item.discount ?? 0, totalCost: item.totalCost,
         } });
         await tx.kardexMovement.create({ data: {
           id: randomUUID(), companyId: purchase.companyId, timestamp: utc, date, time,
           insumoId: item.insumoId, insumoName: item.insumoName, type: 'ENTRADA_COMPRA',
           referenceDoc: `Compra Factura #${formalInvoice} (${purchase.supplierName})${trace}`,
-          quantity: item.quantity, unit: item.unit, unitCost: item.unitCost,
+          quantity: item.quantity, unit: item.unit, unitCost: checkedPurchaseLine(item).netUnitCost,
           totalCost: item.totalCost, stockBefore, stockAfter,
           notes: notes ?? undefined, clientOpId: randomUUID(), purchaseId: purchase.id,
         } });
         const newStock = stockBefore + item.quantity;
         const weightedCost = newStock > 0
-          ? round2((stockBefore * toNum(insumo.costPerUnit) + item.quantity * item.unitCost) / newStock)
-          : item.unitCost;
+          ? round2((stockBefore * toNum(insumo.costPerUnit) + item.totalCost) / newStock)
+          : checkedPurchaseLine(item).netUnitCost;
         await tx.insumo.update({ where: { id: insumo.id }, data: {
           version: { increment: 1 }, currentStock: stockAfter, costPerUnit: weightedCost,
           lastPurchaseDate: `${date} ${time}`, lastPurchaseUtc: utc,
@@ -347,10 +362,34 @@ export async function regularizePurchase(
         notifyInventoryAfterCommit(tx, () => emitKardexChanged(purchase.companyId, {
           insumoId: item.insumoId ?? null, insumoName: item.insumoName, companyId: purchase.companyId,
           type: 'ENTRADA_COMPRA', quantity: item.quantity, unit: item.unit,
-          unitCost: item.unitCost, totalCost: item.totalCost, stockBefore, stockAfter,
+          unitCost: checkedPurchaseLine(item).netUnitCost, totalCost: item.totalCost, stockBefore, stockAfter,
           referenceDoc: `Compra Factura #${formalInvoice} (${purchase.supplierName})${trace}`,
           updatedAt: utc.toISOString(),
         }));
+      }
+    } else if (input.items) {
+      const movements = await tx.kardexMovement.findMany({ where: { purchaseId: purchase.id, type: 'ENTRADA_COMPRA' } });
+      const used = new Set<string>();
+      for (const item of input.items) {
+        const old = purchase.items.find((row) => row.id === item.id)!;
+        const movement = movements.find((row) => !used.has(row.id) && row.insumoId === old.insumoId &&
+          toNum(row.quantity) === toNum(old.quantity) && toNum(row.totalCost) === toNum(old.totalCost));
+        if (!movement) throw new AppError('No se encontró el movimiento de Kardex del insumo.', 409, 'PURCHASE_KARDEX_MISSING');
+        used.add(movement.id);
+        const delta = round2(item.totalCost - toNum(old.totalCost));
+        await tx.purchaseItem.update({ where: { id: old.id }, data: {
+          unitCost: item.unitCost, discount: item.discount ?? 0, totalCost: item.totalCost,
+        } });
+        await tx.kardexMovement.update({ where: { id: movement.id }, data: {
+          unitCost: checkedPurchaseLine(item).netUnitCost, totalCost: item.totalCost,
+        } });
+        if (delta !== 0 && old.insumoId) {
+          const insumo = await tx.insumo.findUniqueOrThrow({ where: { id: old.insumoId } });
+          const stock = toNum(insumo.currentStock);
+          if (stock > 0) await tx.insumo.update({ where: { id: old.insumoId }, data: {
+            version: { increment: 1 }, costPerUnit: round2(toNum(insumo.costPerUnit) + delta / stock),
+          } });
+        }
       }
     }
 

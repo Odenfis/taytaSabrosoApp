@@ -178,11 +178,11 @@ export const PaymentScreen: React.FC = () => {
           {/* Subtotal, IGV and Total */}
           <div className="bg-panel p-4 rounded-2xl border border-edge-outline-2 space-y-2 mt-6">
             <div className="flex justify-between text-[13px] text-ink-muted-2">
-              <span>Subtotal:</span>
+              <span>Subtotal sin IGV:</span>
               <span>S/ {currentOrder.subtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-[13px] text-ink-muted-2">
-              <span>I.G.V. (18%):</span>
+              <span>IGV incluido (18%):</span>
               <span>S/ {currentOrder.igv.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-[18px] font-black text-ink-gold pt-2 border-t border-edge-outline-5">

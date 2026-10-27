@@ -26,6 +26,35 @@ async function withItem(quantity = 1) { const order = await open(); return order
 async function free(orderId: string) { const current = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } }); if (current) for (const item of current.items) await orders.removeItemFromOrder(orderId, item.id); }
 async function assertFree() { const table = await prisma.table.findUniqueOrThrow({ where: { id: 'test-table' } }); assert.equal(table.status, 'libre'); assert.equal(table.currentOrderId, null); }
 try {
+await check('migración recalcula órdenes abiertas sin modificar ventas cobradas', async () => {
+  const legacyItem = { id: id(), productId: product.id, name: product.name, price: 45, quantity: 1, status: 'servido', addedAt: 'Hoy' };
+  const base = { companyId, ticketNumber: id().slice(0, 8), zone: 'Salón Principal', waiter: 'Prueba', createdAt: 'Hoy',
+    subtotal: 45, igv: 8.1, total: 53.1, clientOpId: id() };
+  const pending = await prisma.order.create({ data: { id: id(), ...base, status: 'por_cobrar',
+    items: { create: [legacyItem] } } });
+  const paid = await prisma.order.create({ data: { id: id(), ...base, ticketNumber: id().slice(0, 8),
+    clientOpId: id(), status: 'cobrado', items: { create: [{ ...legacyItem, id: id() }] } } });
+  const migration = await readFile('prisma/migrations/0007_sale_prices_include_igv/migration.sql', 'utf8');
+  await prisma.$executeRawUnsafe(migration);
+  await prisma.$executeRawUnsafe(migration);
+  const recalculated = await prisma.order.findUniqueOrThrow({ where: { id: pending.id }, include: { items: true } });
+  assert.deepEqual([Number(recalculated.subtotal), Number(recalculated.igv), Number(recalculated.total)], [38.14, 6.86, 45]);
+  assert.equal(Number(recalculated.items[0].price), 45);
+  const historical = await prisma.order.findUniqueOrThrow({ where: { id: paid.id } });
+  assert.deepEqual([Number(historical.subtotal), Number(historical.igv), Number(historical.total)], [45, 8.1, 53.1]);
+});
+await check('precio de 45 se cobra por 45 y libro de caja registra 45', async () => {
+  const priced = await prisma.product.create({ data: { id: id(), companyId, name: 'Plato con IGV', description: '', image: '', category: 'platos', price: 45, available: true } });
+  const opened = await open();
+  const withPrice = await orders.addItemToOrder(opened.id, { productId: priced.id, quantity: 1 });
+  assert.deepEqual([Number(withPrice.subtotal), Number(withPrice.igv), Number(withPrice.total)], [38.14, 6.86, 45]);
+  await orders.sendToKitchen(opened.id);
+  const paid = await orders.payTable('test-table', { paymentMethod: 'Efectivo', amountReceived: 50, clientOpId: id() });
+  assert.equal(Number(paid.order.total), 45);
+  assert.equal(Number(paid.order.change), 5);
+  assert.equal(Number(paid.transaction.amount), 45);
+  await assertFree();
+});
 await check('migración preserva historial incierto y aplica default seguro a nuevos pedidos', async () => {
   const legacy = await open();
   const defaults = await prisma.$queryRaw<{ name: string }[]>`SELECT dc.name FROM sys.default_constraints dc JOIN sys.columns c ON c.default_object_id=dc.object_id WHERE dc.parent_object_id=OBJECT_ID('dbo.pedidos') AND c.name='historial_despacho_conocido'`;
@@ -66,7 +95,7 @@ await check('eliminar una línea conserva las demás; reducción parcial idempot
   const order = await withItem(3);
   const added = await orders.addItemToOrder(order.id, { productId: product.id, notes: 'otra' });
   const result = await orders.removeItemFromOrder(order.id, added.items.find((i: any) => i.notes === 'otra')!.id);
-  assert.equal(result.isDeleted, false); assert.equal(result.items.length, 1); assert.equal(Number(result.total), 17.7);
+  assert.equal(result.isDeleted, false); assert.equal(result.items.length, 1); assert.equal(Number(result.total), 15);
   const mutation = id();
   await orders.updateItemQuantity(order.id, result.items[0].id, -1, mutation);
   await orders.updateItemQuantity(order.id, result.items[0].id, -1, mutation);

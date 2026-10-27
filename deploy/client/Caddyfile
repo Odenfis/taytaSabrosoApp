@@ -1,3 +1,8 @@
+{
+  # Los navegadores suelen omitir SNI cuando acceden por IP.
+  default_sni {$POS_HOSTNAME}
+}
+
 {$POS_HOSTNAME} {
   tls internal
   encode zstd gzip

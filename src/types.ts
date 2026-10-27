@@ -379,11 +379,13 @@ export type PurchaseCategory = 'insumos' | 'productos_reventa' | 'gastos_operati
 export type PurchaseDocumentStatus = 'provisional' | 'regularizado';
 
 export interface PurchaseItem {
+  id?: string;
   insumoId: string;
   insumoName: string;
   quantity: number;
   unit: string;
   unitCost: number;
+  discount?: number;
   totalCost: number;
 }
 
@@ -422,6 +424,7 @@ export type KardexMovementType =
 
 export interface KardexMovement {
   id: string;
+  purchaseId?: string;
   companyId: CompanyId;
   timestamp: number;
   date: string;

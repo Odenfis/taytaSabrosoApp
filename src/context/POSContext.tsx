@@ -1,4 +1,5 @@
 import { resolvePaymentMethod } from '../lib/paymentSelection';
+import { normalizeUnpaidOrder, orderTotalsFromItems } from '../lib/orderTotals';
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, ReactNode } from 'react';
 import {
   User,
@@ -367,7 +368,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const [orders, setOrders] = useState<Record<string, Order>>(() => {
-    return safeParse(STORAGE_KEYS.ORDERS, import.meta.env.PROD ? {} : INITIAL_ORDERS);
+    const stored = safeParse<Record<string, Order>>(STORAGE_KEYS.ORDERS, import.meta.env.PROD ? {} : INITIAL_ORDERS);
+    return Object.fromEntries(Object.entries(stored).map(([id, order]) => [id, normalizeUnpaidOrder(order)]));
   });
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
@@ -1815,18 +1817,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Recalculate Order Subtotal, IGV and Total
   const recalculateOrder = (order: Order): Order => {
-    const subtotal = order.items.reduce(
-      (acc, item) => acc + item.price * item.quantity,
-      0
-    );
-    const igv = +(subtotal * 0.18).toFixed(2);
-    const total = +(subtotal + igv).toFixed(2);
-    return {
-      ...order,
-      subtotal: +subtotal.toFixed(2),
-      igv,
-      total,
-    };
+    return { ...order, ...orderTotalsFromItems(order.items) };
   };
 
   // KARDEX DEDUCTION ENGINE: Explode recipe and deduct ingredients
@@ -3063,6 +3054,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...i,
         quantity: Number(i.quantity) || 0,
         unitCost: Number(i.unitCost) || 0,
+        discount: Number(i.discount) || 0,
         totalCost: Number(i.totalCost) || 0,
       })),
     };
@@ -3071,12 +3063,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // 1. Add Kardex Entrada for each item
     const newKardexEntries: KardexMovement[] = completedPurchase.items.map((item) => {
+      const effectiveUnitCost = item.quantity ? item.totalCost / item.quantity : 0;
       const existingInsumo = insumos.find((i) => i.id === item.insumoId);
       const stockBefore = existingInsumo ? existingInsumo.currentStock : 0;
       const stockAfter = +(stockBefore + item.quantity).toFixed(2);
 
       return {
         id: `kdx-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        purchaseId: completedPurchase.id,
         companyId: completedPurchase.companyId,
         timestamp: Date.now(),
         date: 'Hoy',
@@ -3087,7 +3081,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         referenceDoc: `Compra Factura #${completedPurchase.invoiceNumber} (${completedPurchase.supplierName})`,
         quantity: item.quantity,
         unit: item.unit,
-        unitCost: item.unitCost,
+        unitCost: effectiveUnitCost,
         totalCost: item.totalCost,
         stockBefore,
         stockAfter,
@@ -3103,12 +3097,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const itemPurchased = completedPurchase.items.find((i) => i.insumoId === ins.id);
         if (itemPurchased) {
           const totalOldCost = ins.currentStock * ins.costPerUnit;
-          const totalNewCost = itemPurchased.quantity * itemPurchased.unitCost;
+          const totalNewCost = itemPurchased.totalCost;
           const newTotalStock = ins.currentStock + itemPurchased.quantity;
           const weightedCost =
             newTotalStock > 0
               ? +((totalOldCost + totalNewCost) / newTotalStock).toFixed(2)
-              : itemPurchased.unitCost;
+              : (itemPurchased.quantity ? itemPurchased.totalCost / itemPurchased.quantity : 0);
 
           return {
             ...ins,
@@ -3192,6 +3186,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           quantity: i.quantity,
           unit: i.unit,
           unitCost: i.unitCost,
+          discount: i.discount ?? 0,
           totalCost: i.totalCost,
         })),
         total: completedPurchase.total,
@@ -3219,6 +3214,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             quantity: i.quantity,
             unit: i.unit,
             unitCost: i.unitCost,
+            discount: i.discount ?? 0,
             totalCost: i.totalCost,
           })),
           total: completedPurchase.total,
@@ -3248,6 +3244,57 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     notes?: string,
     items?: PurchaseItem[]
   ) => {
+    const previousPurchase = purchases.find((purchase) => purchase.id === purchaseId);
+    if (previousPurchase && items && previousPurchase.items.length > 0) {
+      const deltas = new Map<string, number>();
+      for (const item of items) {
+        const old = previousPurchase.items.find((row) => row.id === item.id);
+        if (!old) continue;
+        deltas.set(item.insumoId, (deltas.get(item.insumoId) || 0) + item.totalCost - old.totalCost);
+      }
+      setInsumos((prev) => prev.map((insumo) => {
+        const delta = deltas.get(insumo.id) || 0;
+        return delta && insumo.currentStock > 0 ? {
+          ...insumo, costPerUnit: +(insumo.costPerUnit + delta / insumo.currentStock).toFixed(2),
+        } : insumo;
+      }));
+      setKardexMovements((prev) => {
+        const used = new Set<string>();
+        return prev.map((movement) => {
+          if (movement.purchaseId !== previousPurchase.id) return movement;
+          const old = previousPurchase.items.find((row) => !used.has(row.id || '') && row.insumoId === movement.insumoId &&
+            row.totalCost === movement.totalCost && row.quantity === movement.quantity);
+          const matching = items.find((item) => item.id && item.id === old?.id);
+          if (!matching || !old) return movement;
+          used.add(old.id || '');
+          return { ...movement, totalCost: matching.totalCost, unitCost: matching.totalCost / matching.quantity };
+        });
+      });
+    }
+    if (previousPurchase && items && previousPurchase.items.length === 0) {
+      const now = Date.now();
+      setInsumos((prev) => prev.map((insumo) => {
+        const added = items.filter((item) => item.insumoId === insumo.id);
+        if (!added.length) return insumo;
+        const quantity = added.reduce((sum, item) => sum + item.quantity, 0);
+        const cost = added.reduce((sum, item) => sum + item.totalCost, 0);
+        const stock = insumo.currentStock + quantity;
+        return { ...insumo, currentStock: stock,
+          costPerUnit: stock > 0 ? +((insumo.currentStock * insumo.costPerUnit + cost) / stock).toFixed(2) : insumo.costPerUnit };
+      }));
+      setKardexMovements((prev) => [...items.map((item, index) => {
+        const insumo = insumos.find((row) => row.id === item.insumoId);
+        const stockBefore = insumo?.currentStock ?? 0;
+        return {
+          id: `kdx-reg-${purchaseId}-${index}`, purchaseId,
+          companyId: previousPurchase.companyId, timestamp: now, date: 'Hoy', time: new Date(now).toLocaleTimeString(),
+          insumoId: item.insumoId, insumoName: item.insumoName, type: 'ENTRADA_COMPRA' as const,
+          referenceDoc: `Compra Factura #${invoiceNumber} (${previousPurchase.supplierName})`,
+          quantity: item.quantity, unit: item.unit, unitCost: item.totalCost / item.quantity,
+          totalCost: item.totalCost, stockBefore, stockAfter: stockBefore + item.quantity,
+        };
+      }), ...prev]);
+    }
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setPurchases((prev) =>
       prev.map((p) => {

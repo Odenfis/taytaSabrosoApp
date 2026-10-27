@@ -87,6 +87,7 @@ export interface PurchaseItemDTO {
   quantity: number;
   unit: string;
   unitCost: number;
+  discount?: number;
   totalCost: number;
 }
 
@@ -120,6 +121,7 @@ export interface PurchaseDTO {
 
 export interface KardexMovementDTO {
   id: string;
+  purchaseId?: string | null;
   companyId: string;
   timestamp: string; // ISO (DateTime)
   date: string;
@@ -243,11 +245,13 @@ export function mapTransaction(dto: TransactionDTO): Transaction {
 
 export function mapPurchaseItem(dto: PurchaseItemDTO): PurchaseItem {
   return {
+    id: dto.id,
     insumoId: dto.insumoId ?? '',
     insumoName: dto.insumoName,
     quantity: dto.quantity,
     unit: dto.unit,
     unitCost: dto.unitCost,
+    discount: dto.discount ?? 0,
     totalCost: dto.totalCost,
   };
 }
@@ -283,6 +287,7 @@ export function mapPurchase(dto: PurchaseDTO): Purchase {
 export function mapKardexMovement(dto: KardexMovementDTO): KardexMovement {
   return {
     id: dto.id,
+    purchaseId: dto.purchaseId ?? undefined,
     companyId: toCompanyId(dto.companyId),
     timestamp: utc(dto.timestamp),
     date: dto.date,

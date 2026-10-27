@@ -1,5 +1,22 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
+## Precios de venta con IGV incluido — 2026-10-26
+
+- El precio registrado en Productos y Fichas & Recetas se interpreta como precio final con IGV. Cliente y API calculan `total = suma(precio × cantidad)`, extraen el subtotal dividiendo entre 1.18 y obtienen el IGV por diferencia. Un producto de S/ 45.00 se cobra por S/ 45.00 (subtotal S/ 38.14; IGV incluido S/ 6.86).
+- Comanda, cobro, cuenta preventa, ticket imprimible y PNG de WhatsApp muestran el IGV como desglose incluido, sin sumarlo otra vez. Los tickets históricos cobrados conservan importes y etiqueta del cálculo anterior.
+- La migración `0007_sale_prices_include_igv` recalcula solo pedidos abiertos, en cocina o por cobrar; no modifica los cobrados ni anulados. La caché local normaliza pedidos no cobrados al cargar, incluidos pendientes sin conexión.
+- Verificación: TypeScript, builds, 54 pruebas cliente, 31 servidor y 17 escenarios SQL/API/realtime de pedidos correctos. La prueba SQL aislada cubrió migración, cobro S/ 45.00, vuelto, caja e historial, y eliminó su base temporal.
+- En la base local `TaytaSabroso` se verificó un respaldo `TaytaSabroso_before_igv_20261026.bak` en la ruta SQL `/var/opt/mssql/data/`; luego se aplicó `0007`. La única orden por cobrar pasó de S/ 53.10 a S/ 45.00; las cinco órdenes cobradas conservaron sus importes. La base del cliente aún requiere esta migración al desplegar esta versión.
+
+## Descuento por insumo en compras — 2026-10-26
+
+- Corrección de entorno local: se aplicó `0006_purchase_item_discount` a la base configurada `TaytaSabroso` tras comprobar que era la única migración pendiente. `prisma migrate status` quedó actualizado y una lectura de compras con sus detalles funcionó. Esto no implica despliegue en la base del cliente.
+- Ajuste visual posterior: las tres modalidades de compra muestran etiquetas visibles en cada casilla (insumo, cantidad, precio unitario, descuento y total neto). Se ampliaron los modales, los renglones se distribuyen por ancho y los importes se muestran en bloques; «Pasar Compra a Limpio» indica si el detalle coincide con el vale. TypeScript, build y 50 pruebas cliente correctos. La revisión interactiva quedó en login por falta de PIN de prueba.
+- Compras formales y vales con detalle aceptan descuento en soles por renglón antes del IGV. El formulario y el listado muestran el total descontado; el importe neto gobierna el total, el pago y el costo de Kardex. Un vale sin insumos conserva su monto manual.
+- «Pasar Compra a Limpio» acepta descuentos al completar un vale vacío o al ajustar precios y descuentos de insumos ya registrados, conservando insumos, cantidades y total del vale. El servidor actualiza detalle, Kardex y costo promedio en una transacción; caja, banco y crédito no se vuelven a afectar.
+- La migración `0006_purchase_item_discount` añade `descuento` a `detalle_compras` con valor inicial cero. API, tipos, mapeo y cola offline trasladan el nuevo campo. El servidor valida cada línea y la suma neta con IGV antes de guardar.
+- Verificación: TypeScript, builds, 50 pruebas cliente y 30 servidor correctos; la prueba SQL aislada aplicó seis migraciones y cubrió creación, descuentos, regularización y reintento. La base temporal se eliminó. Pendiente una revisión visual interactiva y el despliegue de la migración en el entorno del cliente.
+
 ## Paquete Docker inicial para cliente — 2026-10-24
 
 - Imagen `linux/amd64` con frontend, API y Socket.IO en el mismo origen; Compose añade Caddy con HTTPS local y certificados persistentes. SQL Server permanece instalado en Windows. Instrucciones en `deploy/client/README.md`.

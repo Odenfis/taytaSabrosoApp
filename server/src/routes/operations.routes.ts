@@ -261,6 +261,7 @@ router.post('/purchases', async (req, res, next) => {
       quantity: z.number().positive(),
       unit: z.string().min(1),
       unitCost: z.number().nonnegative(),
+      discount: z.number().nonnegative().optional(),
       totalCost: z.number().nonnegative(),
     });
     const body = z
@@ -310,9 +311,11 @@ router.post('/purchases/:id/regularize', async (req, res, next) => {
         notes: z.string().optional(),
         clientOpId: z.string().optional(),
         items: z.array(z.object({
+          id: z.string().optional(),
           insumoId: z.string().min(1), insumoName: z.string().min(1),
           quantity: z.number().positive(), unit: z.string().min(1),
           unitCost: z.number().nonnegative(), totalCost: z.number().nonnegative(),
+          discount: z.number().nonnegative().optional(),
         })).optional(),
       })
       .parse(req.body);

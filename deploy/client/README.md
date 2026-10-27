@@ -8,6 +8,7 @@ Esta entrega usa Docker Desktop para la aplicación y **una base nueva** en SQL 
 2. Configure un nombre DNS LAN estable para la PC, por ejemplo `pos.taytasabroso.lan`, que resuelva a su IP fija o reservada. Abra 443 en el firewall de Windows para la LAN. La app no necesita el puerto 4000 expuesto.
 3. Copie `deploy/client/app.env.example` a `deploy/client/app.env`. Sustituya usuario, contraseña SQL, `JWT_SECRET` aleatorio (32 caracteres o más) y `CORS_ORIGIN=https://<nombre LAN>`. Si la contraseña SQL contiene `;`, `=`, `@` u otros caracteres especiales, codifíquelos según el formato URL aceptado por Prisma. Configure `POS_HOSTNAME=<nombre LAN>` en un archivo `.env` de la raíz; no confundirlo con el `.env` del servidor de desarrollo. Mantenga ambos archivos fuera de Git y restrinja acceso a administradores.
 4. Copie `deploy/client/initial-config.example.json` a `deploy/client/initial-config.json`. Complete las dos razones sociales, nombres comerciales, RUC, direcciones, mesas, zonas, capacidades, nombre del administrador y PIN nuevo de 6 a 12 dígitos. El inicializador rechaza RUC provisionales, datos de ejemplo y una base con datos.
+   Antes de ejecutar `setup`, confirme que `initial-config.json` existe como **archivo**, no como carpeta. Si no existe, Docker puede montar una carpeta en su lugar y el inicializador dará `EISDIR`.
 
 ## Crear imagen e inicializar
 

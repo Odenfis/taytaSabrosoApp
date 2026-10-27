@@ -588,7 +588,7 @@ export const RecipesScreen: React.FC = () => {
 
                 <div>
                   <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
-                    Precio de Venta (S/)
+                    Precio de Venta con IGV incluido (S/)
                   </label>
                   <input
                     type="number"

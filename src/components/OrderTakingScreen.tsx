@@ -320,11 +320,11 @@ export const OrderTakingScreen: React.FC = () => {
           <div className="bg-panel-3 p-4 border-t border-edge-outline flex flex-col gap-3 shrink-0">
             <div className="flex flex-col gap-1.5 text-[14px]">
               <div className="flex justify-between text-ink-muted-2">
-                <span>Subtotal</span>
+                <span>Subtotal sin IGV</span>
                 <span>S/ {(currentOrder?.subtotal || 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-ink-muted-2">
-                <span>IGV (18%)</span>
+                <span>IGV incluido (18%)</span>
                 <span>S/ {(currentOrder?.igv || 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-[18px] font-bold text-ink-body pt-2 border-t border-edge-outline-2">

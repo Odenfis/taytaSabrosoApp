@@ -532,6 +532,7 @@ model PurchaseItem {
   quantity   Decimal @map("cantidad") @db.Decimal(12, 4)
   unit       String  @map("unidad") @db.NVarChar(10)
   unitCost   Decimal @map("costo_unitario") @db.Decimal(12, 4)
+  discount   Decimal @map("descuento") @default(0) @db.Decimal(12, 2)
   totalCost  Decimal @map("costo_total") @db.Decimal(12, 2)
 
   purchase Purchase @relation(fields: [purchaseId], references: [id], onUpdate: NoAction, onDelete: Cascade)

@@ -1,4 +1,5 @@
 import { Order } from '../types';
+import { isHistoricalAdditiveOrder } from './orderTotals';
 
 // Generación gráfica del voucher (estilo rollo térmico de 80mm) sin dependencias.
 // El ticket se dibuja en un <canvas> y se exporta como PNG para compartir
@@ -38,7 +39,7 @@ function wrap(t: string, maxChars: number): string[] {
   return rows;
 }
 
-function buildLines(order: Order, header: VoucherHeader, isPaid: boolean): Line[] {
+export function buildVoucherLines(order: Order, header: VoucherHeader, isPaid: boolean): Line[] {
   const lines: Line[] = [];
   const dash = '-'.repeat(34);
 
@@ -77,8 +78,8 @@ function buildLines(order: Order, header: VoucherHeader, isPaid: boolean): Line[
   lines.push({ text: dash, lineGap: 4, size: 10 });
 
   // Totales
-  lines.push({ text: `Subtotal:  S/ ${order.subtotal.toFixed(2)}`, lineGap: 2, size: 11 });
-  lines.push({ text: `I.G.V. 18%:  S/ ${order.igv.toFixed(2)}`, lineGap: 0, size: 11 });
+  lines.push({ text: `${isHistoricalAdditiveOrder(order) ? 'Subtotal' : 'Subtotal sin IGV'}:  S/ ${order.subtotal.toFixed(2)}`, lineGap: 2, size: 11 });
+  lines.push({ text: `${isHistoricalAdditiveOrder(order) ? 'I.G.V. 18%' : 'IGV incluido 18%'}:  S/ ${order.igv.toFixed(2)}`, lineGap: 0, size: 11 });
   lines.push({ text: `TOTAL:  S/ ${order.total.toFixed(2)}`, lineGap: 6, bold: true, size: 13 });
   if (isPaid) {
     if (order.amountReceived && order.amountReceived > 0) {
@@ -103,7 +104,7 @@ export function buildVoucherCanvas(order: Order, header: VoucherHeader, isPaid: 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
 
-  const lines = buildLines(order, header, isPaid);
+  const lines = buildVoucherLines(order, header, isPaid);
 
   // Altura dinámica (mide con el mismo font que dibujará)
   let h = PAD;

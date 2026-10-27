@@ -31,7 +31,12 @@ services:
     env_file: ./deploy/client/app.env
     profiles: [setup]
     volumes:
-      - ./deploy/client/initial-config.json:/run/initial-config.json:ro
+      - type: bind
+        source: ./deploy/client/initial-config.json
+        target: /run/initial-config.json
+        read_only: true
+        bind:
+          create_host_path: false
     command: ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node --import tsx prisma/init-client.ts /run/initial-config.json"]
     networks: [internal]
 
