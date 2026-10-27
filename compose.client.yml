@@ -10,8 +10,7 @@ services:
   web:
     image: caddy:2-alpine
     ports:
-      - "80:80"
-      - "443:443"
+      - "${POS_HTTPS_PORT:-443}:443"
     environment:
       POS_HOSTNAME: ${POS_HOSTNAME:?Defina POS_HOSTNAME en .env}
     volumes:
