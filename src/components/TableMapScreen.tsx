@@ -11,6 +11,7 @@ export const TableMapScreen: React.FC = () => {
     activeCompanyId,
     activeCompany,
     openQuickOrder,
+    currentUser,
   } = usePOS();
 
   const [selectedZone, setSelectedZone] = useState<Zone | 'Todos'>('Todos');
@@ -96,13 +97,13 @@ export const TableMapScreen: React.FC = () => {
             </button>
           ))}
 
-          <button
+          {(activeCompanyId === 'el-sabroso' || currentUser?.role === 'Administrador' || currentUser?.role === 'Coordinador') && <button
             onClick={() => setIsNewTableModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-brand-solid hover:bg-surface-brand-hover-bright text-ink-on-brand text-[12px] font-bold transition-all shadow-md"
           >
             <span className="material-symbols-outlined text-[16px]">add</span>
             <span>Nueva Mesa</span>
-          </button>
+          </button>}
         </div>
       </div>
 

@@ -210,6 +210,7 @@ interface POSContextType {
   // Actions
   selectAndOpenTable: (tableId: string) => void;
   openQuickOrder: (zone?: Zone) => void;
+  createTaytaPhysicalTable: (zone: 'Primer Piso' | 'Mezanine' | 'Jardín' | 'Terraza', capacity: number) => Promise<Table>;
   addItemToOrder: (tableId: string, product: Product, notes?: string) => void;
   updateItemQuantity: (tableId: string, itemId: string, delta: number) => void;
   updateItemNotes: (tableId: string, itemId: string, notes: string) => void;
@@ -3007,6 +3008,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Add New Table (Fase E5: write-through a POST /catalogs/tables; F5 persiste)
+  const createTaytaPhysicalTable = async (zone: 'Primer Piso' | 'Mezanine' | 'Jardín' | 'Terraza', capacity: number): Promise<Table> => {
+    if (currentUser?.role !== 'Administrador' && currentUser?.role !== 'Coordinador') throw new Error('No tiene permiso para crear mesas.');
+    if (!offlineState.isOnline || offlineState.isSimulatedOffline) throw new Error('Para crear mesas físicas se requiere conexión.');
+    const created = mapTable(await apiClient.post<TableDTO>('/catalogs/tables/physical', { zone, capacity }));
+    setTables((prev) => prev.some((table) => table.id === created.id) ? prev : [...prev, created]);
+    addNotification('Mesa creada', `Mesa ${created.number} agregada en ${zone}.`, 'success');
+    return created;
+  };
+
   const addNewTable = (number: string, capacity: number, zone: Zone) => {
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
     const tempId = `t-custom-${Date.now()}`;
@@ -4437,6 +4447,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         // Actions
         selectAndOpenTable,
         openQuickOrder,
+        createTaytaPhysicalTable,
         addItemToOrder,
         updateItemQuantity,
         updateItemNotes,

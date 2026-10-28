@@ -1,19 +1,23 @@
 import React, { useState } from 'react';
 import { usePOS } from '../context/POSContext';
-import { Zone, TableStatus } from '../types';
+import { Zone } from '../types';
 
 interface NewTableModalProps {
-  isOpen: boolean;
   onClose: () => void;
 }
 
-export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose }) => {
-  const { addNewTable, openQuickOrder, activeCompanyId } = usePOS();
+export const NewTableModal: React.FC<NewTableModalProps> = ({ onClose }) => {
+  const { addNewTable, createTaytaPhysicalTable, openQuickOrder, activeCompanyId, currentUser, offlineState } = usePOS();
   const [tableNumber, setTableNumber] = useState('');
   const [capacity, setCapacity] = useState('4');
   const [zone, setZone] = useState<Zone>('Salón Principal');
+  const [physicalZone, setPhysicalZone] = useState<'Primer Piso' | 'Mezanine' | 'Jardín' | 'Terraza'>('Primer Piso');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  if (!isOpen) return null;
+  const isTayta = activeCompanyId !== 'el-sabroso';
+  const canCreatePhysical = currentUser?.role === 'Administrador' || currentUser?.role === 'Coordinador';
+  const online = offlineState.isOnline && !offlineState.isSimulatedOffline;
 
   const handleCreateTable = (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,6 +25,15 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose })
     addNewTable(tableNumber, parseInt(capacity) || 4, zone);
     onClose();
     setTableNumber('');
+  };
+
+  const handleCreatePhysical = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (saving) return;
+    setSaving(true); setError('');
+    try { await createTaytaPhysicalTable(physicalZone, Number(capacity)); onClose(); }
+    catch (cause) { setError((cause as Error).message); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -73,7 +86,24 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ isOpen, onClose })
         </div>
 
         {/* Create Physical Table Form */}
-        {activeCompanyId === 'el-sabroso' && <form onSubmit={handleCreateTable} className="space-y-4">
+        {isTayta && <form onSubmit={(event) => void handleCreatePhysical(event)} className="space-y-4">
+          <label className="text-[13px] font-semibold block">Ambiente
+            <select value={physicalZone} onChange={(event) => setPhysicalZone(event.target.value as typeof physicalZone)} className="w-full bg-panel-16 border border-edge-outline rounded-xl px-3 py-2.5 mt-1">
+              <option>Primer Piso</option><option>Mezanine</option><option>Jardín</option><option>Terraza</option>
+            </select>
+          </label>
+          <label className="text-[13px] font-semibold block">Capacidad
+            <select value={capacity} onChange={(event) => setCapacity(event.target.value)} className="w-full bg-panel-16 border border-edge-outline rounded-xl px-3 py-2.5 mt-1">
+              {[1, 2, 4, 6, 8, 10].map((value) => <option key={value} value={value}>{value} personas</option>)}
+            </select>
+          </label>
+          <p className="text-xs text-ink-muted-2">El número se asigna automáticamente con el prefijo del ambiente.</p>
+          {!canCreatePhysical && <p className="text-sm text-ink-warning">Solo el administrador puede añadir mesas físicas.</p>}
+          {!online && <p className="text-sm text-ink-warning">Se requiere conexión para añadir una mesa física.</p>}
+          {error && <p role="alert" className="text-sm text-ink-danger">{error}</p>}
+          <button type="submit" disabled={!canCreatePhysical || !online || saving} className="w-full bg-surface-brand-solid text-ink-on-solid py-3 rounded-xl font-bold disabled:opacity-50">{saving ? 'Guardando...' : 'Crear Mesa'}</button>
+        </form>}
+        {!isTayta && <form onSubmit={handleCreateTable} className="space-y-4">
           <div>
             <label className="text-[13px] font-semibold text-ink-body block mb-1.5">
               Número / Identificador de Mesa

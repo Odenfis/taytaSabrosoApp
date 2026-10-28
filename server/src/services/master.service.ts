@@ -6,6 +6,8 @@ export { createProduct, updateProduct } from './product.service.js';
 import { AppError, plain, toNum, round2 } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitRecipeChanged, emitInsumoChanged, emitPaymentMethodChanged, emitPrinterChanged, emitProductChanged } from '../lib/realtime.js';
+import { emitTableChanged } from '../lib/realtime.js';
+import { TAYTA_PHYSICAL_PREFIXES, type TaytaPhysicalZone } from '../lib/taytaTableLayout.js';
 
 // companyId opcional para filtrar recursos por empresa.
 // Los recursos 'ambas' (companyId NULL) siempre se incluyen cuando hay filtro.
@@ -46,6 +48,7 @@ export async function createTable(input: {
   zone: string;
   notes?: string;
 }) {
+  if (input.companyId === 'el-tayta') throw new AppError('Use la creación de mesas físicas de El Tayta.', 400, 'TAYTA_PHYSICAL_REQUIRED');
   const table = await prisma.table.create({
     data: {
       id: randomUUID(),
@@ -57,6 +60,25 @@ export async function createTable(input: {
       notes: input.notes,
     },
   });
+  return plain(table);
+}
+
+export async function createTaytaPhysicalTable(input: { zone: TaytaPhysicalZone; capacity: number }) {
+  const companyId = 'el-tayta';
+  const prefix = TAYTA_PHYSICAL_PREFIXES[input.zone];
+  const table = await prisma.$transaction(async (tx) => {
+    // Serializa las altas de todas las terminales sin depender de la caché del navegador.
+    await tx.$queryRaw`SELECT [id] FROM [dbo].[empresas] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${companyId}`;
+    const existing = await tx.table.findMany({ where: { companyId, number: { startsWith: prefix } }, select: { number: true } });
+    const next = 1 + existing.reduce((maximum, row) => {
+      const match = new RegExp(`^${prefix}(\\d{2,})$`, 'i').exec(row.number);
+      return match ? Math.max(maximum, Number(match[1])) : maximum;
+    }, 0);
+    const number = `${prefix}${String(next).padStart(2, '0')}`;
+    if (existing.some((row) => row.number.toUpperCase() === number.toUpperCase())) throw new AppError('El número ya existe.', 409, 'TABLE_NUMBER_EXISTS');
+    return tx.table.create({ data: { id: randomUUID(), companyId, number, capacity: input.capacity, zone: input.zone, status: 'libre' } });
+  }, { timeout: 30000 });
+  emitTableChanged(companyId, { tableId: table.id, companyId, status: table.status, currentOrderId: null, updatedAt: table.updatedAt.toISOString() });
   return plain(table);
 }
 

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../lib/auth.js';
+import { requireAuth, requireRoles } from '../lib/auth.js';
 import { AppError } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import * as master from '../services/master.service.js';
@@ -8,6 +8,7 @@ import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
 import { createInsumoSchema, updateInsumoSchema } from '../services/insumo.service.js';
 import { createProductSchema, updateProductSchema } from '../services/product.service.js';
+import { TAYTA_PHYSICAL_PREFIXES } from '../lib/taytaTableLayout.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -36,6 +37,15 @@ router.get('/companies', async (req, res, next) => {
 });
 
 // ============ TABLES ============
+router.post('/tables/physical', requireRoles('Administrador', 'Coordinador'), async (req, res, next) => {
+  try {
+    const user = req.auth!.user;
+    if ((user.assignedCompanyId ?? user.companyId) && (user.assignedCompanyId ?? user.companyId) !== 'el-tayta')
+      throw new AppError('No tiene acceso a El Tayta.', 403, 'FORBIDDEN');
+    const body = z.object({ zone: z.enum(Object.keys(TAYTA_PHYSICAL_PREFIXES) as [keyof typeof TAYTA_PHYSICAL_PREFIXES, ...(keyof typeof TAYTA_PHYSICAL_PREFIXES)[]]), capacity: z.number().int().min(1).max(20) }).parse(req.body);
+    res.status(201).json(await master.createTaytaPhysicalTable(body));
+  } catch (err) { next(err); }
+});
 router.get('/tables', async (req, res, next) => {
   try {
     const q = companyQuery.parse(req.query);

@@ -1,5 +1,12 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
+## Ampliación de mesas físicas de El Tayta — 2026-10-28
+
+- «Nueva Mesa» vuelve a abrir el formulario. En El Tayta el administrador elige Primer Piso, Mezanine, Jardín o Terraza y capacidad (4 por defecto); el servidor asigna series independientes P/M/J/T bajo bloqueo SQL. Las altas exigen conexión y se notifican a otras terminales. El rol Coordinador queda preparado sin crear aún cuentas ni gestión de usuarios.
+- La API rechaza crear mesas manuales de El Tayta por la ruta antigua y exige rol en la nueva. El configurador reconoce mesas físicas añadidas tras las 43 iniciales y no las archiva; bloquea cambios si falta una mesa base mientras existen ampliaciones. Delivery, Llevar y Barra conservan su numeración y comportamiento.
+- Verificación: compilación y 55 pruebas de frontend; compilación y 31 pruebas de servidor; prueba SQL aislada de numeración por ambiente, concurrencia, autorización, lectura desde otra sesión y conservación del catálogo (base temporal eliminada). La imagen Docker `linux/amd64` compiló. El informe de solo lectura de la base local indica `already_configured`, cero pedidos activos y las 43 mesas base intactas. Pendiente de publicación y ejecución de actualización en Windows del cliente.
+
+
 ## Ambientes y mesas de El Tayta — 2026-10-27
 
 - Distribución solicitada: Primer Piso 01–05, Mezanine 06–12, Jardín 13–26, Terraza 27–35 (capacidad 4) y Barra B01–B08 (capacidad 1). Delivery y Llevar comparten una secuencia transaccional desde 36; cada mesa temporal se oculta al cobrar/anular y su número permanece en el pedido histórico. La cola offline conserva el ambiente y sustituye `Pendiente` por el número asignado al sincronizar.

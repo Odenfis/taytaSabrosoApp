@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { prisma } from '../src/lib/prisma.js';
+import { createTaytaPhysicalTable } from '../src/services/master.service.js';
+import { createApp } from '../src/app.js';
+import { signAccessToken, hashToken } from '../src/lib/auth.js';
 import { createQuickBarOrder, openOrderForTable, addItemToOrder, sendToKitchen, payTable, cancelOrderOpening } from '../src/services/order.service.js';
 
 const database = process.env.TABLE_TEST_DATABASE;
@@ -35,6 +39,51 @@ try {
     assert.equal(fixed.filter((table) => table.zone === zone).length, count);
   }
   assert.equal(fixed.find((table) => table.number === 'B08')?.capacity, 1);
+  const zones = ['Primer Piso', 'Mezanine', 'Jardín', 'Terraza'] as const;
+  const created = await Promise.all(zones.map((zone) => createTaytaPhysicalTable({ zone, capacity: 4 })));
+  assert.deepEqual(created.map((table) => table.number), ['P01', 'M01', 'J01', 'T01']);
+  const concurrent = await Promise.all(Array.from({ length: 2 }, () => createTaytaPhysicalTable({ zone: 'Jardín', capacity: 6 })));
+  assert.deepEqual(concurrent.map((table) => table.number).sort(), ['J02', 'J03']);
+  await prisma.table.update({ where: { id: concurrent[1].id }, data: { isDeleted: true } });
+  assert.equal((await createTaytaPhysicalTable({ zone: 'Jardín', capacity: 4 })).number, 'J04');
+  assert.equal(layout('--apply', '--backup-verified', '--terminals-synced'), 0);
+  assert.equal(JSON.parse(await readFile(report, 'utf8')).before.status, 'already_configured');
+  assert.equal(await prisma.table.count({ where: { companyId: 'el-tayta', isDeleted: false } }), 49);
+  const coreTable = fixed.find((table) => table.number === '01')!;
+  await prisma.table.update({ where: { id: coreTable.id }, data: { isDeleted: true } });
+  assert.equal(layout(), 0);
+  assert.equal(JSON.parse(await readFile(report, 'utf8')).before.status, 'blocked');
+  assert.notEqual(layout('--apply', '--backup-verified', '--terminals-synced'), 0);
+  await prisma.table.update({ where: { id: coreTable.id }, data: { isDeleted: false } });
+  const adminId = id(); const waiterId = id(); const deviceId = id();
+  await prisma.user.createMany({ data: [
+    { id: adminId, companyId: 'el-tayta', name: 'Admin', pinHash: 'test', role: 'Administrador', terminal: 'Test' },
+    { id: waiterId, companyId: 'el-tayta', name: 'Mozo', pinHash: 'test', role: 'Mesero', terminal: 'Test' },
+  ] });
+  await prisma.device.create({ data: { id: deviceId, companyId: 'el-tayta', name: 'Test', terminalCode: 'TEST-TABLE' } });
+  const server = createServer(createApp());
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address(); assert.ok(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}/api/catalogs/tables/physical`;
+    async function post(userId: string, role: string, path = url) {
+      const token = signAccessToken({ sub: userId, deviceId, role, name: role });
+      await prisma.session.create({ data: { id: id(), userId, deviceId, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 60_000) } });
+      return fetch(path, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ companyId: 'el-tayta', zone: 'Terraza', capacity: 4, number: '99' }) });
+    }
+    assert.equal((await post(waiterId, 'Mesero')).status, 403);
+    assert.equal((await post(waiterId, 'Mesero', url.replace('/tables/physical', '/tables'))).status, 400);
+    const response = await post(adminId, 'Administrador');
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).number, 'T02');
+    const secondToken = signAccessToken({ sub: waiterId, deviceId, role: 'Mesero', name: 'Mozo' });
+    await prisma.session.create({ data: { id: id(), userId: waiterId, deviceId, tokenHash: hashToken(secondToken), expiresAt: new Date(Date.now() + 60_000) } });
+    const visible = await fetch(url.replace('/tables/physical', '/tables'), { headers: { authorization: `Bearer ${secondToken}` } });
+    assert.equal(visible.status, 200);
+    assert.ok((await visible.json() as Array<{ number: string; zone: string }>).some((table) => table.number === 'T02' && table.zone === 'Terraza'));
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  assert.equal((await prisma.numberingSequence.findUniqueOrThrow({ where: { companyId_entity: { companyId: 'el-tayta', entity: 'service-table' } } })).lastNumber, 35);
   for (let n = 0; n < 8; n++) await createQuickBarOrder({ companyId: 'el-tayta', clientOpId: id() });
   await assert.rejects(createQuickBarOrder({ companyId: 'el-tayta', clientOpId: id() }), (error: any) => error.code === 'BAR_FULL');
   assert.equal((await prisma.numberingSequence.findUniqueOrThrow({ where: { companyId_entity: { companyId: 'el-tayta', entity: 'service-table' } } })).lastNumber, 35);

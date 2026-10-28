@@ -8,3 +8,8 @@ export const TAYTA_TABLE_LAYOUT = [
 ];
 
 export const isServiceZone = (zone: string) => zone === 'Delivery' || zone === 'Llevar';
+
+export const TAYTA_PHYSICAL_PREFIXES = {
+  'Primer Piso': 'P', Mezanine: 'M', 'Jardín': 'J', Terraza: 'T',
+} as const;
+export type TaytaPhysicalZone = keyof typeof TAYTA_PHYSICAL_PREFIXES;

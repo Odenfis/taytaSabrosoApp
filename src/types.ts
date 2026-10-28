@@ -1,4 +1,4 @@
-export type Role = 'Cajero' | 'Mesero' | 'Administrador' | 'Jefe de Cocina';
+export type Role = 'Cajero' | 'Mesero' | 'Administrador' | 'Coordinador' | 'Jefe de Cocina';
 
 export type CompanyId = 'el-tayta' | 'el-sabroso';
 

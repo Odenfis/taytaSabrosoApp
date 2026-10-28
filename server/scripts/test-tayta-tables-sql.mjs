@@ -7,7 +7,8 @@ const source = process.env.DATABASE_URL;
 if (!source?.startsWith('sqlserver://') || !/;database=[^;]+/i.test(source)) throw new Error('Se requiere SQL Server con database explícita.');
 const database = 'tayta_tables_test_' + randomUUID().replaceAll('-', '');
 const admin = new PrismaClient({ datasourceUrl: source.replace(/;database=[^;]+/i, ';database=master') });
-const env = { ...process.env, DATABASE_URL: source.replace(/;database=[^;]+/i, ';database=' + database), TABLE_TEST_DATABASE: database };
+const env = { ...process.env, DATABASE_URL: source.replace(/;database=[^;]+/i, ';database=' + database), TABLE_TEST_DATABASE: database,
+  NODE_ENV: 'test', JWT_SECRET: 'isolated-table-test-secret', CORS_ORIGIN: 'http://localhost:4310' };
 function run(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
