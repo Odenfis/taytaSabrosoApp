@@ -73,6 +73,7 @@ export interface TransactionDTO {
   referenceNumber: string | null;
   tableNumber: string | null;
   orderId: string | null;
+  dinerBillId?: string | null;
   ticketNumber: string | null;
   clientOpId: string | null;
   isDeleted?: boolean;
@@ -237,6 +238,7 @@ export function mapTransaction(dto: TransactionDTO): Transaction {
     referenceNumber: dto.referenceNumber ?? undefined,
     tableNumber: dto.tableNumber ?? undefined,
     orderId: dto.orderId ?? undefined,
+    dinerBillId: dto.dinerBillId ?? undefined,
     ticketNumber: dto.ticketNumber ?? undefined,
     clientOpId: dto.clientOpId ?? undefined,
     correctionCount: dto.correctionCount ?? 0,

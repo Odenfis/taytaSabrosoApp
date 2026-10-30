@@ -74,7 +74,7 @@ export const ReceiptModal: React.FC = () => {
             ) : (
               <>
                 <span className="material-symbols-outlined text-ink-gold">receipt_long</span>
-                <h2 className="text-[18px] font-bold text-ink-body">Boleta de la Cuenta</h2>
+                <h2 className="text-[18px] font-bold text-ink-body">Cuenta previa</h2>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-ink-on-accent-2 bg-surface-gold-2 px-2 py-0.5 rounded-full">
                   Pendiente de pago
                 </span>
@@ -182,7 +182,7 @@ export const ReceiptModal: React.FC = () => {
               <>
                 <p className="font-bold text-ink-success-3 text-[11px]">PAGO REGISTRADO</p>
                 <p>¡Gracias por su preferencia!</p>
-                <p>Representación impresa de la Boleta de Venta Electrónica</p>
+                <p>Ticket interno. No es comprobante de pago electrónico.</p>
               </>
             ) : (
               <>

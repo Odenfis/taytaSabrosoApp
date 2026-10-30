@@ -1,7 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { availablePaymentMethods, reconcilePaymentSelection, paymentDetails } from '../lib/paymentSelection';
 import { usePOS } from '../context/POSContext';
 import { CustomPaymentMethod } from '../types';
+import { SplitBillsPanel } from './SplitBillsPanel';
+import { apiClient } from '../lib/api';
 
 export const PaymentScreen: React.FC = () => {
   const {
@@ -16,7 +18,7 @@ export const PaymentScreen: React.FC = () => {
   const [selection, setSelection] = useState<{ scope: string; id: string | null | undefined }>({ scope: '', id: undefined });
   const [referenceNumber, setReferenceNumber] = useState<string>('');
   const [splitPayment, setSplitPayment] = useState(false);
-  const [splitCount, setSplitCount] = useState(2);
+  const [hasBills, setHasBills] = useState(false);
   const [cashReceivedInput, setCashReceivedInput] = useState<string>('');
 
   // Active table & order
@@ -28,8 +30,22 @@ export const PaymentScreen: React.FC = () => {
     if (!currentTable || !currentTable.currentOrderId) return null;
     return orders[currentTable.currentOrderId] || null;
   }, [currentTable, orders]);
+  const splitSnapshot = useRef<{ order: NonNullable<typeof currentOrder>; table: NonNullable<typeof currentTable> } | null>(null);
+  if (currentOrder && currentTable) splitSnapshot.current = { order: currentOrder, table: currentTable };
 
   const total = currentOrder?.total || 0;
+  useEffect(() => {
+    if (!currentOrder) return;
+    let active = true;
+    setHasBills(false);
+    setSplitPayment(false);
+    const cached = localStorage.getItem(`ts_diner_bills_${currentOrder.id}`);
+    if (cached && cached !== '[]') { setHasBills(true); setSplitPayment(true); }
+    apiClient.get<unknown[]>(`/operations/orders/${currentOrder.id}/bills`).then((bills) => {
+      if (active && bills.length) { setHasBills(true); setSplitPayment(true); }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [currentOrder?.id]);
 
   const availableMethods = useMemo(() => availablePaymentMethods(paymentMethods, currentTable?.companyId), [paymentMethods, currentTable?.companyId]);
   const scope = `${currentTable?.id ?? ''}:${currentOrder?.id ?? ''}`;
@@ -64,6 +80,10 @@ export const PaymentScreen: React.FC = () => {
 
   const handleConfirmPayment = () => {
     if (!currentTable || !currentOrder || details.error || !activeCustomMethod) return;
+    if (hasBills || localStorage.getItem(`ts_diner_bills_${currentOrder.id}`)) {
+      setSplitPayment(true);
+      return;
+    }
     completePayment(
       currentTable.id,
       activeCustomMethod.name,
@@ -72,6 +92,10 @@ export const PaymentScreen: React.FC = () => {
       details.referenceNumber
     );
   };
+
+  if (!currentOrder && splitPayment && splitSnapshot.current?.table.id === selectedTableId) {
+    return <SplitBillsPanel order={splitSnapshot.current.order} table={splitSnapshot.current.table} onClose={() => setCurrentScreen('mesas')} />;
+  }
 
   if (!currentOrder) {
     return (
@@ -92,6 +116,11 @@ export const PaymentScreen: React.FC = () => {
       </div>
     );
   }
+
+  if (splitPayment && currentTable) return <SplitBillsPanel order={currentOrder} table={currentTable} onClose={() => {
+    if (hasBills || localStorage.getItem(`ts_diner_bills_${currentOrder.id}`)) setCurrentScreen('mesas');
+    else setSplitPayment(false);
+  }} />;
 
   return (
     <div id="payment-screen" className="flex-1 flex flex-col h-full w-full overflow-hidden select-none bg-panel-4">
@@ -348,7 +377,7 @@ export const PaymentScreen: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-ink-info">call_split</span>
-                  <span className="text-[14px] font-bold text-ink-body">Pago Dividido</span>
+                  <span className="text-[14px] font-bold text-ink-body">Cuentas por comensal</span>
                 </div>
                 <button
                   type="button"
@@ -367,38 +396,7 @@ export const PaymentScreen: React.FC = () => {
                 </button>
               </div>
 
-              {splitPayment && (
-                <div className="pt-2 border-t border-edge-outline-2 flex items-center justify-between gap-4 animate-in fade-in duration-150">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] text-ink-muted-2">Personas:</span>
-                    <div className="flex items-center gap-1 bg-panel-3 rounded-lg p-1 border border-edge-outline">
-                      <button
-                        type="button"
-                        onClick={() => setSplitCount(Math.max(2, splitCount - 1))}
-                        className="w-7 h-7 rounded flex items-center justify-center text-ink-muted-2 hover:text-ink-strong"
-                      >
-                        -
-                      </button>
-                      <span className="w-6 text-center font-bold text-ink-body">
-                        {splitCount}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setSplitCount(splitCount + 1)}
-                        className="w-7 h-7 rounded flex items-center justify-center text-ink-muted-2 hover:text-ink-strong"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[12px] text-ink-muted-3 block">Monto por persona:</span>
-                    <span className="text-[16px] font-extrabold text-ink-info">
-                      S/ {(total / splitCount).toFixed(2)}
-                    </span>
-                  </div>
-                </div>
-              )}
+
             </div>
           </div>
 

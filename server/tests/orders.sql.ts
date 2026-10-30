@@ -207,6 +207,54 @@ await check('limpieza separada omite pedidos cambiados y solo elimina el borrado
   assert.equal(await prisma.order.findUnique({ where: { id: empty.id } }), null);
   await assertFree();
 });
+await check('cinco cuentas y pagos mixtos conservan tickets y liberan mesa solo al saldar', async () => {
+  const { createDinerBills, payDinerBill } = await import('../src/services/diner-bill.service.js');
+  const plate = await prisma.product.create({ data: { id: id(), companyId, name: 'Plato compartido', description: '', image: '', category: 'platos', price: 20, available: true } });
+  const bank = await prisma.bankAccount.create({ data: { id: id(), companyId, bankName: 'BCP', accountNumber: id(), accountType: 'Ahorros', currency: 'PEN', holderName: 'Pruebas', alias: 'BCP prueba', currentBalance: 0 } });
+  const cash = await prisma.customPaymentMethod.create({ data: { id: id(), companyId, name: 'Efectivo prueba', category: 'Efectivo', icon: 'payments' } });
+  const yape = await prisma.customPaymentMethod.create({ data: { id: id(), companyId, name: 'Yape prueba', category: 'Billetera Digital', bankAccountId: bank.id, bankAccountAlias: bank.alias, requiresReferenceNumber: true, icon: 'payments' } });
+  const opened = await open();
+  const ordered = await orders.addItemToOrder(opened.id, { productId: plate.id, quantity: 5 });
+  await orders.sendToKitchen(opened.id);
+  await orders.markTableForBilling('test-table');
+  const drafts = Array.from({ length: 5 }, (_, i) => ({ id: id(), label: `Comensal ${i + 1}`, documentType: 'ticket' as const, recipientName: `Cliente ${i + 1}`, items: [{ orderItemId: ordered.items[0].id, quantity: 1 }] }));
+  await assert.rejects(createDinerBills(opened.id, drafts.map((d) => ({ ...d, items: [{ ...d.items[0], quantity: 2 }] })), id()), (e: any) => e.code === 'UNASSIGNED_ITEMS');
+  const bills = await createDinerBills(opened.id, drafts, id());
+  assert.equal(bills.length, 5);
+  assert.equal(new Set(bills.map((b: any) => b.ticketNumber)).size, 5);
+  await assert.rejects(orders.payTable('test-table', { paymentMethod: cash.name, amountReceived: 100, customPaymentMethodId: cash.id }), (e: any) => e.code === 'SPLIT_BILLS_EXIST');
+  await assert.rejects(orders.updateItemQuantity(opened.id, ordered.items[0].id, 1), (e: any) => e.code === 'SPLIT_BILLS_EXIST');
+  const firstId = id();
+  const first = await payDinerBill(bills[0].id, { amount: 10, amountReceived: 20, customPaymentMethodId: cash.id, clientOpId: firstId });
+  assert.equal(Number(first.transaction.change), 10);
+  await payDinerBill(bills[0].id, { amount: 10, amountReceived: 10, customPaymentMethodId: cash.id, clientOpId: firstId }).then(() => assert.fail('monto distinto aceptado'), (e: any) => assert.equal(e.code, 'PAYMENT_ID_CONFLICT'));
+  assert.equal((await payDinerBill(bills[0].id, { amount: 10, amountReceived: 20, customPaymentMethodId: cash.id, clientOpId: firstId })).transaction.id, first.transaction.id);
+  await assert.rejects(payDinerBill(bills[0].id, { amount: 10, amountReceived: 10, customPaymentMethodId: yape.id, clientOpId: id() }), (e: any) => e.code === 'REFERENCE_REQUIRED');
+  await payDinerBill(bills[0].id, { amount: 10, amountReceived: 10, customPaymentMethodId: yape.id, referenceNumber: 'YAPE-1', contributorName: 'Comensal 2', clientOpId: id() });
+  for (const b of bills.slice(1, 4)) await payDinerBill(b.id, { amount: 20, amountReceived: 20, customPaymentMethodId: yape.id, referenceNumber: id(), clientOpId: id() });
+  assert.equal((await prisma.table.findUniqueOrThrow({ where: { id: 'test-table' } })).status, 'por_cobrar');
+  await Promise.all([
+    payDinerBill(bills[4].id, { amount: 10, amountReceived: 10, customPaymentMethodId: cash.id, clientOpId: id() }),
+    payDinerBill(bills[4].id, { amount: 10, amountReceived: 10, customPaymentMethodId: cash.id, clientOpId: id() }),
+  ]);
+  await assertFree();
+  assert.equal((await prisma.order.findUniqueOrThrow({ where: { id: opened.id } })).status, 'cobrado');
+  assert.equal((await payDinerBill(bills[0].id, { amount: 10, amountReceived: 20, customPaymentMethodId: cash.id, clientOpId: firstId })).orderClosed, true);
+  const txs = await prisma.transaction.findMany({ where: { orderId: opened.id } });
+  assert.equal(txs.reduce((n, t) => n + Number(t.amount), 0), 100);
+  assert.equal(Number((await prisma.bankAccount.findUniqueOrThrow({ where: { id: bank.id } })).currentBalance), 70);
+  const operatorId = id();
+  await prisma.user.create({ data: { id: operatorId, name: 'Cajero reparto', pinHash: bcrypt.hashSync('9876', 4), role: 'Cajero', terminal: 'Pruebas', companyId } });
+  await prisma.user.create({ data: { id: id(), name: 'Administrador reparto', pinHash: bcrypt.hashSync('4321', 4), role: 'Administrador', terminal: 'Pruebas', companyId } });
+  const { correctPayment } = await import('../src/services/payment-correction.service.js');
+  await correctPayment({ transactionId: first.transaction.id, correctionId: id(), operatorId, supervisorPin: '4321', expectedMethodId: cash.id,
+    expectedBankAccountId: null, expectedReference: null, newMethodId: yape.id, referenceNumber: 'CORR-1', reason: 'Medio registrado por error' });
+  const corrected = await prisma.transaction.findUniqueOrThrow({ where: { id: first.transaction.id } });
+  assert.equal(corrected.customPaymentMethodId, yape.id);
+  assert.equal(Number(corrected.amountReceived), 10);
+  assert.equal(Number(corrected.change), 0);
+  assert.equal(Number((await prisma.bankAccount.findUniqueOrThrow({ where: { id: bank.id } })).currentBalance), 80);
+});
 // HTTP y Socket.IO reales con dos clientes sobre la BD efímera.
 await prisma.user.create({ data: { id: 'test-user', name: 'Administrador prueba', pinHash: bcrypt.hashSync('9876', 4), role: 'Administrador', terminal: 'Pruebas', companyId: null } });
 await prisma.device.create({ data: { id: 'test-device', name: 'Pruebas', terminalCode: 'TERM-TEST' } });

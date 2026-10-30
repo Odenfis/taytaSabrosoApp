@@ -59,7 +59,8 @@ export async function correctPayment(input: CorrectPaymentInput) {
     }
     const transaction = await db.transaction.findUnique({ where: { id: input.transactionId } });
     const order = transaction?.orderId ? await db.order.findUnique({ where: { id: transaction.orderId } }) : null;
-    if (!transaction || !order || transaction.isDeleted || order.isDeleted || order.status !== 'cobrado' ||
+    if (!transaction || !order || transaction.isDeleted || order.isDeleted ||
+        (transaction.dinerBillId ? !['por_cobrar', 'cobrado'].includes(order.status) : order.status !== 'cobrado') ||
         !transaction.type.startsWith('Venta (') || !transaction.isIncome || transaction.companyId !== order.companyId) {
       throw new AppError('Solo se puede corregir una venta cobrada.', 409, 'NOT_PAID_SALE');
     }
@@ -119,8 +120,12 @@ export async function correctPayment(input: CorrectPaymentInput) {
     await db.transaction.update({ where: { id: transaction.id }, data: {
       paymentMethod: method.name, customPaymentMethodId: method.id, bankAccountId: newBankId,
       bankAccountAlias: alias, referenceNumber: reference, description,
+      ...(transaction.dinerBillId ? {
+        amountReceived: !newBankId && !transaction.bankAccountId ? transaction.amountReceived : amount,
+        change: !newBankId && !transaction.bankAccountId ? transaction.change : 0,
+      } : {}),
     } });
-    await db.order.update({ where: { id: order.id }, data: {
+    if (!transaction.dinerBillId) await db.order.update({ where: { id: order.id }, data: {
       paymentMethod: method.name,
       amountReceived: !newBankId && !transaction.bankAccountId ? order.amountReceived : amount,
       change: !newBankId && !transaction.bankAccountId ? order.change : 0,
@@ -130,7 +135,7 @@ export async function correctPayment(input: CorrectPaymentInput) {
       operatorId: operator.id, authorizerId: authorizer.id,
       oldMethodId: transaction.customPaymentMethodId, oldMethodName: transaction.paymentMethod,
       oldBankAccountId: transaction.bankAccountId, oldBankAccountAlias: transaction.bankAccountAlias,
-      oldReference: transaction.referenceNumber, oldAmountReceived: order.amountReceived, oldChange: order.change,
+      oldReference: transaction.referenceNumber, oldAmountReceived: transaction.dinerBillId ? transaction.amountReceived : order.amountReceived, oldChange: transaction.dinerBillId ? transaction.change : order.change,
       newMethodId: method.id, newMethodName: method.name, newBankAccountId: newBankId,
       newBankAccountAlias: alias, newReference: reference, reason: input.reason.trim(), amount, closedShift,
       adjustmentTransactionId,

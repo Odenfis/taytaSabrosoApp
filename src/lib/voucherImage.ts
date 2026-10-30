@@ -166,7 +166,7 @@ export async function shareVoucherImage(
   try {
     const canvas = buildVoucherCanvas(order, header, isPaid);
     const blob = await canvasToVoucherBlob(canvas);
-    const file = new File([blob], `boleta-${order.ticketNumber}.png`, { type: 'image/png' });
+    const file = new File([blob], `ticket-interno-${order.ticketNumber}.png`, { type: 'image/png' });
 
     // 1) Web Share API con archivo: SOLO táctil. En desktop la hoja nativa
     //    entregaba el archivo a WhatsApp y luego el portapapeles pegaba un
@@ -174,7 +174,7 @@ export async function shareVoucherImage(
     const isTouch = window.matchMedia?.('(pointer: coarse)').matches;
     if (isTouch && navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({ files: [file], title: `Boleta #${order.ticketNumber}` });
+        await navigator.share({ files: [file], title: `Ticket interno #${order.ticketNumber}` });
         return;
       } catch (err) {
         if ((err as DOMException)?.name === 'AbortError') return; // usuario canceló

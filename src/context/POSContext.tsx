@@ -227,6 +227,8 @@ interface POSContextType {
     customPaymentMethodId?: string,
     referenceNumber?: string
   ) => Order | null;
+  refreshOperations: () => Promise<void>;
+  releasePaidTable: (tableId: string, orderId: string) => void;
   addManualTransaction: (
     type: TransactionType,
     description: string,
@@ -1054,6 +1056,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         stuck++; break;
       }
       if (result.disposition === 'ok') {
+        if (opItem.op === 'payDinerBill' && (result.data as { orderClosed?: boolean })?.orderClosed && typeof payload.orderId === 'string') {
+          const paidOrderId = payload.orderId;
+          setTables((prev) => prev.map((t) => releaseOrderTable(t, paidOrderId)).filter((t) => !(['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre' && !t.currentOrderId)));
+        }
         if ((result.data as OrderDTO)?.id && (opItem.entity === 'orderItem' || opItem.op === 'cancelOpening')) reconcileOrderResult(result.data as OrderDTO);
         if (opItem.op === 'payOrder') {
           const paid = result.data as { order: OrderDTO; transaction: TransactionDTO };
@@ -1359,6 +1365,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   orderHandlerRef.current = (e) => {
     if (!e || !e.orderId || e.orderId.startsWith('order-tmp-')) return;
     if (offlineState.isSimulatedOffline) return;
+    if (e.status === 'cobrado') {
+      closedOrderIdsRef.current.add(e.orderId);
+      setOrders((prev) => { const next = { ...prev }; delete next[e.orderId]; return next; });
+      setTables((prev) => prev.map((t) => releaseOrderTable(t, e.orderId)).filter((t) => !(['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre' && !t.currentOrderId)));
+      return;
+    }
     if (e.isDeleted || e.status === 'anulado') {
       closedOrderIdsRef.current.add(e.orderId);
       setOrders((prev) => { const next = { ...prev }; delete next[e.orderId]; return next; });
@@ -4458,6 +4470,8 @@ Doble Alto: PEDIDO EXPRESS #8841
         dismissKitchenConfirm,
         pendingKitchenConfirm,
         completePayment,
+        refreshOperations: loadOperations,
+        releasePaidTable: (tableId, orderId) => setTables((prev) => prev.map((t) => t.id === tableId ? releaseOrderTable(t, orderId) : t).filter((t) => !(t.id === tableId && ['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre' && !t.currentOrderId))),
         addManualTransaction,
         correctSalePayment,
         addNewTable,

@@ -26,7 +26,9 @@ import {
 } from '../services/shift.service.js';
 import { notifyOrderState, notifyTableState } from '../lib/realtime.js';
 import { correctPayment, listPaymentCorrections } from '../services/payment-correction.service.js';
+import { createDinerBills, getDinerBills, payDinerBill } from '../services/diner-bill.service.js';
 import { prisma } from '../lib/prisma.js';
+import { AppError } from '../lib/utils.js';
 import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
 
@@ -44,6 +46,45 @@ function oplog(req: Request, entity: OpEntity, operation: string) {
 }
 
 const idParam = z.object({ id: z.string().min(1) });
+async function assertDinerOrderAccess(req: Request, orderId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { companyId: true } });
+  if (!order) throw new AppError('Comanda no encontrada.', 404, 'ORDER_NOT_FOUND');
+  const user = req.auth!.user;
+  if ((user.companyId && user.companyId !== order.companyId) ||
+      (user.assignedCompanyId && user.assignedCompanyId !== order.companyId)) {
+    throw new AppError('No tiene acceso a esta empresa.', 403, 'FORBIDDEN');
+  }
+}
+
+router.get('/orders/:id/bills', async (req, res, next) => {
+  try { const { id } = idParam.parse(req.params); await assertDinerOrderAccess(req, id); res.json(await getDinerBills(id)); } catch (err) { next(err); }
+});
+
+router.post('/orders/:id/bills', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'repartir_cuenta');
+  try {
+    const { id } = idParam.parse(req.params);
+    await assertDinerOrderAccess(req, id);
+    const body = z.object({ clientOpId: z.string().uuid(), bills: z.array(z.object({ id: z.string().uuid(), label: z.string().trim().min(1).max(100), documentType: z.enum(['ticket', 'boleta', 'factura']), recipientName: z.string().max(200).optional(), recipientId: z.string().max(20).optional(), items: z.array(z.object({ orderItemId: z.string().min(1), quantity: z.number().int().positive() })) })).min(1).max(50) }).parse(req.body);
+    const result = await createDinerBills(id, body.bills, body.clientOpId);
+    op.ok(result); res.status(201).json(result);
+    void notifyOrderState(id).catch(() => undefined);
+  } catch (err) { op.fail(err); next(err); }
+});
+
+router.post('/bills/:id/pay', async (req, res, next) => {
+  const op = oplog(req, 'pedido', 'abonar_cuenta');
+  try {
+    const { id } = idParam.parse(req.params);
+    const bill = await prisma.dinerBill.findUnique({ where: { id }, select: { orderId: true } });
+    if (!bill) throw new AppError('Cuenta no encontrada.', 404, 'BILL_NOT_FOUND');
+    await assertDinerOrderAccess(req, bill.orderId);
+    const body = z.object({ amount: z.number().positive(), amountReceived: z.number().positive(), customPaymentMethodId: z.string().min(1), referenceNumber: z.string().max(100).optional(), contributorName: z.string().max(100).optional(), clientOpId: z.string().uuid() }).parse(req.body);
+    const result = await payDinerBill(id, body);
+    op.ok(result); res.json(result);
+    void notifyOrderState(result.bill.orderId).catch(() => undefined);
+  } catch (err) { op.fail(err); next(err); }
+});
 
 // ============ ORDERS ============
 router.get('/orders/active', async (req, res, next) => {

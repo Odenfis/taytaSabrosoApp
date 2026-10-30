@@ -75,6 +75,10 @@ async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCall
         return apiClient.post(`/operations/tables/${String(payload.tableId)}/por-cobrar`);
       case 'payOrder':
         return apiClient.post(`/operations/tables/${String(payload.tableId)}/pay`, pick(payload, ['paymentMethod', 'amountReceived', 'customPaymentMethodId', 'referenceNumber', 'clientOpId']));
+      case 'createDinerBills':
+        return apiClient.post(`/operations/orders/${String(payload.orderId)}/bills`, pick(payload, ['bills', 'clientOpId']));
+      case 'payDinerBill':
+        return apiClient.post(`/operations/bills/${String(payload.billId)}/pay`, pick(payload, ['amount', 'amountReceived', 'customPaymentMethodId', 'referenceNumber', 'contributorName', 'clientOpId']));
       case 'manualTransaction':
         return apiClient.post('/operations/transactions', pick(payload, ['companyId', 'type', 'description', 'amount', 'isIncome', 'bankAccountId', 'customPaymentMethodId', 'referenceNumber', 'clientOpId']));
       case 'createPurchase':
@@ -157,7 +161,8 @@ async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCall
       if (err.status === 0) return { disposition: 'retry', network: true };
       if (err.status === 401 || err.isUnauthorized) return { disposition: 'retry', network: false, unauthorized: true, message: err.message };
       if (err.status >= 500) return { disposition: 'retry', network: false, message: err.message };
-      if (err.code.startsWith('INSUMO_')) return { disposition: 'conflict', message: err.message };
+      if (err.code.startsWith('INSUMO_') || ['BILLS_EXIST', 'BILL_CLOSED', 'TABLE_CHANGED', 'TOTAL_MISMATCH', 'UNASSIGNED_ITEMS', 'PAYMENT_ID_CONFLICT'].includes(err.code)) return { disposition: 'conflict', message: err.message };
+      if (op.op === 'createDinerBills' || op.op === 'payDinerBill') return { disposition: 'conflict', message: err.message };
       if (isProductOp(op) && err.code === 'PRODUCT_VERSION_CONFLICT') return { disposition: 'conflict', message: err.message };
       // 4xx
       if (err.code === 'ALREADY_REGULARIZED' || err.code === 'ALREADY_PAID') {

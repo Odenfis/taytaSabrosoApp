@@ -190,6 +190,7 @@ export interface Transaction {
   referenceNumber?: string;
   tableNumber?: string;
   orderId?: string;
+  dinerBillId?: string;
   ticketNumber?: string;
   clientOpId?: string;
   correctionCount?: number;

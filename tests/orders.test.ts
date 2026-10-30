@@ -104,3 +104,20 @@ test('cancelación durable reemplaza apertura y fallo de almacenamiento conserva
   mock.restoreAll(); stageOrderOperation(cancellation, opening.clientOpId);
   assert.deepEqual(loadQueue(), [cancellation]);
 });
+
+test('replay de cuentas conserva identificadores, importes y conflictos para conciliación', async () => {
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
+  mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    requests.push({ url, body: JSON.parse(init.body as string) });
+    if (url.endsWith('/pay')) return response({ error: { code: 'INVALID_AMOUNT', message: 'Saldo cambió en otra terminal' } }, 400);
+    return response([{ id: 'bill-1' }]);
+  });
+  const base: PendingOp = { clientOpId: 'stable-split', entity: 'order', op: 'createDinerBills', payload: {}, createdAt: new Date().toISOString() };
+  const bills = [{ id: 'bill-1', label: 'Comensal 1', items: [{ orderItemId: 'item-1', quantity: 1 }] }];
+  assert.equal((await replayCall(base, { orderId: 'order-1', bills, clientOpId: base.clientOpId })).disposition, 'ok');
+  assert.deepEqual(requests[0], { url: '/api/operations/orders/order-1/bills', body: { bills, clientOpId: 'stable-split' } });
+  const pay = await replayCall({ ...base, op: 'payDinerBill' }, { billId: 'bill-1', amount: 20, amountReceived: 20, customPaymentMethodId: 'cash', clientOpId: 'stable-split' });
+  assert.equal(pay.disposition, 'conflict');
+  assert.match(pay.message ?? '', /Saldo cambió/);
+  assert.deepEqual(requests[1], { url: '/api/operations/bills/bill-1/pay', body: { amount: 20, amountReceived: 20, customPaymentMethodId: 'cash', clientOpId: 'stable-split' } });
+});

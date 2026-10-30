@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Transaction, TransactionType } from '../types';
 import { apiClient } from '../lib/api';
+import { DinerReceiptModal } from './DinerReceiptModal';
 
 export const CashLedgerScreen: React.FC = () => {
   const {
@@ -13,6 +14,7 @@ export const CashLedgerScreen: React.FC = () => {
     activeShift,
     activeCompanyId,
     activeCompany,
+    companies,
     bankAccounts,
     filteredBankAccounts,
     setIsShiftModalOpen,
@@ -23,6 +25,18 @@ export const CashLedgerScreen: React.FC = () => {
   } = usePOS();
 
   const [correcting, setCorrecting] = useState<Transaction | null>(null);
+  const [historicalBill, setHistoricalBill] = useState<{ companyId?: string; tableNumber?: string; ticketNumber: string; order?: { ticketNumber: string }; label: string; documentType: string; recipientName?: string | null; recipientId?: string | null; total: number; items: { quantity: number; orderItem: { name: string; price: number } }[]; transactions: { id: string; amount: number; paymentMethod: string; contributorName?: string | null }[] } | null>(null);
+  const [ticketError, setTicketError] = useState('');
+  const openDinerTicket = async (tx: Transaction) => {
+    if (!tx.orderId || !tx.dinerBillId) return;
+    setTicketError('');
+    try {
+      const bills = await apiClient.get<Array<NonNullable<typeof historicalBill> & { id: string }>>(`/operations/orders/${tx.orderId}/bills`);
+      const bill = bills.find((item) => item.id === tx.dinerBillId);
+      if (!bill) throw new Error('No se encontró el ticket de este abono.');
+      setHistoricalBill({ ...bill, companyId: tx.companyId, tableNumber: tx.tableNumber });
+    } catch (error) { setTicketError(error instanceof Error ? error.message : 'No se pudo abrir el ticket.'); }
+  };
   const [methodId, setMethodId] = useState('');
   const [correctionReference, setCorrectionReference] = useState('');
   const [correctionReason, setCorrectionReason] = useState('');
@@ -441,6 +455,7 @@ export const CashLedgerScreen: React.FC = () => {
                           className="rounded-lg border border-edge-outline-2 px-2 py-1 text-xs text-ink-brand hover:bg-panel-3 disabled:opacity-50"
                           title="Requiere conexión y PIN de administrador">Corregir medio de pago</button>
                       )}
+                      {tx.dinerBillId && <button type="button" onClick={() => void openDinerTicket(tx)} className="ml-2 rounded-lg border border-edge-outline-2 px-2 py-1 text-xs text-ink-brand hover:bg-panel-3">Ver ticket</button>}
                     </td>
                   </tr>
                 ))
@@ -449,6 +464,10 @@ export const CashLedgerScreen: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {ticketError && <p role="alert" className="p-3 text-ink-danger">{ticketError}</p>}
+      {historicalBill && <DinerReceiptModal bill={historicalBill} company={companies.find((company) => company.id === historicalBill.companyId)} tableNumber={historicalBill.tableNumber} orderNumber={historicalBill.order?.ticketNumber} onClose={() => setHistoricalBill(null)} />}
+
 
       {correcting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim-4 p-4">

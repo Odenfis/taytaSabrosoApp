@@ -1,5 +1,19 @@
 # Progreso — Tayta & Sabroso POS (Producción)
 
+## Rediseño de cuentas y liberación de mesas — 2026-10-29
+
+- Reparto por comensal rediseñado con selección de cuenta, controles de cantidad, unidades disponibles y totales; cobro con tarjetas de medios, historial, saldo y cálculo de vuelto. El mismo diseño de ticket interno se usa desde cobro y Libro de Caja, con impresión y compartir.
+- El último abono confirmado libera la mesa local con protección por ID de orden; eventos de cierre y replay reconcilian otras terminales y mesas temporales. Un reintento idempotente ahora informa si la orden ya está cerrada. El ticket offline indica si está pendiente de sincronización.
+- Verificación: compilación frontend y servidor, TypeScript, 56 pruebas frontend y 19 escenarios SQL/API/realtime en base temporal, incluido reintento del abono tras cierre. En navegador con otra base temporal se repartieron dos unidades, se cobraron ambas cuentas y se comprobó que la mesa quedó libre; la base se eliminó. Falta revisar visualmente ambos temas y anchos, impresión física y el recorrido en terminales reales.
+
+## Cuentas por comensal y pagos mixtos — 2026-10-29
+
+- Corrección de instalación local: el API mostró columnas ausentes porque el código nuevo consultaba `transacciones` antes de aplicar `0008_diner_bills` en `TaytaSabroso`. Se creó `TaytaSabroso_before_diner_bills_20261029.bak` con `COPY_ONLY, CHECKSUM`, pasó `RESTORE VERIFYONLY`, se copió a `/Users/waltermauromoncadarubio/Documents/TaytaSabroso_backups/` y el SHA-256 coincidió (`65389d452812214e759749b7325d76beb18e7ed834234b56e1a43106696f9c68`). `prisma migrate deploy` aplicó `0008`; `migrate status` quedó al día y una lectura Prisma de `transacciones` funcionó. Esto corresponde a la base local, no a Windows del cliente.
+- Una comanda en estado `por_cobrar` puede repartirse en cuentas por comensal, asignando cada unidad de plato una sola vez. Cada cuenta recibe un ticket interno independiente y guarda tipo de documento solicitado y datos del receptor para la futura emisión de boleta o factura. Un plato compartido figura completo en una cuenta; otros comensales pueden aportar un importe libre a esa misma cuenta, identificado por aportante.
+- Cada cuenta admite varios abonos y medios de pago. Cada abono crea una transacción de caja vinculada a la cuenta, registra efectivo recibido y vuelto, y acredita solo el importe abonado al banco correspondiente. La mesa se libera al saldar todas las cuentas. El cobro único anterior sigue disponible para comandas sin reparto. La corrección de medio de pago con PIN se extiende a cada abono.
+- El POS muestra reparto, saldos, referencias, constancias y tickets internos para imprimir o compartir; Libro de Caja permite reabrir el ticket de cada abono. La cola offline conserva reparto y abonos de comandas ya sincronizadas con identificadores definitivos; los conflictos detienen la cola para conciliación. Una comanda todavía temporal debe sincronizarse antes de repartirla, porque sus IDs de platos pueden cambiar.
+- La migración `0008_diner_bills` se aplicó correctamente junto con las anteriores en una base SQL temporal, eliminada al terminar. Validación: TypeScript, build, 56 pruebas frontend, 31 servidor y 19 escenarios SQL/API/realtime de pedidos, incluida la prueba de cinco cuentas por S/ 100 y pagos simultáneos. **Pendiente:** respaldo verificable y actualización de la instalación Windows del cliente, más recorrido visual y de impresión en terminales reales. No se aplicó la migración a la base operativa del cliente.
+
 ## Ampliación de mesas físicas de El Tayta — 2026-10-28
 
 - «Nueva Mesa» vuelve a abrir el formulario. En El Tayta el administrador elige Primer Piso, Mezanine, Jardín o Terraza y capacidad (4 por defecto); el servidor asigna series independientes P/M/J/T bajo bloqueo SQL. Las altas exigen conexión y se notifican a otras terminales. El rol Coordinador queda preparado sin crear aún cuentas ni gestión de usuarios.

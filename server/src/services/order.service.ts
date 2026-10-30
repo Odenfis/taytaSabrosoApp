@@ -94,6 +94,7 @@ async function editableOrder(tx: Prisma.TransactionClient, id: string) {
   const order = await tx.order.findUnique({ where: { id }, include: { items: true } });
   if (!order) throw new AppError('Orden no encontrada.', 404, 'NOT_FOUND');
   assertEditable(order);
+  if (await tx.dinerBill.count({ where: { orderId: id } })) throw new AppError('La comanda ya fue repartida; no puede modificarse.', 409, 'SPLIT_BILLS_EXIST');
   return order;
 }
 
@@ -837,6 +838,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
       include: { items: true },
     });
     if (!order) throw new AppError('Orden no encontrada.', 404, 'ORDER_NOT_FOUND');
+    if (await tx.dinerBill.count({ where: { orderId: order.id } })) throw new AppError('Esta comanda tiene cuentas individuales. Cóbrela desde el reparto.', 409, 'SPLIT_BILLS_EXIST');
     if (order.status === 'cobrado') throw new AppError('La orden ya fue cobrada.', 409, 'ALREADY_PAID');
 
     assertEditable(order);

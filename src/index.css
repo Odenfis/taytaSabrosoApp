@@ -823,3 +823,7 @@
 
 /* Keep a theme switch atomic even on controls with transition-all. */
 .theme-changing, .theme-changing *, .theme-changing *::before, .theme-changing *::after { transition: none !important; }
+
+/* Papel de los tickets internos: mantiene contraste en ambos temas. */
+.diner-ticket-paper { background: #fff; color: #18181b; border-color: #d4d4d8; }
+.diner-ticket-paper .border-dashed, .diner-ticket-paper .border-t { border-color: #a1a1aa; }
