@@ -1,3 +1,4 @@
+import { usePermission } from '../lib/usePermission';
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Transaction, TransactionType } from '../types';
@@ -5,6 +6,7 @@ import { apiClient } from '../lib/api';
 import { DinerReceiptModal } from './DinerReceiptModal';
 
 export const CashLedgerScreen: React.FC = () => {
+  const can = usePermission();
   const {
     transactions,
     filteredTransactions: contextFilteredTx,
@@ -53,7 +55,7 @@ export const CashLedgerScreen: React.FC = () => {
     !m.isDeleted && m.isActive && m.category !== 'Crédito' &&
     (m.companyId === correcting.companyId || m.companyId === 'ambas') &&
     (m.category === 'Efectivo' ? !m.bankAccountId : !!m.bankAccountId) &&
-    (!m.bankAccountId || bankAccounts.some((b) => b.id === m.bankAccountId && b.companyId === correcting.companyId && b.isActive && !b.isDeleted && b.currency === 'PEN'))
+    (!m.bankAccountId || !can('banks.manage') || bankAccounts.some((b) => b.id === m.bankAccountId && b.companyId === correcting.companyId && b.isActive && !b.isDeleted && b.currency === 'PEN'))
   ) : [];
   const selectedCorrectionMethod = correctionMethods.find((m) => m.id === methodId);
 
@@ -157,7 +159,7 @@ export const CashLedgerScreen: React.FC = () => {
         <div>
           <div className="flex items-center gap-3">
             <h2 className="text-[20px] md:text-[24px] font-bold text-ink-brand tracking-tight">
-              Libro de Caja &amp; Cuentas Bancarias
+              {can('banks.manage') ? 'Libro de Caja & Cuentas Bancarias' : 'Libro de Caja'}
             </h2>
             <button
               onClick={() => setIsShiftModalOpen(true)}
@@ -174,7 +176,7 @@ export const CashLedgerScreen: React.FC = () => {
             </button>
           </div>
           <p className="text-[13px] text-ink-muted-5 mt-0.5">
-            Flujo de efectivo diario en caja y saldos disponibles en cuentas bancarias ({activeCompany.tradeName}).
+            {can('banks.manage') ? 'Flujo de caja y saldos bancarios' : 'Movimientos y cobros de caja'} ({activeCompany.tradeName}).
           </p>
         </div>
 
@@ -256,7 +258,7 @@ export const CashLedgerScreen: React.FC = () => {
         </div>
 
         {/* Saldo en Bancos */}
-        <div className="bg-panel border border-edge-success rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-ui-12">
+{can('banks.manage') && (        <div className="bg-panel border border-edge-success rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-ui-12">
           <div className="flex justify-between items-start">
             <span className="text-[12px] font-semibold text-ink-muted-2">Saldo en Bancos</span>
             <div className="w-9 h-9 rounded-xl bg-surface-success-strong-6 text-ink-success flex items-center justify-center border border-edge-success">
@@ -271,11 +273,11 @@ export const CashLedgerScreen: React.FC = () => {
               {(filteredBankAccounts || []).length} cuenta(s) vinculada(s)
             </p>
           </div>
-        </div>
+        </div>)}
       </div>
 
       {/* Mini Bank Accounts Ribbon */}
-      {(filteredBankAccounts || []).length > 0 && (
+      {can('banks.manage') && (filteredBankAccounts || []).length > 0 && (
         <div className="bg-panel-21 border border-edge-outline-5 rounded-xl p-3 flex flex-wrap items-center gap-3">
           <span className="text-[11px] font-bold uppercase tracking-wider text-ink-muted flex items-center gap-1">
             <span className="material-symbols-outlined text-[14px] text-ink-gold">account_balance</span>
@@ -480,7 +482,7 @@ export const CashLedgerScreen: React.FC = () => {
               <select value={methodId} onChange={(event) => { setMethodId(event.target.value); setCorrectionReference(''); }} required
                 className="mt-1 w-full rounded-lg border border-edge-outline-2 bg-panel-3 p-2 text-ink-body">
                 <option value="">Seleccione un método</option>
-                {correctionMethods.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.bankAccountAlias || 'Caja efectivo'}</option>)}
+                {correctionMethods.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.bankAccountAlias || (m.bankAccountId ? 'Medio bancario' : 'Caja efectivo')}</option>)}
               </select>
             </label>
             {selectedCorrectionMethod?.requiresReferenceNumber && <label className="block text-sm">N° de operación

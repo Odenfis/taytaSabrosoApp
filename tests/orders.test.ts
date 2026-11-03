@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { beforeEach, afterEach, mock, test } from 'node:test';
 import { storeAuthToken } from '../src/lib/api';
-import { releaseOrderTable, settleOpening, stageOrderOperation } from '../src/lib/orderLifecycle';
+import { signReplay, withoutProof } from './replayFixtures';
+import { releaseOrderTable, resolvePendingReferences, settleOpening, stageOrderOperation } from '../src/lib/orderLifecycle';
 import { replayCall } from '../src/lib/replayQueue';
 import { loadQueue, saveQueue } from '../src/lib/offlineQueue';
 import type { OrderItem, PendingOp, Table } from '../src/types';
@@ -18,6 +19,13 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 const item = { id: 'local', productId: 'water', quantity: 1, notes: '', status: 'agregado' } as OrderItem;
+test('referencias temporales requieren confirmación y conservan el pendiente original', () => {
+  const payload = { orderId: 'order-tmp-1', tableId: 't-express-1', amount: 10 };
+  assert.equal(resolvePendingReferences(payload, new Map(), new Map()), null);
+  assert.equal(resolvePendingReferences(payload, new Map([['order-tmp-1', 'order-real']]), new Map()), null);
+  assert.deepEqual(resolvePendingReferences(payload, new Map([['order-tmp-1', 'order-real']]), new Map([['t-express-1', 'table-real']])), { orderId: 'order-real', tableId: 'table-real', amount: 10 });
+  assert.equal(payload.orderId, 'order-tmp-1');
+});
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 test('liberación tardía de un pedido anterior conserva mesa reabierta', () => {
   const table = { id: 't', status: 'ocupada', currentOrderId: 'new' } as Table;
@@ -28,12 +36,13 @@ test('liberación tardía de un pedido anterior conserva mesa reabierta', () => 
 test('replay de Delivery conserva ambiente e identificador de apertura', async () => {
   let request: { url: string; body: Record<string, unknown> } | null = null;
   mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
-    request = { url, body: JSON.parse(init.body as string) };
+    const body = JSON.parse(init.body as string);
+    request = { url, body: withoutProof(body) };
     return response({ id: 'order', tableNumber: '36' });
   });
   const op: PendingOp = { clientOpId: 'delivery-opening', entity: 'order', op: 'quickOrder',
     payload: { companyId: 'el-tayta', zone: 'Delivery', waiter: 'Prueba', clientOpId: 'delivery-opening' }, createdAt: new Date().toISOString() };
-  assert.equal((await replayCall(op, op.payload as Record<string, unknown>)).disposition, 'ok');
+  assert.equal((await replayCall(await signReplay(op), op.payload as Record<string, unknown>)).disposition, 'ok');
   assert.deepEqual(request, { url: '/api/operations/orders/quick-bar',
     body: { companyId: 'el-tayta', zone: 'Delivery', waiter: 'Prueba', clientOpId: 'delivery-opening' } });
 });
@@ -71,15 +80,16 @@ test('cancelación concurrente confirmada por servidor no resucita pedido local'
 });
 test('replay tras recarga conserva cancelación pendiente ante 401 y reintenta la misma apertura', async () => {
   const op: PendingOp = { clientOpId: 'cancel', entity: 'order', op: 'cancelOpening', payload: { openingClientOpId: 'opening' }, createdAt: new Date().toISOString() };
-  saveQueue([op], true);
+  const signed = await signReplay(op);
+  saveQueue([signed], true);
   mock.method(globalThis, 'fetch', async () => response({ error: { code: 'UNAUTHORIZED', message: 'Reingresa' } }, 401));
   const restored = loadQueue()[0];
   const failed = await replayCall(restored, restored.payload as Record<string, unknown>);
-  assert.equal(failed.disposition, 'retry'); assert.equal(failed.unauthorized, true); assert.deepEqual(loadQueue(), [op]);
+  assert.equal(failed.disposition, 'retry'); assert.equal(failed.unauthorized, true); assert.deepEqual(loadQueue(), [signed]);
   storeAuthToken({ token: 'new', expiresAt: new Date(Date.now() + 60000).toISOString() });
   mock.restoreAll();
   mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
-    assert.equal(url, '/api/operations/orders/cancel-opening'); assert.equal(JSON.parse(init.body as string).openingClientOpId, 'opening');
+    assert.equal(url, '/api/operations/orders/cancel-opening'); assert.equal(withoutProof(JSON.parse(init.body as string)).openingClientOpId, 'opening');
     return response({ cancelled: true });
   });
   assert.equal((await replayCall(loadQueue()[0], op.payload as Record<string, unknown>)).disposition, 'ok');
@@ -88,8 +98,8 @@ test('DELETE y reducción en replay transmiten el identificador estable del rein
   const calls: { url: string; init: RequestInit }[] = [];
   mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => { calls.push({ url, init }); return response({ isDeleted: true }); });
   const base = { clientOpId: 'stable', entity: 'orderItem', createdAt: new Date().toISOString() } as PendingOp;
-  await replayCall({ ...base, op: 'removeItem' }, { orderId: 'order', itemId: 'item' });
-  await replayCall({ ...base, op: 'updateItemQuantity' }, { orderId: 'order', itemId: 'item', delta: -1 });
+  await replayCall(await signReplay({ ...base, op: 'removeItem' }), { orderId: 'order', itemId: 'item' });
+  await replayCall(await signReplay({ ...base, op: 'updateItemQuantity' }), { orderId: 'order', itemId: 'item', delta: -1 });
   assert.ok(calls[0].url.endsWith('?clientOpId=stable'));
   assert.equal(JSON.parse(calls[1].init.body as string).clientOpId, 'stable');
 });
@@ -108,16 +118,27 @@ test('cancelación durable reemplaza apertura y fallo de almacenamiento conserva
 test('replay de cuentas conserva identificadores, importes y conflictos para conciliación', async () => {
   const requests: { url: string; body: Record<string, unknown> }[] = [];
   mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
-    requests.push({ url, body: JSON.parse(init.body as string) });
+    requests.push({ url, body: withoutProof(JSON.parse(init.body as string)) });
     if (url.endsWith('/pay')) return response({ error: { code: 'INVALID_AMOUNT', message: 'Saldo cambió en otra terminal' } }, 400);
     return response([{ id: 'bill-1' }]);
   });
   const base: PendingOp = { clientOpId: 'stable-split', entity: 'order', op: 'createDinerBills', payload: {}, createdAt: new Date().toISOString() };
   const bills = [{ id: 'bill-1', label: 'Comensal 1', items: [{ orderItemId: 'item-1', quantity: 1 }] }];
-  assert.equal((await replayCall(base, { orderId: 'order-1', bills, clientOpId: base.clientOpId })).disposition, 'ok');
+  assert.equal((await replayCall(await signReplay(base), { orderId: 'order-1', bills, clientOpId: base.clientOpId })).disposition, 'ok');
   assert.deepEqual(requests[0], { url: '/api/operations/orders/order-1/bills', body: { bills, clientOpId: 'stable-split' } });
-  const pay = await replayCall({ ...base, op: 'payDinerBill' }, { billId: 'bill-1', amount: 20, amountReceived: 20, customPaymentMethodId: 'cash', clientOpId: 'stable-split' });
+  const pay = await replayCall(await signReplay({ ...base, op: 'payDinerBill' }), { billId: 'bill-1', amount: 20, amountReceived: 20, customPaymentMethodId: 'cash', clientOpId: 'stable-split' });
   assert.equal(pay.disposition, 'conflict');
   assert.match(pay.message ?? '', /Saldo cambió/);
   assert.deepEqual(requests[1], { url: '/api/operations/bills/bill-1/pay', body: { amount: 20, amountReceived: 20, customPaymentMethodId: 'cash', clientOpId: 'stable-split' } });
+});
+
+test('una operación offline rechazada por permisos queda disponible para revisión', async () => {
+  const op: PendingOp = { clientOpId: 'pending-denied', entity: 'order', op: 'sendToKitchen', payload: { orderId: 'order', clientOpId: 'pending-denied' }, createdAt: new Date().toISOString() };
+  const signed = await signReplay(op);
+  saveQueue([signed], true);
+  mock.method(globalThis, 'fetch', async () => response({ error: { code: 'FORBIDDEN', message: 'Permiso revocado' } }, 403));
+  const result = await replayCall(signed, signed.payload as Record<string, unknown>);
+  assert.equal(result.disposition, 'conflict');
+  assert.equal(result.message, 'Permiso revocado');
+  assert.deepEqual(loadQueue(), [signed]);
 });

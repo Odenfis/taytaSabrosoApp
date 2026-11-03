@@ -1,3 +1,4 @@
+import { orderView } from '../lib/order-view.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../lib/auth.js';
@@ -31,9 +32,14 @@ import { prisma } from '../lib/prisma.js';
 import { AppError } from '../lib/utils.js';
 import { recordClientOp, statusForError, type OpEntity } from '../lib/oplog.js';
 import type { Request } from 'express';
+import { enforceRoutePermission } from '../lib/route-permissions.js';
+import { scopeCompanyQueries } from '../lib/company-query.js';
+import { scopeOperationResources } from '../lib/operations-company.js';
+import { operationActor } from '../lib/operation-audit.js';
+import { verifyOfflineAuthorship } from '../lib/offline-authorship.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, enforceRoutePermission('operations'), verifyOfflineAuthorship('operations'), scopeCompanyQueries(['/orders/active', '/purchases', '/kardex', '/shifts/records', '/transactions']), scopeOperationResources);
 
 // Ledger de operaciones (operaciones_cliente): APPLIED tras el servicio, FAILED_* en fallos.
 function oplog(req: Request, entity: OpEntity, operation: string) {
@@ -66,7 +72,7 @@ router.post('/orders/:id/bills', async (req, res, next) => {
     const { id } = idParam.parse(req.params);
     await assertDinerOrderAccess(req, id);
     const body = z.object({ clientOpId: z.string().uuid(), bills: z.array(z.object({ id: z.string().uuid(), label: z.string().trim().min(1).max(100), documentType: z.enum(['ticket', 'boleta', 'factura']), recipientName: z.string().max(200).optional(), recipientId: z.string().max(20).optional(), items: z.array(z.object({ orderItemId: z.string().min(1), quantity: z.number().int().positive() })) })).min(1).max(50) }).parse(req.body);
-    const result = await createDinerBills(id, body.bills, body.clientOpId);
+    const result = await createDinerBills(id, body.bills, body.clientOpId, operationActor(req));
     op.ok(result); res.status(201).json(result);
     void notifyOrderState(id).catch(() => undefined);
   } catch (err) { op.fail(err); next(err); }
@@ -80,7 +86,7 @@ router.post('/bills/:id/pay', async (req, res, next) => {
     if (!bill) throw new AppError('Cuenta no encontrada.', 404, 'BILL_NOT_FOUND');
     await assertDinerOrderAccess(req, bill.orderId);
     const body = z.object({ amount: z.number().positive(), amountReceived: z.number().positive(), customPaymentMethodId: z.string().min(1), referenceNumber: z.string().max(100).optional(), contributorName: z.string().max(100).optional(), clientOpId: z.string().uuid() }).parse(req.body);
-    const result = await payDinerBill(id, body);
+    const result = await payDinerBill(id, body, operationActor(req));
     op.ok(result); res.json(result);
     void notifyOrderState(result.bill.orderId).catch(() => undefined);
   } catch (err) { op.fail(err); next(err); }
@@ -90,7 +96,7 @@ router.post('/bills/:id/pay', async (req, res, next) => {
 router.get('/orders/active', async (req, res, next) => {
   try {
     const q = z.object({ companyId: z.string().optional() }).parse(req.query);
-    res.json(await listActiveOrders(q.companyId));
+    res.json((await listActiveOrders(q.companyId)).map(order => orderView(order, req.auth!.user.role)));
   } catch (err) {
     next(err);
   }
@@ -102,7 +108,7 @@ router.post('/orders/open', async (req, res, next) => {
     const body = z
       .object({ tableId: z.string().min(1), waiter: z.string().optional(), clientOpId: z.string().optional() })
       .parse(req.body);
-    const order = await openOrderForTable(body.tableId, body);
+    const order = await openOrderForTable(body.tableId, { ...body, waiter: req.auth!.user.name }, operationActor(req));
     op.ok(order);
     res.status(201).json(order);
     void notifyOrderState((order as { id: string }).id).catch(() => undefined);
@@ -117,7 +123,7 @@ router.post('/orders/opening-items', async (req, res, next) => {
     const body = z.object({ openingClientOpId: z.string().min(1).max(36), items: z.array(z.object({
       productId: z.string().min(1), quantity: z.number().positive(), notes: z.string().optional(),
     })) }).parse(req.body);
-    const order = await syncOpeningItems(body.openingClientOpId, body.items);
+    const order = await syncOpeningItems(body.openingClientOpId, body.items, operationActor(req));
     res.json(order);
     void notifyOrderState(order.id).catch(() => undefined);
   } catch (err) { next(err); }
@@ -127,7 +133,7 @@ router.post('/orders/cancel-opening', async (req, res, next) => {
   const op = oplog(req, 'pedido', 'cancelar_apertura');
   try {
     const body = z.object({ openingClientOpId: z.string().min(1).max(36) }).parse(req.body);
-    const order = await cancelOrderOpening(body.openingClientOpId);
+    const order = await cancelOrderOpening(body.openingClientOpId, operationActor(req));
     op.ok(order);
     res.json(order);
     if (order.id) void notifyOrderState(order.id).catch(() => undefined);
@@ -140,7 +146,7 @@ router.post('/orders/quick-bar', async (req, res, next) => {
     const body = z
       .object({ companyId: z.string().min(1), zone: z.enum(['Barra', 'Delivery', 'Llevar']).optional(), waiter: z.string().optional(), clientOpId: z.string().optional() })
       .parse(req.body);
-    const order = await createQuickBarOrder(body);
+    const order = await createQuickBarOrder({ ...body, waiter: req.auth!.user.name }, operationActor(req));
     op.ok(order);
     res.status(201).json(order);
     void notifyOrderState((order as { id: string }).id).catch(() => undefined);
@@ -153,7 +159,7 @@ router.post('/orders/quick-bar', async (req, res, next) => {
 router.get('/orders/:id', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
-    res.json(await getOrder(id));
+    res.json(orderView(await getOrder(id), req.auth!.user.role));
   } catch (err) {
     next(err);
   }
@@ -170,7 +176,7 @@ router.post('/orders/:id/items', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    const order = await addItemToOrder(id, body);
+    const order = await addItemToOrder(id, body, operationActor(req));
     op.ok(order);
     res.status(201).json(order);
     void notifyOrderState((order as { id: string }).id ?? id).catch(() => undefined);
@@ -187,7 +193,7 @@ router.patch('/orders/:id/items/:itemId/quantity', async (req, res, next) => {
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
     const body = z.object({ delta: z.number().finite(), clientOpId: z.string().max(36).optional() }).parse(req.body);
-    const order = await updateItemQuantity(params.id, params.itemId, body.delta, body.clientOpId);
+    const order = await updateItemQuantity(params.id, params.itemId, body.delta, body.clientOpId, operationActor(req));
     op.ok(order);
     res.json(order);
     void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);
@@ -204,7 +210,7 @@ router.patch('/orders/:id/items/:itemId/notes', async (req, res, next) => {
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
     const body = z.object({ notes: z.string() }).parse(req.body);
-    res.json(await updateItemNotes(params.id, params.itemId, body.notes));
+    res.json(await updateItemNotes(params.id, params.itemId, body.notes, operationActor(req)));
     op.ok();
     void notifyOrderState(params.id).catch(() => undefined);
   } catch (err) {
@@ -220,7 +226,7 @@ router.delete('/orders/:id/items/:itemId', async (req, res, next) => {
       .object({ id: z.string().min(1), itemId: z.string().min(1) })
       .parse(req.params);
     const query = z.object({ clientOpId: z.string().max(36).optional() }).parse(req.query);
-    const order = await removeItemFromOrder(params.id, params.itemId, query.clientOpId);
+    const order = await removeItemFromOrder(params.id, params.itemId, query.clientOpId, operationActor(req));
     op.ok(order);
     res.json(order);
     void notifyOrderState((order as { id: string }).id ?? params.id).catch(() => undefined);
@@ -235,7 +241,7 @@ router.post('/orders/:id/send-to-kitchen', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
     const body = z.object({ clientOpId: z.string().optional() }).parse(req.body ?? {});
-    const result = await sendToKitchen(id, body);
+    const result = await sendToKitchen(id, body, operationActor(req));
     op.ok(result);
     res.json(result);
     void notifyOrderState((result as { order: { id: string } }).order?.id ?? id).catch(() => undefined);
@@ -250,7 +256,7 @@ router.post('/tables/:id/por-cobrar', async (req, res, next) => {
   const op = oplog(req, 'pedido', 'marcar_por_cobrar');
   try {
     const { id } = idParam.parse(req.params);
-    const order = await markTableForBilling(id);
+    const order = await markTableForBilling(id, operationActor(req));
     op.ok(order);
     res.json(order);
     void notifyTableState(id).catch(() => undefined);
@@ -273,7 +279,7 @@ router.post('/tables/:id/pay', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    const result = await payTable(id, body);
+    const result = await payTable(id, body, operationActor(req));
     op.ok(result);
     res.json(result);
     void notifyTableState(id).catch(() => undefined);
@@ -333,7 +339,7 @@ router.post('/purchases', async (req, res, next) => {
         message: 'El vale sin insumos requiere un monto positivo.', path: ['total'],
       })
       .parse(req.body);
-    res.status(201).json(await createPurchase(body));
+    res.status(201).json(await createPurchase(body, operationActor(req)));
     op.ok();
   } catch (err) {
     op.fail(err);
@@ -363,7 +369,7 @@ router.post('/purchases/:id/regularize', async (req, res, next) => {
     const regularized = await regularizePurchase(id, {
       ...body,
       operator: req.auth!.user.name,
-    });
+    }, operationActor(req));
     op.ok(regularized);
     res.json(regularized);
   } catch (err) {
@@ -397,7 +403,7 @@ router.post('/kardex/adjustments', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await addKardexAdjustment(body));
+    res.status(201).json(await addKardexAdjustment(body, operationActor(req)));
     op.ok();
   } catch (err) {
     op.fail(err);
@@ -431,7 +437,7 @@ router.post('/shifts/switch', async (req, res, next) => {
     const shiftResult = await switchCompanyShift({
       ...body,
       operator: req.auth!.user.name,
-    });
+    }, operationActor(req));
     op.ok(shiftResult);
     res.json(shiftResult);
   } catch (err) {
@@ -444,7 +450,7 @@ router.post('/shifts/switch', async (req, res, next) => {
 router.get('/transactions', async (req, res, next) => {
   try {
     const q = z.object({ companyId: z.string().optional() }).parse(req.query);
-    res.json(await listTransactions(q.companyId));
+    res.json(await listTransactions(q.companyId, !(req.auth!.user.companyId || req.auth!.user.assignedCompanyId)));
   } catch (err) {
     next(err);
   }
@@ -479,7 +485,7 @@ router.post('/transactions/:id/corrections', async (req, res, next) => {
       expectedBankAccountId: body.expectedBankAccountId ?? null,
       expectedReference: body.expectedReference ?? null, newMethodId: body.newMethodId,
       referenceNumber: body.referenceNumber ?? null, reason: body.reason,
-    }));
+    }, operationActor(req)));
   } catch (err) { next(err); }
 });
 
@@ -499,7 +505,7 @@ router.post('/transactions', async (req, res, next) => {
         clientOpId: z.string().optional(),
       })
       .parse(req.body);
-    res.status(201).json(await createManualTransaction(body));
+    res.status(201).json(await createManualTransaction(body, operationActor(req)));
     op.ok();
   } catch (err) {
     op.fail(err);

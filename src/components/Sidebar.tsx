@@ -1,13 +1,16 @@
+import { usePermission } from '../lib/usePermission';
 import { ThemeSelector } from './ThemeSelector';
 import React from 'react';
 import { usePOS } from '../context/POSContext';
 import { ScreenType, CompanyId } from '../types';
+import { canOpenScreen } from '../lib/screenAccess';
 
 interface SidebarProps {
   onCloseMobile?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
+  const can = usePermission();
   const {
     currentScreen,
     setCurrentScreen,
@@ -94,8 +97,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
               Empresa Activa
             </span>
             <div className="grid grid-cols-3 gap-1 bg-panel-20 p-1 rounded-xl border border-edge-outline-3">
-              <button
+{companies.some(c => c.id === 'el-tayta') && (              <button
                 id="btn-switch-tayta"
+                disabled={!companies.some((company) => company.id === 'el-tayta')}
                 onClick={() => setActiveCompanyId('el-tayta')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'el-tayta'
@@ -105,9 +109,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 title="El Tayta (Criollo & Marino)"
               >
                 Tayta
-              </button>
-              <button
+              </button>)}
+{companies.some(c => c.id === 'el-sabroso') && (              <button
                 id="btn-switch-sabroso"
+                disabled={!companies.some((company) => company.id === 'el-sabroso')}
                 onClick={() => setActiveCompanyId('el-sabroso')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'el-sabroso'
@@ -117,9 +122,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 title="El Sabroso (Brasas & Parrillas)"
               >
                 Sabroso
-              </button>
-              <button
+              </button>)}
+{companies.length > 1 && (              <button
                 id="btn-switch-todas"
+                disabled={companies.length < 2}
                 onClick={() => setActiveCompanyId('todas')}
                 className={`text-[11px] font-bold py-1.5 px-1 rounded-lg transition-all text-center truncate ${
                   activeCompanyId === 'todas'
@@ -129,14 +135,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
                 title="Consolidado (Ambas empresas)"
               >
                 Ambas
-              </button>
+              </button>)}
             </div>
           </div>
         </div>
 
         {/* Navigation Items */}
         <nav className="flex-1 flex flex-col gap-1.5 px-2 overflow-y-auto custom-scrollbar">
-          {navItems.map((item) => {
+          {navItems.filter((item) => currentUser && canOpenScreen(currentUser.role, item.id)).map((item) => {
             const isActive = currentScreen === item.id;
             return (
               <button
@@ -180,7 +186,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
         <div className="px-2.5 pt-3 border-t border-edge-outline-5 mt-auto flex flex-col gap-2">
           <ThemeSelector compact />
           {/* Quick Expense Ratio mini-card on desktop */}
-          <div
+{can('reports.financial') && (          <div
             onClick={() => setCurrentScreen('ratios')}
             className="hidden md:flex items-center justify-between bg-panel-50 hover:bg-panel-51 cursor-pointer p-2 rounded-xl border border-edge-outline-5 transition-colors"
             title="Ver Control de Gastos y Ratios Financieros"
@@ -208,10 +214,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
             >
               {expenseAnalysis.foodCostPctReal}%
             </span>
-          </div>
+          </div>)}
 
           {/* Turno Controller Button */}
-          <button
+{can('cash.close') && (          <button
             id="btn-sidebar-shift"
             type="button"
             onClick={() => setIsShiftModalOpen(true)}
@@ -230,7 +236,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
             <span className="hidden md:block material-symbols-outlined text-[16px] text-ink-muted-4 group-hover:text-ink-brand">
               sync_alt
             </span>
-          </button>
+          </button>)}
 
           {currentUser && (
             <div className="bg-panel-50 border border-edge-outline-3 rounded-xl p-2 flex items-center justify-between">

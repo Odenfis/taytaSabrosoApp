@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 import { prisma } from '../lib/prisma.js';
 import { AppError, plain, toNum } from '../lib/utils.js';
 import { emitTransactionChanged } from '../lib/realtime.js';
@@ -21,7 +22,7 @@ export async function getDinerBills(orderId: string) {
   }, orderBy: { createdUtc: 'asc' } }));
 }
 
-export async function createDinerBills(orderId: string, drafts: BillDraft[], clientOpId: string) {
+export async function createDinerBills(orderId: string, drafts: BillDraft[], clientOpId: string, actor?: OperationActor) {
   if (!drafts.length || drafts.length > 50) throw new AppError('Debe indicar entre 1 y 50 cuentas.', 400, 'INVALID_BILLS');
   return plain(await prisma.$transaction(async (db) => {
     await db.$queryRaw`SELECT [id] FROM [dbo].[pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${orderId}`;
@@ -67,12 +68,13 @@ export async function createDinerBills(orderId: string, drafts: BillDraft[], cli
       const seq = await db.numberingSequence.update({ where: { companyId_entity: { companyId: order.companyId, entity: 'diner-bill' } }, data: { lastNumber: { increment: 1 } } });
       await db.dinerBill.create({ data: { id: draft.id, orderId, companyId: order.companyId, ticketNumber: String(seq.lastNumber), label: draft.label.trim(), documentType: draft.documentType, recipientName: draft.recipientName?.trim() || null, recipientId: draft.recipientId?.trim() || null, total: money(totals.get(draft.id)!), items: { create: draft.items.map((i) => ({ id: randomUUID(), orderItemId: i.orderItemId, quantity: i.quantity })) } } });
     }
+    await auditOperation(db, actor, order.companyId, 'repartir_cuenta', order.id);
     return db.dinerBill.findMany({ where: { orderId }, include: { items: { include: { orderItem: true } }, transactions: true } });
   }, { timeout: 15000 }));
 }
 
 export interface BillPaymentInput { amount: number; amountReceived: number; customPaymentMethodId: string; referenceNumber?: string; contributorName?: string; clientOpId: string; }
-export async function payDinerBill(billId: string, input: BillPaymentInput) {
+export async function payDinerBill(billId: string, input: BillPaymentInput, actor?: OperationActor) {
   const result = await prisma.$transaction(async (db) => {
     const existing = await db.transaction.findUnique({ where: { clientOpId: input.clientOpId } });
     if (existing) {
@@ -116,6 +118,7 @@ export async function payDinerBill(billId: string, input: BillPaymentInput) {
       await db.orderItem.updateMany({ where: { orderId: order.id }, data: { status: 'servido' } });
       await db.table.update({ where: { id: table.id }, data: { status: 'libre', occupiedSince: null, minutesElapsed: null, currentOrderId: null, waiter: null, isDeleted: isServiceZone(table.zone) } });
     }
+    await auditOperation(db, actor, order.companyId, 'abonar_cuenta', transaction.id);
     return { transaction, bill: await db.dinerBill.findUniqueOrThrow({ where: { id: billId }, include: { items: { include: { orderItem: true } }, transactions: true } }), orderClosed, replay: false };
   }, { timeout: 15000 });
   if (!result.replay) emitTransactionChanged(result.bill.companyId, { transactionId: result.transaction.id, companyId: result.bill.companyId, type: result.transaction.type, amount: toNum(result.transaction.amount), isIncome: true, paymentMethod: result.transaction.paymentMethod ?? '', bankAccountId: result.transaction.bankAccountId, bankAccountAlias: result.transaction.bankAccountAlias, shift: result.transaction.shift ?? '', tableNumber: result.transaction.tableNumber, updatedAt: new Date().toISOString() });

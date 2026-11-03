@@ -7,6 +7,7 @@ import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged, emitTransactionChanged } from '../lib/realtime.js';
 import { orderTotalsFromItems } from '../lib/orderTotals.js';
 import { isServiceZone } from '../lib/taytaTableLayout.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 function nowParts(timeStr?: string) {
   const now = new Date();
@@ -69,9 +70,10 @@ async function orderTransaction<T>(action: (tx: Prisma.TransactionClient) => Pro
 async function lockOrder(tx: Prisma.TransactionClient, id: string) {
   await tx.$queryRaw`SELECT [id] FROM [dbo].[pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${id}`;
 }
-async function readReceipt(tx: Prisma.TransactionClient, id: string) {
+async function readReceipt(tx: Prisma.TransactionClient, id: string, expectedOrderId?: string) {
   await tx.$queryRaw`SELECT [id] FROM [dbo].[resultados_pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${id}`;
   const receipt = await tx.orderOperationResult.findUnique({ where: { id } });
+  if (receipt && expectedOrderId && receipt.orderId !== expectedOrderId) throw new AppError('El identificador corresponde a otra comanda.', 409, 'ORDER_OPERATION_ID_CONFLICT');
   return receipt ? JSON.parse(receipt.result) : null;
 }
 async function saveReceipt(tx: Prisma.TransactionClient, id: string, orderId: string | null, result: unknown) {
@@ -126,7 +128,7 @@ async function finishEmptyOrder(tx: Prisma.TransactionClient, orderId: string) {
 
 // Aporte inicial de una apertura: se reconcilia bajo el mismo bloqueo que su
 // cancelación. Guarda cantidades propias para no retirar adiciones de otra terminal.
-export async function syncOpeningItems(clientOpId: string, items: { productId: string; quantity: number; notes?: string }[]) {
+export async function syncOpeningItems(clientOpId: string, items: { productId: string; quantity: number; notes?: string }[], actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     if (await readReceipt(tx, `opening:${clientOpId}`)) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
     const found = await findOpeningOrder(tx, clientOpId);
@@ -160,6 +162,7 @@ export async function syncOpeningItems(clientOpId: string, items: { productId: s
     }
     await tx.orderOperationResult.upsert({ where: { id: key }, create: { id: key, orderId: order.id, result: JSON.stringify(owned) }, update: { result: JSON.stringify(owned) } });
     const currentItems = await tx.orderItem.findMany({ where: { orderId: order.id } });
+    await auditOperation(tx, actor, order.companyId, 'sincronizar_apertura', order.id);
     return tx.order.update({ where: { id: order.id }, data: recalcTotals(currentItems), include: { items: true } });
   }).then(plain);
 }
@@ -178,7 +181,7 @@ export async function cleanupEmptyDraft(orderId: string) {
 }
 
 // Resuelve aperturas cuya respuesta se perdió, sin volver a crear un pedido.
-export async function cancelOrderOpening(clientOpId: string) {
+export async function cancelOrderOpening(clientOpId: string, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const key = `opening:${clientOpId}`;
     const receipt = await readReceipt(tx, key);
@@ -202,6 +205,7 @@ export async function cancelOrderOpening(clientOpId: string) {
       else await tx.orderItem.delete({ where: { id: item.id } });
     }
     const items = await tx.orderItem.findMany({ where: { orderId: current.id } });
+    await auditOperation(tx, actor, current.companyId, 'cancelar_apertura', current.id);
     if (!items.length) return finishEmptyOrder(tx, current.id);
     // Otra terminal conserva productos: bloquear replays de esta apertura,
     // manteniendo el pedido compartido y su mesa.
@@ -215,7 +219,7 @@ export async function cancelOrderOpening(clientOpId: string) {
 
 export async function openOrderForTable(
   tableId: string,
-  input: { waiter?: string; clientOpId?: string }
+  input: { waiter?: string; clientOpId?: string }, actor?: OperationActor
 ) {
   return orderTransaction(async (tx) => {
     if (input.clientOpId) {
@@ -230,7 +234,10 @@ export async function openOrderForTable(
     if (input.clientOpId) {
       const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${input.clientOpId}` } });
       const existing = await findOpeningOrder(tx, input.clientOpId);
-      if (existing) { assertEditable(existing); return existing; }
+      if (existing) {
+        if (existing.tableId !== tableId || existing.companyId !== table.companyId) throw new AppError('La apertura pertenece a otra mesa o empresa.', 409, 'OPENING_ID_CONFLICT');
+        assertEditable(existing); return existing;
+      }
       if (alias) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
     }
 
@@ -288,12 +295,13 @@ export async function openOrderForTable(
     });
 
     await rememberOpening(tx, input.clientOpId, order);
+    await auditOperation(tx, actor, order.companyId, 'abrir_pedido', order.id);
     return order;
   }).then((o) => plain(o));
 }
 
 // Pedido rápido en barra (reutiliza mesa libre de barra o crea una nueva).
-export async function createQuickBarOrder(input: { companyId: string; zone?: 'Barra' | 'Delivery' | 'Llevar'; waiter?: string; clientOpId?: string }) {
+export async function createQuickBarOrder(input: { companyId: string; zone?: 'Barra' | 'Delivery' | 'Llevar'; waiter?: string; clientOpId?: string }, actor?: OperationActor) {
   const companyId = input.companyId;
   const zone = input.zone ?? 'Barra';
   return orderTransaction(async (tx) => {
@@ -301,7 +309,10 @@ export async function createQuickBarOrder(input: { companyId: string; zone?: 'Ba
       const cancelled = await readReceipt(tx, `opening:${input.clientOpId}`);
       if (cancelled) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
       const existing = await findOpeningOrder(tx, input.clientOpId);
-      if (existing) { assertEditable(existing); return existing; }
+      if (existing) {
+        if (existing.companyId !== companyId || existing.zone !== zone) throw new AppError('La apertura pertenece a otra empresa o ambiente.', 409, 'OPENING_ID_CONFLICT');
+        assertEditable(existing); return existing;
+      }
       const alias = await tx.orderOperationResult.findUnique({ where: { id: `alias:${input.clientOpId}` } });
       if (alias) throw new AppError('La apertura fue cancelada.', 409, 'ORDER_CANCELLED');
     }
@@ -337,6 +348,7 @@ export async function createQuickBarOrder(input: { companyId: string; zone?: 'Ba
     }
 
     const order = await openOrderForTableTx(tx, table.id, input.waiter, input.clientOpId);
+    await auditOperation(tx, actor, order.companyId, 'abrir_pedido_rapido', order.id);
     return order;
   }).then((o) => plain(o));
 }
@@ -425,7 +437,7 @@ export async function getOrder(orderId: string) {
   return plain(order);
 }
 
-export async function addItemToOrder(orderId: string, input: { productId: string; quantity?: number; notes?: string }) {
+export async function addItemToOrder(orderId: string, input: { productId: string; quantity?: number; notes?: string }, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const order = await editableOrder(tx, orderId);
 
@@ -467,6 +479,7 @@ export async function addItemToOrder(orderId: string, input: { productId: string
     const items = await tx.orderItem.findMany({ where: { orderId: order.id } });
     const totals = recalcTotals(items);
     const updated = await tx.order.update({ where: { id: order.id }, data: { ...totals } });
+    await auditOperation(tx, actor, order.companyId, 'agregar_item', order.id);
     return { ...updated, items };
   }).then((o) => plain(o));
 }
@@ -554,10 +567,10 @@ async function reverseKitchenForItems(
   }
 }
 
-export async function updateItemQuantity(orderId: string, itemId: string, delta: number, clientOpId?: string) {
+export async function updateItemQuantity(orderId: string, itemId: string, delta: number, clientOpId?: string, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const key = clientOpId ? `quantity:${clientOpId}` : null;
-    if (key) { const previous = await readReceipt(tx, key); if (previous) return previous; }
+    if (key) { const previous = await readReceipt(tx, key, orderId); if (previous) return previous; }
     await lockOrder(tx, orderId);
     const cancelled = await tx.orderOperationResult.findUnique({ where: { id: `cancelled:${orderId}` } });
     if (cancelled) {
@@ -596,23 +609,26 @@ export async function updateItemQuantity(orderId: string, itemId: string, delta:
     const updated = await tx.order.update({ where: { id: orderId }, data: { ...totals } });
     const result = items.length === 0 ? await finishEmptyOrder(tx, orderId) : { ...updated, items };
     if (key) await saveReceipt(tx, key, orderId, result);
+    await auditOperation(tx, actor, order.companyId, 'actualizar_cantidad', orderId);
     return result;
   }).then((o) => plain(o));
 }
 
-export async function updateItemNotes(orderId: string, itemId: string, notes: string) {
+export async function updateItemNotes(orderId: string, itemId: string, notes: string, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
-    await editableOrder(tx, orderId);
+    const order = await editableOrder(tx, orderId);
     const item = await tx.orderItem.findFirst({ where: { id: itemId, orderId } });
     if (!item) throw new AppError('Ítem no encontrado.', 404, 'ITEM_NOT_FOUND');
-    return tx.orderItem.update({ where: { id: itemId }, data: { notes: notes.trim() || null } });
+    const updated = await tx.orderItem.update({ where: { id: itemId }, data: { notes: notes.trim() || null } });
+    await auditOperation(tx, actor, order.companyId, 'actualizar_notas', orderId);
+    return updated;
   }).then(plain);
 }
 
-export async function removeItemFromOrder(orderId: string, itemId: string, clientOpId?: string) {
+export async function removeItemFromOrder(orderId: string, itemId: string, clientOpId?: string, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const key = clientOpId ? `remove:${clientOpId}` : null;
-    if (key) { const previous = await readReceipt(tx, key); if (previous) return previous; }
+    if (key) { const previous = await readReceipt(tx, key, orderId); if (previous) return previous; }
     await lockOrder(tx, orderId);
     const cancelled = await tx.orderOperationResult.findUnique({ where: { id: `cancelled:${orderId}` } });
     if (cancelled) return JSON.parse(cancelled.result);
@@ -635,6 +651,7 @@ export async function removeItemFromOrder(orderId: string, itemId: string, clien
     const updated = await tx.order.update({ where: { id: orderId }, data: { ...totals } });
     const result = items.length === 0 ? await finishEmptyOrder(tx, orderId) : { ...updated, items };
     if (key) await saveReceipt(tx, key, orderId, result);
+    await auditOperation(tx, actor, order.companyId, 'quitar_item', orderId);
     return result;
   }).then((o) => plain(o));
 }
@@ -643,7 +660,7 @@ export async function removeItemFromOrder(orderId: string, itemId: string, clien
 
 // Motor de deducción Kardex, réplica fiel de la demo: explota la receta de cada ítem
 // y descuenta stock de insumos registrando movimientos SALIDA_VENTA_POS.
-export async function sendToKitchen(orderId: string, input?: { clientOpId?: string }) {
+export async function sendToKitchen(orderId: string, input?: { clientOpId?: string }, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const order = await editableOrder(tx, orderId);
     if (!order.items.length) throw new AppError('La comanda está vacía.', 409, 'EMPTY_ORDER');
@@ -747,12 +764,13 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
       include: { items: true },
     });
 
+    await auditOperation(tx, actor, order.companyId, 'enviar_cocina', orderId);
     return { order: updated, kardexMovements: movements.length };
   }).then((o) => plain(o));
 }
 
 // Marcar mesa + pedido como "por cobrar" (write-through del paso a cobro en POS).
-export async function markTableForBilling(tableId: string) {
+export async function markTableForBilling(tableId: string, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     const table = await tx.table.findFirst({ where: { id: tableId, isDeleted: false } });
     if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
@@ -779,6 +797,7 @@ export async function markTableForBilling(tableId: string) {
       await tx.table.update({ where: { id: table.id }, data: { status: 'por_cobrar' } });
     }
 
+    await auditOperation(tx, actor, order.companyId, 'marcar_por_cobrar', order.id);
     return updated;
   }).then((o) => plain(o));
 }
@@ -808,7 +827,7 @@ export interface PayTableInput {
   clientOpId?: string;
 }
 
-export async function payTable(tableId: string, input: PayTableInput) {
+export async function payTable(tableId: string, input: PayTableInput, actor?: OperationActor) {
   return orderTransaction(async (tx) => {
     // Idempotencia: si ya se cobró con ese clientOpId, devolver el resultado existente.
     if (input.clientOpId) {
@@ -822,7 +841,14 @@ export async function payTable(tableId: string, input: PayTableInput) {
               include: { items: true },
             })
           : null;
-        if (existingOrder) return { order: existingOrder, transaction: existingTxn };
+        if (existingOrder) {
+          if (existingOrder.tableId !== tableId || existingTxn.companyId !== existingOrder.companyId ||
+              existingTxn.paymentMethod !== input.paymentMethod || toNum(existingOrder.amountReceived) !== input.amountReceived ||
+              (input.customPaymentMethodId && existingTxn.customPaymentMethodId !== input.customPaymentMethodId)) {
+            throw new AppError('El identificador de pago pertenece a otra operación.', 409, 'PAYMENT_ID_CONFLICT');
+          }
+          return { order: existingOrder, transaction: existingTxn };
+        }
         throw new AppError('Orden asociada a la transacción no encontrada.', 404, 'NOT_FOUND');
       }
     }
@@ -849,7 +875,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
 
     // Método de pago (custom id o por nombre, case-insensitive)
     const methods = await tx.customPaymentMethod.findMany({
-      where: { isDeleted: false, OR: [{ companyId: order.companyId }, { companyId: null }] },
+      where: { isDeleted: false, isActive: true, OR: [{ companyId: order.companyId }, { companyId: null }] },
       select: { id: true, name: true, bankAccountId: true, bankAccountAlias: true },
     });
     const byId =
@@ -860,12 +886,15 @@ export async function payTable(tableId: string, input: PayTableInput) {
       (m) => m.name.toLowerCase() === input.paymentMethod.toLowerCase()
     );
     const matchedPm = (byId || byName) ?? null;
+    if (input.customPaymentMethodId && !byId) throw new AppError('El medio de pago no está disponible para esta empresa.', 400, 'INVALID_PAYMENT_METHOD');
 
     const bankAccountId = matchedPm?.bankAccountId ?? null;
     const bankAccountAlias = matchedPm?.bankAccountAlias ?? null;
 
     // Abonar a la cuenta bancaria vinculada (si existe)
     if (bankAccountId) {
+      const account = await tx.bankAccount.findUnique({ where: { id: bankAccountId } });
+      if (!account || account.companyId !== order.companyId || !account.isActive || account.isDeleted || account.currency !== 'PEN') throw new AppError('La cuenta bancaria no está disponible para esta empresa.', 400, 'INVALID_ACCOUNT');
       await tx.bankAccount.update({
         where: { id: bankAccountId },
         data: { currentBalance: { increment: toNum(order.total) } },
@@ -929,6 +958,7 @@ export async function payTable(tableId: string, input: PayTableInput) {
       where: { id: order.id },
       include: { items: true },
     });
+    await auditOperation(tx, actor, order.companyId, 'cobrar_mesa', transaction.id);
 
     // Aviso realtime Libro de Caja: la venta (caja/banco) ya está registrada.
     afterCommit(tx, () => emitTransactionChanged(order.companyId, {

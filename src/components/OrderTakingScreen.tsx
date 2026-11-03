@@ -1,9 +1,11 @@
+import { usePermission } from '../lib/usePermission';
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
 import { ProductCategory, Product, OrderItem } from '../types';
 import { ItemNotesModal } from './ItemNotesModal';
 
 export const OrderTakingScreen: React.FC = () => {
+  const can = usePermission();
   const {
     selectedTableId,
     tables,
@@ -146,7 +148,7 @@ export const OrderTakingScreen: React.FC = () => {
                 <div
                   key={product.id}
                   id={`prod-card-${product.id}`}
-                  onClick={() => isAvailable && addItemToOrder(currentTable.id, product)}
+                  onClick={() => can('orders.modify') && isAvailable && addItemToOrder(currentTable.id, product)}
                   className={`bg-panel-13 rounded-2xl border border-edge-outline-4 overflow-hidden flex flex-col transition-all duration-150 group select-none ${
                     isAvailable
                       ? 'active:scale-[0.98] cursor-pointer hover:border-edge-brand-5 hover:bg-panel-37 shadow-sm'
@@ -193,7 +195,7 @@ export const OrderTakingScreen: React.FC = () => {
                       </span>
                       <button
                         type="button"
-                        disabled={!isAvailable}
+                        disabled={!isAvailable || !can('orders.modify')}
                         aria-label={`Agregar ${product.name}`}
                         className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
                           isAvailable
@@ -263,7 +265,7 @@ export const OrderTakingScreen: React.FC = () => {
                   </div>
 
                   {/* Notes and Quantity buttons row */}
-                  <div className="flex justify-between items-center pt-1 border-t border-edge-outline-8">
+                  {can('orders.modify') ? <div className="flex justify-between items-center pt-1 border-t border-edge-outline-8">
                     {/* Note button */}
                     <button
                       type="button"
@@ -310,7 +312,7 @@ export const OrderTakingScreen: React.FC = () => {
                         <span className="material-symbols-outlined text-[16px]">add</span>
                       </button>
                     </div>
-                  </div>
+                  </div> : <p className="text-sm">{item.notes || 'Solo consulta'}</p>}
                 </div>
               ))
             )}
@@ -337,7 +339,7 @@ export const OrderTakingScreen: React.FC = () => {
 
             {/* Buttons */}
             <div className="flex flex-col gap-2.5 mt-1">
-              <button
+{can('orders.dispatch') && (              <button
                 id="btn-send-to-kitchen"
                 type="button"
                 disabled={orderItems.length === 0}
@@ -348,9 +350,9 @@ export const OrderTakingScreen: React.FC = () => {
                   restaurant_menu
                 </span>
                 <span>Enviar a Cocina</span>
-              </button>
+              </button>)}
 
-              <button
+{(can('payments.collect') || can('orders.mark_for_billing')) && (              <button
                 id="btn-proceed-to-payment"
                 type="button"
                 disabled={orderItems.length === 0}
@@ -360,15 +362,15 @@ export const OrderTakingScreen: React.FC = () => {
                 <span className="material-symbols-outlined text-[20px]">
                   point_of_sale
                 </span>
-                <span>Cobrar Mesa</span>
-              </button>
+                <span>{can('payments.collect') ? 'Cobrar Mesa' : 'Marcar por cobrar'}</span>
+              </button>)}
             </div>
           </div>
         </aside>
       </main>
 
       {/* Item Notes Modal */}
-      {editingNoteItem && (
+      {can('orders.modify') && editingNoteItem && (
         <ItemNotesModal
           isOpen={true}
           itemName={editingNoteItem.name}
@@ -382,7 +384,7 @@ export const OrderTakingScreen: React.FC = () => {
       )}
 
       {/* Confirmación: despachar a cocina antes de cobrar (regla Kardex) */}
-      {pendingKitchenConfirm && pendingKitchenConfirm.tableId === currentTable?.id && (
+      {can('orders.dispatch') && pendingKitchenConfirm && pendingKitchenConfirm.tableId === currentTable?.id && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim-2 p-4">
           <div className="w-full max-w-md bg-panel-3 border border-edge-outline rounded-2xl shadow-2xl p-6 flex flex-col gap-4">
             <div className="flex items-center gap-3">
@@ -397,7 +399,7 @@ export const OrderTakingScreen: React.FC = () => {
               Si cobras sin despachar, los insumos NO se descontarán del Kardex.
             </p>
             <p className="text-[13px] text-ink-muted-2 leading-relaxed">
-              ¿Enviar a Cocina ahora y continuar al cobro?
+              {can('payments.collect') ? '¿Enviar a Cocina ahora y continuar al cobro?' : '¿Enviar a Cocina ahora y marcar la mesa por cobrar?'}
             </p>
             <div className="flex gap-3 pt-1">
               <button
@@ -410,7 +412,7 @@ export const OrderTakingScreen: React.FC = () => {
                 className="flex-1 h-[44px] bg-surface-brand text-ink-on-accent-4 hover:bg-surface-on-brand font-bold text-[13px] rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-wait cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[18px]">restaurant_menu</span>
-                <span>{isDispatchingKitchen ? 'Enviando...' : 'Enviar a Cocina y Cobrar'}</span>
+                <span>{isDispatchingKitchen ? 'Enviando...' : can('payments.collect') ? 'Enviar a Cocina y Cobrar' : 'Enviar y marcar por cobrar'}</span>
               </button>
               <button
                 type="button"

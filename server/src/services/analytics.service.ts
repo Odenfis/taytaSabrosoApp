@@ -2,7 +2,7 @@ import { AppError, plain, round1, round2, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 
 // Análisis financiero: réplica exacta del motor getCompanyAnalysis de la demo (ratios Food Cost).
-export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso' | 'all' */) {
+export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso' | 'all' */, restrictRecipes = false) {
   const txs = await prisma.transaction.findMany({
     where: { isDeleted: false, ...(cid === 'all' ? {} : { companyId: cid }) },
   });
@@ -14,7 +14,7 @@ export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso
     include: { items: true },
   });
   const recipes = await prisma.recipe.findMany({
-    where: { isDeleted: false },
+    where: { isDeleted: false, ...(restrictRecipes ? { companyId: cid } : {}) },
     include: { ingredients: true },
   });
 
@@ -92,11 +92,11 @@ export async function getCompanyAnalysis(cid: string /* 'el-tayta' | 'el-sabroso
 }
 
 // Resumen KPI para la pantalla de Reportes.
-export async function getReportSummary(companyId: string) {
+export async function getReportSummary(companyId: string, includeUnassigned = true) {
   if (!companyId) throw new AppError('Falta companyId.', 400, 'VALIDATION');
 
   const txs = await prisma.transaction.findMany({
-    where: { isDeleted: false, ...(companyId === 'all' ? {} : { OR: [{ companyId }, { companyId: null }] }) },
+    where: { isDeleted: false, ...(companyId === 'all' ? {} : includeUnassigned ? { OR: [{ companyId }, { companyId: null }] } : { companyId }) },
     orderBy: { timestamp: 'desc' },
     take: 5000,
   });

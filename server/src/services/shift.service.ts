@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AppError, plain, round2, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitShiftChanged, emitTransactionChanged } from '../lib/realtime.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 function nowParts() {
   const now = new Date();
@@ -21,8 +22,19 @@ export async function switchCompanyShift(input: {
   notes?: string;
   operator?: string;
   clientOpId?: string;
-}) {
-  return prisma.$transaction(async (tx) => {
+}, actor?: OperationActor) {
+  const result = await prisma.$transaction(async (tx) => {
+    const receiptId = input.clientOpId ? `shift:${input.clientOpId}` : null;
+    if (receiptId) {
+      await tx.$queryRaw`SELECT [id] FROM [dbo].[resultados_pedidos] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${receiptId}`;
+      const receipt = await tx.orderOperationResult.findUnique({ where: { id: receiptId } });
+      if (receipt) {
+        const saved = JSON.parse(receipt.result) as { companyId: string; targetShift: string; reportedCash: number; initialCashForNext: number; notes: string | null; result: Record<string, unknown> };
+        if (saved.companyId !== input.companyId || saved.targetShift !== input.targetShift || saved.reportedCash !== input.reportedCash || saved.initialCashForNext !== input.initialCashForNext || saved.notes !== (input.notes ?? null)) throw new AppError('El identificador corresponde a otro cierre de turno.', 409, 'SHIFT_ID_CONFLICT');
+        return { value: saved.result, replay: true };
+      }
+    }
+    await tx.$queryRaw`SELECT [id] FROM [dbo].[empresas] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${input.companyId}`;
     const shiftState = await tx.companyShift.findUnique({ where: { companyId: input.companyId } });
     const currentShift = shiftState?.currentShift ?? 'Día';
     const initialCash = shiftState ? toNum(shiftState.initialCash) : 350;
@@ -93,7 +105,7 @@ export async function switchCompanyShift(input: {
     const operator = input.operator || shiftState?.openedBy || 'Sistema';
 
     // Crear historial de turno
-    await tx.shiftRecord.create({
+    const closedRecord = await tx.shiftRecord.create({
       data: {
         id: randomUUID(),
         companyId: input.companyId,
@@ -153,19 +165,8 @@ export async function switchCompanyShift(input: {
       });
     }
 
-    // Aviso realtime: cierra turno + nueva caja inicial para las demás terminales.
-    emitShiftChanged(input.companyId, {
-      companyId: input.companyId,
-      closedShift: currentShift,
-      newShift: input.targetShift,
-      initialCash: input.initialCashForNext,
-      reportedCash: input.reportedCash,
-      systemCashExpected,
-      difference,
-      updatedAt: new Date().toISOString(),
-    });
-
-    return {
+    await auditOperation(tx, actor, input.companyId, 'cerrar_turno', closedRecord.id);
+    const value = {
       companyId: input.companyId,
       closedShift: currentShift,
       newShift: input.targetShift,
@@ -175,7 +176,15 @@ export async function switchCompanyShift(input: {
       reportedCash: input.reportedCash,
       difference,
     };
-  }).then((r) => plain(r));
+    if (receiptId) await tx.orderOperationResult.create({ data: { id: receiptId, result: JSON.stringify({ companyId: input.companyId, targetShift: input.targetShift, reportedCash: input.reportedCash, initialCashForNext: input.initialCashForNext, notes: input.notes ?? null, result: value }) } });
+    return { value, replay: false };
+  });
+  if (!result.replay) emitShiftChanged(input.companyId, {
+    companyId: input.companyId, closedShift: String(result.value.closedShift), newShift: input.targetShift,
+    initialCash: input.initialCashForNext, reportedCash: input.reportedCash,
+    systemCashExpected: Number(result.value.systemCashExpected), difference: Number(result.value.difference), updatedAt: new Date().toISOString(),
+  });
+  return plain(result.value);
 }
 
 export async function listShiftRecords(companyId?: string) {
@@ -186,12 +195,12 @@ export async function listShiftRecords(companyId?: string) {
   return plain(records);
 }
 
-export async function listTransactions(companyId?: string) {
+export async function listTransactions(companyId?: string, includeUnassigned = true) {
   const transactions = await prisma.transaction.findMany({
     where: {
       isDeleted: false,
       // Sin companyId = compartida (legacy): visible en todas las empresas.
-      ...(companyId ? { OR: [{ companyId }, { companyId: null }] } : {}),
+      ...(companyId ? includeUnassigned ? { OR: [{ companyId }, { companyId: null }] } : { companyId } : {}),
     },
     orderBy: { timestamp: 'desc' },
     take: 1000,
@@ -217,14 +226,17 @@ export interface CreateManualTransactionInput {
   clientOpId?: string;
 }
 
-export async function createManualTransaction(input: CreateManualTransactionInput) {
+export async function createManualTransaction(input: CreateManualTransactionInput, actor?: OperationActor) {
   return prisma.$transaction(async (tx) => {
     // Idempotencia: reintentos con el mismo clientOpId devuelven la transacción existente.
     if (input.clientOpId) {
       const existing = await tx.transaction.findFirst({
         where: { clientOpId: input.clientOpId },
       });
-      if (existing) return existing;
+      if (existing) {
+        if (existing.companyId !== input.companyId) throw new AppError('El identificador pertenece a otra empresa.', 409, 'TRANSACTION_ID_CONFLICT');
+        return existing;
+      }
     }
 
     const companyShift = await tx.companyShift.findUnique({ where: { companyId: input.companyId } });
@@ -232,6 +244,11 @@ export async function createManualTransaction(input: CreateManualTransactionInpu
     const bankAcc = input.bankAccountId
       ? await tx.bankAccount.findUnique({ where: { id: input.bankAccountId } })
       : null;
+    if (input.bankAccountId && (!bankAcc || bankAcc.companyId !== input.companyId || !bankAcc.isActive || bankAcc.isDeleted || bankAcc.currency !== 'PEN')) throw new AppError('La cuenta bancaria no está disponible para esta empresa.', 400, 'INVALID_ACCOUNT');
+    if (input.customPaymentMethodId) {
+      const method = await tx.customPaymentMethod.findUnique({ where: { id: input.customPaymentMethodId } });
+      if (!method || method.isDeleted || !method.isActive || (method.companyId && method.companyId !== input.companyId) || (method.bankAccountId && method.bankAccountId !== input.bankAccountId)) throw new AppError('El medio de pago no está disponible para esta empresa o cuenta.', 400, 'INVALID_PAYMENT_METHOD');
+    }
 
     if (bankAcc) {
       await tx.bankAccount.update({
@@ -262,6 +279,7 @@ export async function createManualTransaction(input: CreateManualTransactionInpu
         clientOpId: input.clientOpId ?? randomUUID(),
       },
     });
+    await auditOperation(tx, actor, input.companyId, 'crear_movimiento_caja', transaction.id);
 
     // Aviso realtime Libro de Caja: transacción manual registrada (toca gaveta o banco).
     emitTransactionChanged(input.companyId, {

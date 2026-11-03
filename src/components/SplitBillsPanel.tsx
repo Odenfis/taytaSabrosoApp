@@ -1,3 +1,5 @@
+import { orderNeedsOfflineReview } from '../lib/offlineAuthorization';
+import { readSessionCache, writeSessionCache } from '../lib/sessionCache';
 import React, { useEffect, useMemo, useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { apiClient, ApiError } from '../lib/api';
@@ -16,9 +18,11 @@ const localKey = (id: string) => `ts_diner_bills_${id}`;
 const queueDurably = (operation: Parameters<typeof saveQueue>[0][number]) => saveQueue([...loadQueue().filter((op) => op.clientOpId !== operation.clientOpId), operation], true);
 
 export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: () => void }> = ({ order, table, onClose }) => {
-  const { paymentMethods, offlineState, lastSyncResult, refreshOperations, releasePaidTable, companies } = usePOS();
+  const { cacheScope, sessionDeviceId, currentUser, paymentMethods, offlineState, lastSyncResult, refreshOperations, releasePaidTable, companies } = usePOS();
+  const foreignPending = orderNeedsOfflineReview(loadQueue(), order.id, currentUser?.id, sessionDeviceId);
   const [drafts, setDrafts] = useState<Draft[]>(() => [{ id: uuid(), label: 'Comensal 1', documentType: 'ticket', recipientName: '', recipientId: '', items: order.items.map((i) => ({ orderItemId: i.id, quantity: i.quantity })) }, { id: uuid(), label: 'Comensal 2', documentType: 'ticket', recipientName: '', recipientId: '', items: [] }]);
   const [bills, setBills] = useState<Bill[]>([]);
+  const requiresReconciliation = foreignPending || (!bills.length && loadQueue().some(op => ['createDinerBills', 'payDinerBill'].includes(op.op) && (op.payload as Record<string, unknown>)?.orderId === order.id));
   const [selected, setSelected] = useState('');
   const [selectedDraft, setSelectedDraft] = useState('');
   const [methodId, setMethodId] = useState('');
@@ -39,8 +43,8 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
 
   useEffect(() => {
     let active = true;
-    try { const cached = localStorage.getItem(localKey(order.id)); if (cached) setBills(JSON.parse(cached) as Bill[]); } catch { /* ignore corrupt cache */ }
-    if (!offlineState.isSimulatedOffline) apiClient.get<Bill[]>(`/operations/orders/${order.id}/bills`).then((rows) => { if (active && !loadQueue().some((op) => ['createDinerBills', 'payDinerBill'].includes(op.op) && (op.payload as Record<string, unknown>).orderId === order.id)) { setBills(rows); localStorage.setItem(localKey(order.id), JSON.stringify(rows)); } }).catch(() => undefined);
+    setBills(readSessionCache<Bill[]>(cacheScope, localKey(order.id), []));
+    if (!offlineState.isSimulatedOffline) apiClient.get<Bill[]>(`/operations/orders/${order.id}/bills`).then((rows) => { if (active && !loadQueue().some((op) => ['createDinerBills', 'payDinerBill'].includes(op.op) && (op.payload as Record<string, unknown>).orderId === order.id)) { setBills(rows); writeSessionCache(cacheScope, localKey(order.id), rows); } }).catch(() => undefined);
     return () => { active = false; };
   }, [order.id, offlineState.isSimulatedOffline, lastSyncResult?.ts]);
   useEffect(() => { if (bills.length && !bills.some((b) => b.id === selected)) setSelected(bills[0].id); }, [bills, selected]);
@@ -51,7 +55,7 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
   const reloadBills = async () => {
     if (loadQueue().some((op) => ['createDinerBills', 'payDinerBill'].includes(op.op) && (op.payload as Record<string, unknown>).orderId === order.id)) return;
     const rows = await apiClient.get<Bill[]>(`/operations/orders/${order.id}/bills`);
-    setBills(rows); localStorage.setItem(localKey(order.id), JSON.stringify(rows));
+    setBills(rows); writeSessionCache(cacheScope, localKey(order.id), rows);
   };
   const setQuantity = (draftId: string, itemId: string, next: number) => {
     const item = order.items.find((i) => i.id === itemId)!;
@@ -61,6 +65,7 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
   };
   const saveBills = async () => {
     setMessage('');
+    if (requiresReconciliation) { setMessage('Esta cuenta tiene operaciones pendientes de otro usuario o terminal. Requiere conciliación antes de cobrar.'); return; }
     if (order.id.startsWith('order-tmp-')) { setMessage('Espere a que la comanda se sincronice para repartirla: aún no tiene identificadores definitivos de platos.'); return; }
     for (const item of order.items) if (drafts.reduce((s, d) => s + (d.items.find((i) => i.orderItemId === item.id)?.quantity ?? 0), 0) !== item.quantity) { setMessage(`Asigne todas las unidades de ${item.name}.`); return; }
     if (drafts.some((d) => !d.label.trim() || !d.items.length)) { setMessage('Cada comensal necesita nombre y al menos un plato.'); return; }
@@ -72,19 +77,19 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
     try {
       if (offlineState.isSimulatedOffline) throw new ApiError('Sin conexión', 'NETWORK_ERROR', 0);
       const rows = await apiClient.post<Bill[]>(`/operations/orders/${order.id}/bills`, payload);
-      setBills(rows); localStorage.setItem(localKey(order.id), JSON.stringify(rows));
+      setBills(rows); writeSessionCache(cacheScope, localKey(order.id), rows);
     } catch (error) {
       if (error instanceof ApiError && error.status === 0) {
         const local = drafts.map((d, index) => ({ ...d, orderId: order.id, ticketNumber: `Pendiente ${index + 1}`, total: d.items.reduce((s, i) => s + (order.items.find((item) => item.id === i.orderItemId)?.price ?? 0) * i.quantity, 0), status: 'pendiente', transactions: [] }));
         try { queueDurably({ clientOpId: operationId, entity: 'order', op: 'createDinerBills', payload, createdAt: new Date().toISOString() }); }
         catch (storageError) { setMessage(storageError instanceof Error ? storageError.message : 'No se pudo guardar el reparto sin conexión.'); return; }
-        setBills(local); localStorage.setItem(localKey(order.id), JSON.stringify(local));
+        setBills(local); writeSessionCache(cacheScope, localKey(order.id), local);
         setMessage('Reparto guardado sin conexión. Los números definitivos llegarán al sincronizar.');
       } else { setMessage(error instanceof Error ? error.message : 'No se pudo guardar el reparto.'); void reloadBills().catch(() => undefined); }
     } finally { setBusy(false); }
   };
   const pay = async () => {
-    if (!bill || !method) return;
+    if (!bill || !method || requiresReconciliation) return;
     const value = Number(payAmount);
     const received = method.category === 'Efectivo' ? (cashReceived.trim() ? Number(cashReceived) : value) : value;
     if (!Number.isFinite(value) || cents(value) <= 0 || cents(value) > balance || !Number.isFinite(received) || cents(received) < cents(value)) { setMessage('El abono debe ser positivo, no exceder el saldo y estar cubierto por el efectivo recibido.'); return; }
@@ -96,7 +101,7 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
       if (offlineState.isSimulatedOffline) throw new ApiError('Sin conexión', 'NETWORK_ERROR', 0);
       const response = await apiClient.post<{ bill: Bill; transaction: BillTransaction; orderClosed: boolean }>(`/operations/bills/${bill.id}/pay`, payload);
       const next = bills.map((b) => b.id === bill.id ? response.bill : b);
-      setBills(next); localStorage.setItem(localKey(order.id), JSON.stringify(next));
+      setBills(next); writeSessionCache(cacheScope, localKey(order.id), next);
       setReceipt({ bill: response.bill, payment: response.transaction });
       if (response.orderClosed) { releasePaidTable(table.id, order.id); setClosedPendingRefresh(true); }
       else await refreshOperations();
@@ -106,7 +111,7 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
         catch (storageError) { setMessage(storageError instanceof Error ? storageError.message : 'No se pudo guardar el abono sin conexión.'); return; }
         const payment = { id: operationId, amount: value, amountReceived: received, change: received - value, paymentMethod: method.name, referenceNumber: reference.trim() || null, contributorName: contributorName.trim() || bill.label };
         const next = bills.map((b) => b.id === bill.id ? { ...b, transactions: [...b.transactions, payment], status: cents(b.total) === paid + cents(value) ? 'pagada' : b.status } : b);
-        setBills(next); localStorage.setItem(localKey(order.id), JSON.stringify(next));
+        setBills(next); writeSessionCache(cacheScope, localKey(order.id), next);
         setReceipt({ bill: next.find((b) => b.id === bill.id)!, payment });
         setMessage('Abono pendiente de sincronización. Conserve la constancia y verifique su aplicación al reconectar.');
       } else { setMessage(error instanceof Error ? error.message : 'No se pudo registrar el abono. Actualice la cuenta.'); void reloadBills().catch(() => undefined); }
@@ -130,13 +135,13 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
       <div className="flex items-center gap-3"><button type="button" onClick={onClose} aria-label="Volver" className="w-10 h-10 rounded-full hover:bg-panel-3"><span className="material-symbols-outlined">arrow_back</span></button><div><h1 className="text-lg font-bold text-ink-brand">Cuentas por comensal · Mesa {table.number}</h1><p className="text-xs text-ink-muted-3">Comanda #{order.ticketNumber} · Un ticket interno por cuenta</p></div></div><div className="text-right"><span className="text-xs text-ink-muted-3 block">Total de la mesa</span><strong className="text-xl text-ink-gold">S/ {order.total.toFixed(2)}</strong></div>
     </header>
     <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-    {message && <p role="status" className="p-3 rounded-xl border border-edge-outline bg-panel-13 text-ink-body text-sm">{message}</p>}
+    {requiresReconciliation && <p role="alert" className="p-3 rounded-xl border border-edge-warning-2">Esta cuenta tiene operaciones pendientes y no dispone de un saldo local verificable para esta sesión. Revise y concilie antes de registrar otro cobro.</p>}{message && <p role="status" className="p-3 rounded-xl border border-edge-outline bg-panel-13 text-ink-body text-sm">{message}</p>}
     {!bills.length && draft ? <div className="grid lg:grid-cols-[minmax(240px,0.8fr)_minmax(0,1.6fr)] gap-4">
       <section className="bg-panel-35 border border-edge-outline rounded-2xl p-4 space-y-3"><div className="flex items-center justify-between"><h2 className="font-bold">Comensales</h2><span className="text-xs text-ink-muted-3">{drafts.length} cuentas</span></div>
         {drafts.map((d, index) => { const sum = d.items.reduce((n, line) => n + cents(order.items.find((i) => i.id === line.orderItemId)?.price ?? 0) * line.quantity, 0); return <button type="button" key={d.id} onClick={() => setSelectedDraft(d.id)} aria-pressed={draft.id === d.id} className={`w-full text-left p-4 rounded-xl border flex items-center justify-between gap-2 ${draft.id === d.id ? 'border-edge-brand bg-panel-13' : 'border-edge-outline bg-panel'}`}><span><strong className="block">{d.label || `Comensal ${index + 1}`}</strong><span className="text-xs text-ink-muted-3">{d.items.reduce((n, i) => n + i.quantity, 0)} unidades asignadas</span></span><strong className="text-ink-gold">S/ {amount(sum)}</strong></button>; })}
         <button type="button" onClick={() => { const id = uuid(); setDrafts((list) => [...list, { id, label: `Comensal ${list.length + 1}`, documentType: 'ticket', recipientName: '', recipientId: '', items: [] }]); setSelectedDraft(id); }} className="w-full rounded-xl border border-edge-brand text-ink-brand font-bold p-3 flex justify-center gap-2"><span className="material-symbols-outlined">person_add</span>Añadir comensal</button>
         <div className="rounded-xl bg-panel-13 p-4 text-sm"><div className="flex justify-between"><span>Por asignar</span><strong>{unassigned} unidades</strong></div><p className="text-xs text-ink-muted-3 mt-1">Cada plato debe asignarse una sola vez.</p></div>
-        <button type="button" disabled={busy || unassigned !== 0} onClick={() => void saveBills()} className="w-full rounded-xl bg-surface-brand-solid text-ink-on-brand p-3 font-bold disabled:opacity-50">Confirmar reparto</button>
+        <button type="button" disabled={requiresReconciliation || busy || unassigned !== 0} onClick={() => void saveBills()} className="w-full rounded-xl bg-surface-brand-solid text-ink-on-brand p-3 font-bold disabled:opacity-50">Confirmar reparto</button>
       </section>
       <section className="bg-panel-35 border border-edge-outline rounded-2xl p-4 md:p-5 space-y-5"><div className="flex justify-between items-center gap-2"><div><h2 className="font-bold text-lg">Detalle del comensal</h2><p className="text-xs text-ink-muted-3">Seleccione los platos que incluirá su ticket</p></div>{drafts.length > 1 && <button type="button" onClick={() => { setDrafts((list) => list.filter((d) => d.id !== draft.id)); setSelectedDraft(''); }} className="text-ink-danger text-sm px-2 py-2">Quitar</button>}</div>
         <div className="grid sm:grid-cols-2 gap-3"><label className="text-xs font-bold text-ink-muted-2">Nombre de la cuenta<input aria-label="Nombre del comensal" value={draft.label} onChange={(e) => updateDraft(draft.id, { label: e.target.value })} className={`${inputClass} mt-1`} /></label><label className="text-xs font-bold text-ink-muted-2">Documento solicitado<select value={draft.documentType} onChange={(e) => updateDraft(draft.id, { documentType: e.target.value as Draft['documentType'] })} className={`${inputClass} mt-1`}><option value="ticket">Ticket interno</option><option value="boleta">Boleta futura</option><option value="factura">Factura futura</option></select></label><label className="text-xs font-bold text-ink-muted-2">{draft.documentType === 'factura' ? 'Razón social' : 'Nombre del receptor'}<input value={draft.recipientName} onChange={(e) => updateDraft(draft.id, { recipientName: e.target.value })} className={`${inputClass} mt-1`} /></label><label className="text-xs font-bold text-ink-muted-2">{draft.documentType === 'factura' ? 'RUC' : 'DNI u otra identificación'}<input value={draft.recipientId} onChange={(e) => updateDraft(draft.id, { recipientId: e.target.value })} className={`${inputClass} mt-1`} /></label></div>
@@ -149,7 +154,7 @@ export const SplitBillsPanel: React.FC<{ order: Order; table: Table; onClose: ()
         <div className="bg-panel rounded-xl border border-edge-outline p-3 space-y-2">{bill.items.map((line) => <div key={line.orderItemId} className="flex justify-between text-sm"><span>{line.quantity} × {line.orderItem?.name ?? order.items.find((i) => i.id === line.orderItemId)?.name}</span><span>S/ {((line.orderItem?.price ?? order.items.find((i) => i.id === line.orderItemId)?.price ?? 0) * line.quantity).toFixed(2)}</span></div>)}</div>
         {bill.transactions.length > 0 && <div className="space-y-1"><h3 className="text-sm font-bold">Abonos registrados</h3>{bill.transactions.map((t) => <p key={t.id} className="text-xs text-ink-muted-2">S/ {t.amount.toFixed(2)} · {t.paymentMethod} · {t.contributorName || bill.label} {t.referenceNumber ? `· Ref. ${t.referenceNumber}` : ''}</p>)}</div>}
         <button type="button" onClick={() => setReceipt({ bill })} className="text-sm font-bold text-ink-brand flex items-center gap-1"><span className="material-symbols-outlined text-lg">receipt_long</span>Ver ticket interno</button>
-        {balance > 0 && <div className="space-y-3 border-t border-edge-outline pt-4"><h3 className="font-bold">Registrar abono</h3><label className="block text-xs font-bold text-ink-muted-2">Quién aporta<input placeholder="Por defecto, el titular" value={contributorName} onChange={(e) => setContributorName(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="block text-xs font-bold text-ink-muted-2">Importe del abono<input type="number" min="0.01" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputClass} mt-1`} /></label><div><p className="text-xs font-bold text-ink-muted-2 mb-2">Medio de pago</p><div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{methods.map((m) => <button type="button" key={m.id} onClick={() => { setMethodId(m.id); setReference(''); }} aria-pressed={methodId === m.id} className={`rounded-xl p-3 border text-sm font-semibold flex flex-col items-center gap-1 ${methodId === m.id ? 'bg-surface-brand-solid text-ink-on-brand border-edge-brand' : 'bg-panel border-edge-outline'}`}><span className="material-symbols-outlined">{m.icon || 'payments'}</span>{m.name}</button>)}</div></div>{method?.category === 'Efectivo' && <div className="space-y-2"><label className="block text-xs font-bold text-ink-muted-2">Efectivo recibido<input type="number" min="0" step="0.01" placeholder="Vacío = importe exacto" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} className={`${inputClass} mt-1`} /></label><div className="flex justify-between text-sm bg-panel-13 rounded-xl p-3"><span>Vuelto a entregar</span><strong className="text-ink-info">S/ {change.toFixed(2)}</strong></div></div>}{method?.requiresReferenceNumber && <label className="block text-xs font-bold text-ink-muted-2">Número de operación<input value={reference} onChange={(e) => setReference(e.target.value)} className={`${inputClass} mt-1`} /></label>}<button type="button" disabled={busy || !method} onClick={() => void pay()} className="w-full rounded-xl bg-surface-brand-solid text-ink-on-brand p-4 font-bold disabled:opacity-50">Registrar abono · S/ {Number.isFinite(Number(payAmount)) ? Number(payAmount).toFixed(2) : '0.00'}</button></div>}
+        {balance > 0 && <div className="space-y-3 border-t border-edge-outline pt-4"><h3 className="font-bold">Registrar abono</h3><label className="block text-xs font-bold text-ink-muted-2">Quién aporta<input placeholder="Por defecto, el titular" value={contributorName} onChange={(e) => setContributorName(e.target.value)} className={`${inputClass} mt-1`} /></label><label className="block text-xs font-bold text-ink-muted-2">Importe del abono<input type="number" min="0.01" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputClass} mt-1`} /></label><div><p className="text-xs font-bold text-ink-muted-2 mb-2">Medio de pago</p><div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{methods.map((m) => <button type="button" key={m.id} onClick={() => { setMethodId(m.id); setReference(''); }} aria-pressed={methodId === m.id} className={`rounded-xl p-3 border text-sm font-semibold flex flex-col items-center gap-1 ${methodId === m.id ? 'bg-surface-brand-solid text-ink-on-brand border-edge-brand' : 'bg-panel border-edge-outline'}`}><span className="material-symbols-outlined">{m.icon || 'payments'}</span>{m.name}</button>)}</div></div>{method?.category === 'Efectivo' && <div className="space-y-2"><label className="block text-xs font-bold text-ink-muted-2">Efectivo recibido<input type="number" min="0" step="0.01" placeholder="Vacío = importe exacto" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} className={`${inputClass} mt-1`} /></label><div className="flex justify-between text-sm bg-panel-13 rounded-xl p-3"><span>Vuelto a entregar</span><strong className="text-ink-info">S/ {change.toFixed(2)}</strong></div></div>}{method?.requiresReferenceNumber && <label className="block text-xs font-bold text-ink-muted-2">Número de operación<input value={reference} onChange={(e) => setReference(e.target.value)} className={`${inputClass} mt-1`} /></label>}<button type="button" disabled={requiresReconciliation || busy || !method} onClick={() => void pay()} className="w-full rounded-xl bg-surface-brand-solid text-ink-on-brand p-4 font-bold disabled:opacity-50">Registrar abono · S/ {Number.isFinite(Number(payAmount)) ? Number(payAmount).toFixed(2) : '0.00'}</button></div>}
         {pending && <p className="text-sm text-ink-info">Hay operaciones pendientes de sincronización para esta mesa.</p>}
       </section>}
     </div>}

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
@@ -75,7 +76,7 @@ export async function notifyLinkedRecipes(productId: string) {
     action: 'update', productName: r.productName, category: r.category, updatedAt: r.updatedAt.toISOString() });
 }
 
-export async function createProduct(input: ProductCreate) {
+export async function createProduct(input: ProductCreate, actor?: OperationActor) {
   const { hasRecipe: _legacyFlag, ...data } = createProductSchema.parse(input);
   const id = data.id ?? randomUUID();
   const existing = await prisma.product.findUnique({ where: { id } });
@@ -88,7 +89,11 @@ export async function createProduct(input: ProductCreate) {
   };
   if (existing) return replay(existing);
   try {
-    const product = await prisma.product.create({ data: { ...data, id, hasRecipe: false } });
+    const product = await prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({ data: { ...data, id, hasRecipe: false } });
+      await auditOperation(tx, actor, created.companyId, 'crear_producto', created.id);
+      return created;
+    });
     await notifyProduct(product, 'create');
     return plain(product);
   } catch (err) {
@@ -100,8 +105,13 @@ export async function createProduct(input: ProductCreate) {
   }
 }
 
-export async function updateProduct(id: string, updates: ProductUpdate) {
-  const product = await prisma.$transaction((tx) => writeProduct(tx, id, updates)).catch((err) => {
+export async function updateProduct(id: string, updates: ProductUpdate, actor?: OperationActor) {
+  const product = await prisma.$transaction(async (tx) => {
+    const before = await tx.product.findUnique({ where: { id }, select: { version: true } });
+    const updated = await writeProduct(tx, id, updates);
+    if (!before || before.version !== updated.version) await auditOperation(tx, actor, updated.companyId, 'actualizar_producto', updated.id);
+    return updated;
+  }).catch((err) => {
     if (err?.code === 'P2034') throw new AppError('Otra terminal modificó este producto. Revise su versión.', 409, 'PRODUCT_VERSION_CONFLICT');
     throw err;
   });

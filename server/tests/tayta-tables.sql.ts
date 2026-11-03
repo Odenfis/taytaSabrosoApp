@@ -73,7 +73,7 @@ try {
         body: JSON.stringify({ companyId: 'el-tayta', zone: 'Terraza', capacity: 4, number: '99' }) });
     }
     assert.equal((await post(waiterId, 'Mesero')).status, 403);
-    assert.equal((await post(waiterId, 'Mesero', url.replace('/tables/physical', '/tables'))).status, 400);
+    assert.equal((await post(waiterId, 'Mesero', url.replace('/tables/physical', '/tables'))).status, 403);
     const response = await post(adminId, 'Administrador');
     assert.equal(response.status, 201);
     assert.equal((await response.json()).number, 'T02');

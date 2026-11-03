@@ -6,6 +6,15 @@ import { AppError } from './utils.js';
 
 const CARGA_MAX_CHARS = 20000;
 
+/** Nunca persistir credenciales en el registro de diagnóstico. */
+export function redactSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 20) return '[profundidad máxima]';
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) =>
+    [key, /pin|password|contrase|secret|token|authorization/i.test(key) ? '[protegido]' : redactSecrets(item, depth + 1)]));
+}
+
 // Entidades del ledger (snake_case español, igual que las columnas de la BD).
 // Los catálogos llevan entidad concreta (mesa, producto, ...) en vez de un genérico.
 export type OpEntity =
@@ -146,7 +155,7 @@ export async function recordClientOp(
       (typeof body.clientOpId === 'string' && body.clientOpId ? body.clientOpId : randomUUID());
 
     const payload = safeStringify(
-      { parametros: req.params, consulta: req.query, cuerpo: req.body },
+      redactSecrets({ parametros: req.params, consulta: req.query, cuerpo: req.body }),
       CARGA_MAX_CHARS
     );
 
@@ -162,6 +171,7 @@ export async function recordClientOp(
     await upsertClientOp({
       id: randomUUID(),
       deviceId,
+      actorUserId: req.auth!.user.id,
       companyId,
       entity: opts.entity,
       operation: opts.operation,

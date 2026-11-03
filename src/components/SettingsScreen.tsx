@@ -1,12 +1,15 @@
+import { SigningKeyManagement } from './SigningKeyManagement';
 import { ThemeSelector } from './ThemeSelector';
 import React, { useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { apiClient } from '../lib/api';
 import { ThermalPrinterConfig, PrinterRole, PrinterConnectionType, CompanyId } from '../types';
+import { UserManagement } from './UserManagement';
 
 export const SettingsScreen: React.FC = () => {
   const {
     currentUser,
+    logout,
     resetToDemoData,
     addNotification,
     printers,
@@ -33,7 +36,7 @@ export const SettingsScreen: React.FC = () => {
   const handleUpdatePrinter = updatePrinter || updateThermalPrinter;
   const handleDeletePrinter = deletePrinter || deleteThermalPrinter;
 
-  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia' | 'seguridad'>('impresoras');
+  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia' | 'seguridad' | 'usuarios'>('impresoras');
   const [isSaved, setIsSaved] = useState(false);
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -49,6 +52,7 @@ export const SettingsScreen: React.FC = () => {
     try {
       await apiClient.patch('/auth/pin', { currentPin, newPin });
       setCurrentPin(''); setNewPin(''); setRepeatPin(''); setPinSaved(true);
+      logout();
     } catch (error) { setPinError(error instanceof Error ? error.message : 'No se pudo cambiar el PIN.'); }
     finally { setPinBusy(false); }
   };
@@ -225,8 +229,11 @@ export const SettingsScreen: React.FC = () => {
         </button>
         <button type="button" onClick={() => setActiveTab('apariencia')} aria-pressed={activeTab === 'apariencia'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'apariencia' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">palette</span>Apariencia</button>
         {currentUser?.role === 'Administrador' && <button type="button" onClick={() => setActiveTab('seguridad')} aria-pressed={activeTab === 'seguridad'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'seguridad' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">lock</span>Seguridad</button>}
+        {currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <button type="button" onClick={() => setActiveTab('usuarios')} aria-pressed={activeTab === 'usuarios'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${activeTab === 'usuarios' ? 'bg-surface-brand-solid text-ink-on-brand shadow-sm' : 'text-ink-muted-3 hover:text-ink-strong hover:bg-panel-38'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">group</span>Usuarios</button>}
       </div>
 
+      {activeTab === 'usuarios' && currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <UserManagement />}
+      {activeTab === 'seguridad' && currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <SigningKeyManagement />}
       {activeTab === 'seguridad' && currentUser?.role === 'Administrador' && <section className="rounded-2xl border border-outline-variant bg-surface-container-low p-5 space-y-4 max-w-lg">
         <h2 className="text-lg font-bold text-primary">PIN de administrador</h2>
         <p className="text-sm text-on-surface-variant">El PIN personal autoriza correcciones de medios de pago. Cambie el PIN inicial antes de usar esta función.</p>
@@ -432,16 +439,19 @@ export const SettingsScreen: React.FC = () => {
                 <span className="material-symbols-outlined text-[16px]">cloud_sync</span>
                 Forzar Sincronización
               </button>
+              <button onClick={() => setIsOfflineModalOpen(true)} className="mt-2 px-3 py-2 rounded-xl border border-edge-outline-3 text-ink-strong font-bold text-[12px]">
+                Revisar operaciones pendientes
+              </button>
             </div>
           </div>
 
           <div className="bg-panel-29 p-4 rounded-xl border border-edge-outline-3 space-y-2 text-[12px] text-ink-muted-5">
             <h4 className="font-bold text-ink-heading-brand flex items-center gap-1.5">
               <span className="material-symbols-outlined text-[16px] text-ink-gold">verified</span>
-              Garantía de Servicio en Restaurante:
+              Operaciones sin conexión
             </h4>
             <p>
-              Si se produce una caída del proveedor de internet o fallo en el router, los mozos pueden seguir comandando, los cocineros recibiendo tickets y los cajeros cobrando con normalidad. Toda la información queda en el almacenamiento seguro del navegador (IndexedDB) con IDs idempotentes.
+              Las operaciones pendientes se conservan en este equipo y se revisan al recuperar la conexión. La firma requiere HTTPS o acceso por localhost; los conflictos y operaciones sin prueba válida requieren revisión.
             </p>
           </div>
         </div>

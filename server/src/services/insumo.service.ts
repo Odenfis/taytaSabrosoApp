@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { inventoryTransaction, lockInsumos, assertInsumoCompany } from '../lib/inventory.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 import { AppError, plain, toNum } from '../lib/utils.js';
 import { emitInsumoChanged, emitRecipeChanged } from '../lib/realtime.js';
 
@@ -30,7 +31,7 @@ export async function listInsumos(companyId?: string, category?: string, scope?:
   const company = scope || companyId;
   return (await prisma.insumo.findMany({ where: { isDeleted: false, ...(company ? { OR: [{ companyId: company }, { companyId: null }] } : {}), ...(category ? { category } : {}) }, include, orderBy: { code: 'asc' } })).map(present);
 }
-export async function createInsumo(input: z.input<typeof createInsumoSchema>, scope?: string | null) {
+export async function createInsumo(input: z.input<typeof createInsumoSchema>, scope?: string | null, actor?: OperationActor) {
   const { clientOpId: _op, ...data } = createInsumoSchema.parse(input);
   assertInsumoCompany(data.companyId ?? null, scope);
   const id = data.id ?? randomUUID();
@@ -48,11 +49,12 @@ export async function createInsumo(input: z.input<typeof createInsumoSchema>, sc
     while (used.has(`INS-${String(n).padStart(3, '0')}`)) n++;
     await tx.insumo.create({ data: { ...data, id, companyId: data.companyId ?? null, code: `INS-${String(n).padStart(3, '0')}`,
       lastPurchaseDate: data.lastPurchaseDate ?? null, lastPurchaseUtc: null } });
+    await auditOperation(tx, actor, data.companyId ?? 'ambas', 'crear_insumo', id);
     return details(tx, id);
   });
   changed(result, 'create'); return present(result);
 }
-export async function updateInsumo(id: string, input: z.input<typeof updateInsumoSchema>, scope?: string | null) {
+export async function updateInsumo(id: string, input: z.input<typeof updateInsumoSchema>, scope?: string | null, actor?: OperationActor) {
   const { expectedVersion, clientOpId: _op, ...updates } = updateInsumoSchema.parse(input);
   const result = await inventoryTransaction(async (tx) => {
     await lockInsumos(tx, [id]);
@@ -68,6 +70,7 @@ export async function updateInsumo(id: string, input: z.input<typeof updateInsum
     if (baseChanged && !present(current).canEditBase) throw new AppError('Unidad y costo inicial solo se corrigen sin stock ni referencias en compras, recetas o Kardex.', 409, 'INSUMO_BASE_LOCKED');
     if (same) return { insumo: current, recipes: [] };
     await tx.insumo.update({ where: { id }, data: { ...updates, version: { increment: 1 } } });
+    await auditOperation(tx, actor, current.companyId ?? 'ambas', 'actualizar_insumo', id);
     const recipes = updates.name !== undefined && updates.name !== current.name ? current.recipeIngredients.map((i) => i.recipe) : [];
     if (recipes.length) {
       await tx.recipeIngredient.updateMany({ where: { insumoId: id, recipe: { isDeleted: false } }, data: { insumoName: updates.name } });
@@ -82,7 +85,7 @@ export async function updateInsumo(id: string, input: z.input<typeof updateInsum
   }
   return present(result.insumo);
 }
-export async function deleteInsumo(id: string, expectedVersion?: number, scope?: string | null) {
+export async function deleteInsumo(id: string, expectedVersion?: number, scope?: string | null, actor?: OperationActor) {
   const result = await inventoryTransaction(async (tx) => {
     await lockInsumos(tx, [id]); const current = await details(tx, id); assertInsumoCompany(current.companyId, scope);
     if (current.isDeleted) return current;
@@ -90,6 +93,7 @@ export async function deleteInsumo(id: string, expectedVersion?: number, scope?:
     if (toNum(current.currentStock) !== 0) throw new AppError(`Tiene ${current.currentStock} ${current.unit} en stock. Registre el ajuste correspondiente antes de eliminar.`, 409, 'INSUMO_HAS_STOCK');
     if (current.recipeIngredients.length) throw new AppError('Está vinculado a fichas activas: ' + current.recipeIngredients.map((i) => i.recipe.productName).join(', '), 409, 'INSUMO_IN_RECIPES');
     await tx.insumo.update({ where: { id }, data: { isDeleted: true, version: { increment: 1 } } });
+    await auditOperation(tx, actor, current.companyId ?? 'ambas', 'eliminar_insumo', id);
     return details(tx, id);
   });
   changed(result, 'delete'); return present(result);

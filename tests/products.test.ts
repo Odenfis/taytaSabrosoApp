@@ -5,6 +5,7 @@ import { loadQueue } from '../src/lib/offlineQueue';
 import { matchingRecipe } from '../src/lib/recipeMatch';
 import { replayCall } from '../src/lib/replayQueue';
 import { storeAuthToken } from '../src/lib/api';
+import { signReplay } from './replayFixtures';
 import type { Product, Recipe } from '../src/types';
 
 beforeEach(() => {
@@ -88,7 +89,7 @@ test('recetas homónimas respetan vínculo, empresa y fallback único sin víncu
 
 test('replay preserva UUID y convierte 409 en conflicto; 401 conserva cola', async () => {
   storeAuthToken({ token: 'test', expiresAt: new Date(Date.now() + 60000).toISOString() });
-  const op = stageProduct(draft);
+  const op = await signReplay(stageProduct(draft));
   let body: any;
   const fetchMock = mock.method(globalThis, 'fetch', async (_url: any, init: any) => {
     body = JSON.parse(init.body);
@@ -96,6 +97,7 @@ test('replay preserva UUID y convierte 409 en conflicto; 401 conserva cola', asy
   });
   assert.equal((await replayCall(op, op.payload as any)).disposition, 'conflict');
   assert.equal(body.id, (op.payload as any).id);
+  assert.equal(typeof body.__proof?.document, 'string');
   fetchMock.mock.mockImplementation(async () => new Response(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Sesión vencida' } }), { status: 401 }));
   assert.equal((await replayCall(op, op.payload as any)).unauthorized, true);
   assert.equal(loadQueue().length, 1);
@@ -117,7 +119,7 @@ test('ficha pendiente se reconstruye con su producto aunque la caché React no l
 
 test('doble replay de la misma alta comparte una sola solicitud', async () => {
   storeAuthToken({ token: 'test', expiresAt: new Date(Date.now() + 60000).toISOString() });
-  const op = stageProduct(draft);
+  const op = await signReplay(stageProduct(draft));
   const fetchMock = mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ ...draft, id: (op.payload as any).id })));
   const responses = await Promise.all([replayCall(op, op.payload as any), replayCall(op, op.payload as any)]);
   assert.equal(fetchMock.mock.callCount(), 1);

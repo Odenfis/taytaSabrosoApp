@@ -1,3 +1,4 @@
+import { usePermission } from './lib/usePermission';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -24,8 +25,10 @@ import { ShiftModal } from './components/ShiftModal';
 import { PrinterTestModal } from './components/PrinterTestModal';
 import { OfflineModal } from './components/OfflineModal';
 import { ReceiptModal } from './components/ReceiptModal';
+import { canOpenScreen } from './lib/screenAccess';
 
 const MainLayout: React.FC = () => {
+  const can = usePermission();
   const { currentUser, isSessionInitializing, currentScreen } = usePOS();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -69,6 +72,8 @@ const MainLayout: React.FC = () => {
 
         {/* Dynamic Screen Outlet */}
         <div className={`flex-1 flex flex-col overflow-hidden ${!isFullCustomHeader ? 'pt-16' : ''}`}>
+          {!canOpenScreen(currentUser.role, currentScreen) && <div role="alert" className="p-6">Su perfil no tiene acceso a esta pantalla.</div>}
+          {canOpenScreen(currentUser.role, currentScreen) && <>
           {currentScreen === 'mesas' && <TableMapScreen />}
           {currentScreen === 'pedido' && <OrderTakingScreen />}
           {currentScreen === 'cobro' && <PaymentScreen />}
@@ -81,15 +86,16 @@ const MainLayout: React.FC = () => {
           {currentScreen === 'bancos' && <BankAccountsScreen />}
           {currentScreen === 'reportes' && <ReportsScreen />}
           {currentScreen === 'configuracion' && <SettingsScreen />}
+          </>}
         </div>
       </div>
 
       {/* Global Modals for Shift Arqueo, Thermal Printer Diagnostics, Offline Connectivity and Payment Voucher */}
-      <ShiftModal />
-      <PrinterTestModal />
+      {can('cash.close') && <ShiftModal />}
+      {can('printers.manage') && <PrinterTestModal />}
       <OfflineModal />
       {/* Voucher de pago global: sobrevive a cualquier cambio de pantalla. */}
-      <ReceiptModal />
+      {can('payments.read') && <ReceiptModal />}
     </div>
   );
 };

@@ -1,3 +1,7 @@
+import { hasPermission, type PosPermission } from '../../server/src/lib/permissions';
+import { canOpenScreen } from '../lib/screenAccess';
+import { initializeProvenanceReview, requiresProvenanceReview } from '../lib/offlineProvenance';
+import { sessionCacheScope, readSessionCache, writeSessionCache } from '../lib/sessionCache';
 import { resolvePaymentMethod } from '../lib/paymentSelection';
 import { normalizeUnpaidOrder, orderTotalsFromItems } from '../lib/orderTotals';
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, ReactNode } from 'react';
@@ -42,13 +46,13 @@ import {
 } from '../types';
 import { apiClient, ApiError, getAuthToken, storeAuthToken, clearAuthToken, AUTH_REQUIRED_EVENT } from '../lib/api';
 import { getTerminalIdentity } from '../lib/terminal';
-import { type InsumoDraft, isInventoryDependencyIssue, isInsumoOp, insumoIdOf, insumoPending, stageInsumo, stageInsumoDelete, overlayInsumos,
+import { type InsumoDraft, isInventoryDependencyIssue, isInsumoOp, insumoIdOf, insumoPending, stageInsumo, stageInsumoDelete, overlayInsumos as mergeInsumos,
   persistInsumoQueue, markInsumoIssue, insumoIsSending, INSUMO_QUEUE_EVENT } from '../lib/insumoCatalog';
-import { releaseOrderTable, settleOpening, stageOrderOperation } from '../lib/orderLifecycle';
+import { releaseOrderTable, resolvePendingReferences, settleOpening, stageOrderOperation, updateOpeningItems } from '../lib/orderLifecycle';
 import { isCashMovement } from '../lib/finance';
 import { matchingRecipe } from '../lib/recipeMatch';
 import { type ProductDraft, stageProduct, productPending, isProductOp, productIdOf, persistProductQueue,
-  markProductIssue, overlayProducts, overlayRecipes, uuid, validateProduct, PRODUCT_QUEUE_EVENT } from '../lib/productCatalog';
+  markProductIssue, overlayProducts as mergeProducts, overlayRecipes as mergeRecipes, uuid, validateProduct, PRODUCT_QUEUE_EVENT } from '../lib/productCatalog';
 import {
   mapTable,
   mapProduct,
@@ -83,12 +87,19 @@ import {
 import {
   enqueue as enqueueOp,
   loadQueue,
+  saveQueue,
   removeByClientOpId,
   queueCount,
   getPendingTmpIds,
   getPendingCatalogTmpIds,
   updateQueuedPayload,
+  applyResolvedReferences,
+  applyResolutionToQueue,
+  setQueueIdentity,
 } from '../lib/offlineQueue';
+import { recordResolution } from '../lib/offlineResolution';
+import { configureOfflineSigning } from '../lib/offlineSigning';
+import { canReplayAction, pendingAuthorization } from '../lib/offlineAuthorization';
 import {
   replayCall,
   ReplayDisposition,
@@ -136,6 +147,8 @@ interface POSContextType {
   login: (pin: string) => Promise<boolean>;
   logout: () => void;
   // Sync de catálogos (Fase E2) — metadatos para delta-sync posterior (Fase C)
+  cacheScope: string | null;
+  sessionDeviceId: string | null;
   catalogSyncMeta: CatalogSyncMeta;
   isCatalogsLoading: boolean;
   isOperationsLoading: boolean;
@@ -279,6 +292,8 @@ interface POSContextType {
   lastSyncResult: { ok: boolean; ts: number; op: string } | null;
   toggleSimulatedOffline: () => void;
   syncOfflineQueue: () => void;
+  /** Asunción auditada de pendientes firmados por otro usuario o terminal. */
+  assumeOfflineOperation: (clientOpId: string) => void;
   isOfflineModalOpen: boolean;
   setIsOfflineModalOpen: (open: boolean) => void;
   // Notifications & Reset
@@ -308,24 +323,27 @@ const STORAGE_KEYS = {
   CATALOG_META: 'ts_catalog_meta_v2',
 };
 
-function safeParse<T>(key: string, fallback: T): T {
-  try {
-    const saved = localStorage.getItem(key);
-    if (!saved) return fallback;
-    const parsed = JSON.parse(saved);
-    if (Array.isArray(fallback)) {
-      return (Array.isArray(parsed) ? parsed : fallback) as unknown as T;
-    }
-    return (parsed ?? fallback) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const cacheIdentityRef = useRef<{ user: User; deviceId: string; companies: string[] } | null>(null);
+  function visiblePending() {
+    const owner = cacheIdentityRef.current;
+    return owner ? loadQueue().filter(op => op.authorId === owner.user.id && op.deviceId === owner.deviceId
+      && !!op.companyId && owner.companies.includes(op.companyId) && canReplayAction(owner.user.role, op.op)) : [];
+  }
+  function overlayProducts(server: Product[], local: Product[]) { return mergeProducts(server, local, visiblePending()); }
+  function overlayRecipes(server: Recipe[], local: Recipe[]) { return mergeRecipes(server, local, visiblePending()); }
+  function overlayInsumos(server: Insumo[], local: Insumo[]) { return mergeInsumos(server, local, visiblePending()); }
+  const [cacheScope, setCacheScope] = useState<string | null>(null);
+  const cacheScopeRef = useRef<string | null>(null);
+  const sessionGeneration = useRef(0);
+  // Never hydrate the unowned v2 cache. It is retained for recovery only.
+  const safeParse = <T,>(_key: string, fallback: T): T => fallback;
+  useEffect(() => { initializeProvenanceReview(); }, []);
   // La sesión ahora es por token (API real). currentUser se puebla tras login o
   // restauración vía GET /api/auth/me; nunca se confía en localStorage solo.
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Terminal de la sesión: la firma offline se liga a este dispositivo.
+  const [sessionDeviceId, setSessionDeviceId] = useState<string | null>(null);
 
   const [authToken, setAuthToken] = useState<AuthToken | null>(() => getAuthToken());
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -345,7 +363,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [companies, setCompanies] = useState<Company[]>(import.meta.env.PROD ? [] : COMPANIES);
 
   const [activeCompanyId, setActiveCompanyId] = useState<CompanyId | 'todas'>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_COMPANY);
+    const saved = null;
     return (saved as CompanyId | 'todas') || 'el-tayta';
   });
 
@@ -361,14 +379,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return overlayProducts(safeParse(STORAGE_KEYS.PRODUCTS, import.meta.env.PROD ? [] : INITIAL_PRODUCTS), []);
   });
 
-  const [productPendingOps, setProductPendingOps] = useState<PendingOp[]>(productPending);
+  const [productPendingOps, setProductPendingOps] = useState<PendingOp[]>([]);
   const productSyncRequestedRef = useRef(false);
   useEffect(() => {
-    const update = () => { setProductPendingOps(productPending()); syncPendingCount(); };
+    const update = () => { setProductPendingOps(visiblePending().filter(isProductOp)); syncPendingCount(); };
+    update();
     window.addEventListener(PRODUCT_QUEUE_EVENT, update);
     window.addEventListener('storage', update);
     return () => { window.removeEventListener(PRODUCT_QUEUE_EVENT, update); window.removeEventListener('storage', update); };
-  }, []);
+  }, [currentUser, sessionDeviceId]);
 
   const [orders, setOrders] = useState<Record<string, Order>>(() => {
     const stored = safeParse<Record<string, Order>>(STORAGE_KEYS.ORDERS, import.meta.env.PROD ? {} : INITIAL_ORDERS);
@@ -404,6 +423,35 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [paymentMethods, setPaymentMethods] = useState<CustomPaymentMethod[]>(() => {
     return safeParse(STORAGE_KEYS.PAYMENT_METHODS, import.meta.env.PROD ? [] : INITIAL_PAYMENT_METHODS);
   });
+
+  useEffect(() => {
+    if (!currentUser || !authToken || !sessionDeviceId) {
+      setQueueIdentity(null);
+      void configureOfflineSigning(null);
+      return;
+    }
+    setQueueIdentity({ authorId: currentUser.id, deviceId: sessionDeviceId, companyFor: (op) => {
+      const payload = (op.payload ?? {}) as Record<string, unknown>;
+      if (typeof payload.companyId === 'string' && payload.companyId !== 'todas' && payload.companyId !== 'ambas') return payload.companyId;
+      if (typeof payload.orderId === 'string' && orders[payload.orderId]) return orders[payload.orderId].companyId;
+      if (typeof payload.openingClientOpId === 'string') {
+        const opening = loadQueue().find((pending) => pending.clientOpId === payload.openingClientOpId && pending.authorId === currentUser.id);
+        if (opening?.companyId) return opening.companyId;
+      }
+      if (typeof payload.tableId === 'string') return tables.find((table) => table.id === payload.tableId)?.companyId;
+      if (typeof payload.id === 'string' && op.entity === 'catalog') {
+        return products.find((product) => product.id === payload.id)?.companyId ??
+          (insumos.find((insumo) => insumo.id === payload.id && insumo.companyId !== 'ambas')?.companyId as string | undefined);
+      }
+      return undefined;
+    } });
+    void configureOfflineSigning({ userId: currentUser.id, deviceId: sessionDeviceId });
+    // Historic declarations are preserved, never assigned a terminal or a first signature here.
+    return () => {
+      setQueueIdentity(null);
+      void configureOfflineSigning(null);
+    };
+  }, [currentUser, authToken, sessionDeviceId, orders, tables, products, insumos]);
 
   // Turnos por empresa (El cliente sólo maneja 2 turnos: Día y Noche)
   const [companyShifts, setCompanyShifts] = useState<Record<CompanyId, ShiftType>>(() => {
@@ -527,20 +575,69 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return result;
   };
 
+  const activateSessionCache = (user: User | null, deviceId: string | null, companyIds: string[] = []) => {
+    const scope = user ? sessionCacheScope(user, deviceId, companyIds) : null;
+    cacheIdentityRef.current = user && deviceId ? { user, deviceId, companies: companyIds } : null;
+    sessionGeneration.current += 1;
+    cacheScopeRef.current = scope;
+    setCacheScope(scope);
+    const savedCompany = readSessionCache<string | null>(scope, STORAGE_KEYS.ACTIVE_COMPANY, null);
+    setActiveCompanyId((savedCompany && companyIds.includes(savedCompany) ? savedCompany
+      : user?.assignedCompanyId || user?.companyId || companyIds[0] || 'el-tayta') as CompanyId);
+    setCompanyShifts({ 'el-tayta': 'Día', 'el-sabroso': 'Día' });
+    setCompanyShiftOpenedUtc({ 'el-tayta': 0, 'el-sabroso': 0 });
+    setTables(readSessionCache(scope, STORAGE_KEYS.TABLES, []));
+    setOrders(readSessionCache(scope, STORAGE_KEYS.ORDERS, {}));
+    setTransactions(readSessionCache(scope, STORAGE_KEYS.TRANSACTIONS, []));
+    setProducts(readSessionCache(scope, STORAGE_KEYS.PRODUCTS, []));
+    setInsumos(readSessionCache(scope, STORAGE_KEYS.INSUMOS, []));
+    setRecipes(readSessionCache(scope, STORAGE_KEYS.RECIPES, []));
+    setPurchases(readSessionCache(scope, STORAGE_KEYS.PURCHASES, []));
+    setKardexMovements(readSessionCache(scope, STORAGE_KEYS.KARDEX, []));
+    setBankAccounts(readSessionCache(scope, STORAGE_KEYS.BANK_ACCOUNTS, []));
+    setPaymentMethods(readSessionCache(scope, STORAGE_KEYS.PAYMENT_METHODS, []));
+    setShiftRecords(readSessionCache(scope, STORAGE_KEYS.SHIFT_RECORDS, []));
+    setPrinters(readSessionCache(scope, STORAGE_KEYS.PRINTERS, []));
+    setCatalogSyncMeta(readSessionCache(scope, STORAGE_KEYS.CATALOG_META, {}));
+    setSelectedTableId(null);
+    setLastCompletedOrder(null);
+    setIsReceiptModalOpen(false);
+    setIsOfflineModalOpen(false);
+    setLastPrintedTicket(null);
+    setPendingKitchenConfirm(null);
+    setCatalogTarget(null);
+    setNotifications([]);
+    setCompanyShiftCash({ 'el-tayta': 0, 'el-sabroso': 0 });
+    tmpOrderItemsRef.current = {};
+    tmpOrderOpRef.current = {};
+    closedOrderIdsRef.current.clear();
+  };
+
+  const can = (permission: PosPermission) => hasPermission(cacheIdentityRef.current?.user.role, permission);
+  const permittedRead = <T,>(permission: PosPermission, path: string): Promise<T> =>
+    can(permission) ? apiClient.get<T>(path) : Promise.resolve([] as T);
+  const allowAction = (permission: PosPermission): boolean => {
+    if (can(permission)) return true;
+    addNotification('Acción no permitida', 'Su perfil no tiene permiso para esta acción.', 'warning');
+    return false;
+  };
+
   // Descarga todos los catálogos del API y los aplica al estado (Fase E2, solo lectura).
   // Sin filtro companyId: trae AMBAS empresas para que el modo "todas" y el switcher
   // sigan funcionando client-side. Falla parcial → conserva el dato actual (mock/cache).
   const loadCatalogs = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     setIsCatalogsLoading(true);
     const results = await Promise.allSettled([
-      apiClient.get<TableDTO[]>('/catalogs/tables'),
-      apiClient.get<ProductDTO[]>('/catalogs/products'),
-      apiClient.get<InsumoDTO[]>('/catalogs/insumos'),
-      apiClient.get<RecipeDTO[]>('/catalogs/recipes'),
-      apiClient.get<BankAccountDTO[]>('/catalogs/bank-accounts'),
-      apiClient.get<CustomPaymentMethodDTO[]>('/catalogs/payment-methods'),
-      apiClient.get<PrinterDTO[]>('/catalogs/printers'),
+      permittedRead<TableDTO[]>('tables.read', '/catalogs/tables'),
+      permittedRead<ProductDTO[]>('products.sale_read', '/catalogs/products'),
+      permittedRead<InsumoDTO[]>('inventory.read', '/catalogs/insumos'),
+      permittedRead<RecipeDTO[]>('recipes.manage', '/catalogs/recipes'),
+      permittedRead<BankAccountDTO[]>('banks.manage', '/catalogs/bank-accounts'),
+      permittedRead<CustomPaymentMethodDTO[]>('payments.read', '/catalogs/payment-methods'),
+      permittedRead<PrinterDTO[]>('printers.read', '/catalogs/printers'),
     ]);
+    if (ownerGeneration !== sessionGeneration.current) return;
     setIsCatalogsLoading(false);
 
     const metaUpdates: CatalogSyncMeta = {};
@@ -636,15 +733,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // UUID para clientOpId (idempotencia / cola de sync). Fallback portable.
+  // UUID para clientOpId (idempotencia / cola de sync). Siempre RFC 4122 v4:
+  // la firma offline y el servidor validan el formato.
   const newUuid = (): string => {
+    let bytes: Uint8Array;
     try {
-      const c = globalThis.crypto;
-      if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+      const provider = globalThis.crypto;
+      if (provider && typeof provider.randomUUID === 'function') return provider.randomUUID();
+      if (provider && typeof provider.getRandomValues === 'function') {
+        bytes = provider.getRandomValues(new Uint8Array(16));
+      } else {
+        bytes = Uint8Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+      }
     } catch {
-      /* ignore */
+      bytes = Uint8Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
     }
-    return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   };
 
   // Ítems agregados a una orden temporal (apertura en curso) para flushear al server al resolver.
@@ -667,11 +774,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ? { ...t, currentOrderId: dto.id, status: 'ocupada', waiter: dto.waiter } : t));
   };
 
-  const finishOpening = async (dto: OrderDTO, tmpOrderId: string, tmpTableId?: string): Promise<OrderDTO | null> => {
-    const desiredItems = () => tmpOrderItemsRef.current[tmpOrderId] ?? ordersRef.current[tmpOrderId]?.items ?? [];
+  const finishOpening = async (dto: OrderDTO, tmpOrderId: string, tmpTableId?: string, assume = false): Promise<OrderDTO | null> => {
+    const desiredItems = () => {
+      const queued = loadQueue().find(op => (op.payload as Record<string, unknown>)?.tmpOrderId === tmpOrderId);
+      const items = (queued?.payload as { items?: OrderItem[] } | undefined)?.items;
+      const desired = items ?? tmpOrderItemsRef.current[tmpOrderId] ?? ordersRef.current[tmpOrderId]?.items;
+      if (!desired) throw new Error('No se pudo recuperar el detalle de la apertura; se conserva para revisión.');
+      return desired;
+    };
     const openingClientOpId = tmpOrderOpRef.current[tmpOrderId] ?? loadQueue().find((op) => (op.payload as Record<string, unknown>)?.tmpOrderId === tmpOrderId)?.clientOpId ?? dto.clientOpId;
     if (!openingClientOpId) throw new Error('La apertura no tiene identificador.');
-    const settled = await settleOpening(openingClientOpId, desiredItems);
+    const settled = await settleOpening(openingClientOpId, desiredItems, assume);
     if (settled.cancelled || !settled.order) {
       if (settled.order) reconcileOrderResult(settled.order);
       setOrders((prev) => { const next = { ...prev }; delete next[tmpOrderId]; return next; });
@@ -712,7 +825,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Guard de replay: evita corridas concurrentes (eventos online + toggle + montaje).
   const isReplayingRef = useRef(false);
   // Ref de la función de replay para usarla desde listeners estables (evento online/offline).
-  const replayRef = useRef<() => void>(() => {});
+  const replayRef = useRef<(assume?: boolean) => void>(() => {});
   // Ref de loadOperations para refrescar al terminar el replay sin dependencias viejas.
   const loadOperationsRef = useRef<() => Promise<void>>(() => Promise.resolve());
   // Ref de loadCatalogs para el resync al reconectar el socket (tablas).
@@ -728,40 +841,50 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Refreshers granulares de operaciones (el server hace efectos colaterales: Kardex, libros, saldos).
   const refreshKardex = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     try {
-      const dtos = await apiClient.get<KardexMovementDTO[]>('/operations/kardex');
+      const dtos = await permittedRead<KardexMovementDTO[]>('inventory.read', '/operations/kardex');
+      if (ownerGeneration !== sessionGeneration.current) return;
       setKardexMovements(dtos.map(mapKardexMovement));
     } catch {
       /* conservar lo local */
     }
   };
   const refreshInsumos = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     try {
-      const dtos = await apiClient.get<InsumoDTO[]>('/catalogs/insumos');
+      const dtos = await permittedRead<InsumoDTO[]>('inventory.read', '/catalogs/insumos');
+      if (ownerGeneration !== sessionGeneration.current) return;
       setInsumos((prev) => overlayInsumos(dtos.map(mapInsumo), prev));
     } catch {
       /* conservar lo local */
     }
   };
   const refreshTransactions = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     try {
-      const dtos = await apiClient.get<TransactionDTO[]>('/operations/transactions');
+      const dtos = await permittedRead<TransactionDTO[]>('cash.read', '/operations/transactions');
+      if (ownerGeneration !== sessionGeneration.current) return;
       setTransactions(dtos.map(mapTransaction));
     } catch {
       /* conservar lo local */
     }
   };
   const refreshBankAccounts = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     try {
-      const dtos = await apiClient.get<BankAccountDTO[]>('/catalogs/bank-accounts');
+      const dtos = await permittedRead<BankAccountDTO[]>('banks.manage', '/catalogs/bank-accounts');
+      if (ownerGeneration !== sessionGeneration.current) return;
       setBankAccounts(dtos.map(mapBankAccount));
     } catch {
       /* conservar lo local */
     }
   };
   const refreshShiftRecords = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     try {
-      const dtos = await apiClient.get<ShiftRecordDTO[]>('/operations/shifts/records');
+      const dtos = await permittedRead<ShiftRecordDTO[]>('cash.read', '/operations/shifts/records');
+      if (ownerGeneration !== sessionGeneration.current) return;
       setShiftRecords(dtos.map(mapShiftRecord));
     } catch {
       /* conservar lo local */
@@ -771,14 +894,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Hidrata las operaciones reales del API (órdenes activas, compras, kardex, turnos y caja).
   // Fuego parcial → conserva lo local + warning.
   const loadOperations = async (): Promise<void> => {
+    const ownerGeneration = sessionGeneration.current;
     setIsOperationsLoading(true);
     const results = await Promise.allSettled([
-      apiClient.get<OrderDTO[]>('/operations/orders/active'),
-      apiClient.get<PurchaseDTO[]>('/operations/purchases'),
-      apiClient.get<KardexMovementDTO[]>('/operations/kardex'),
-      apiClient.get<ShiftRecordDTO[]>('/operations/shifts/records'),
-      apiClient.get<TransactionDTO[]>('/operations/transactions'),
+      permittedRead<OrderDTO[]>('orders.read', '/operations/orders/active'),
+      permittedRead<PurchaseDTO[]>('purchases.read', '/operations/purchases'),
+      permittedRead<KardexMovementDTO[]>('inventory.read', '/operations/kardex'),
+      permittedRead<ShiftRecordDTO[]>('cash.read', '/operations/shifts/records'),
+      permittedRead<TransactionDTO[]>('cash.read', '/operations/transactions'),
     ]);
+    if (ownerGeneration !== sessionGeneration.current) return;
     setIsOperationsLoading(false);
 
     let failedCount = 0;
@@ -825,20 +950,36 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // el toggle a online funcione aunque el estado React aún no se aplicó.
   const catalogRefreshGeneration = useRef(0);
   const refreshProductCatalog = async () => {
+    const ownerGeneration = sessionGeneration.current;
     const generation = ++catalogRefreshGeneration.current;
     const [productDTOs, recipeDTOs] = await Promise.all([
-      apiClient.get<ProductDTO[]>('/catalogs/products'), apiClient.get<RecipeDTO[]>('/catalogs/recipes'),
+      permittedRead<ProductDTO[]>('products.sale_read', '/catalogs/products'), permittedRead<RecipeDTO[]>('recipes.manage', '/catalogs/recipes'),
     ]);
-    if (generation !== catalogRefreshGeneration.current) return;
+    if (generation !== catalogRefreshGeneration.current || ownerGeneration !== sessionGeneration.current) return;
     setProducts((prev) => overlayProducts(productDTOs.map(mapProduct), prev));
     setRecipes((prev) => overlayRecipes(recipeDTOs.map(mapRecipe), prev));
   };
   const refreshProductCatalogRef = useRef(refreshProductCatalog);
   refreshProductCatalogRef.current = refreshProductCatalog;
 
-  const syncProductOperation = async (op: PendingOp): Promise<'saved' | 'queued'> => {
-    if (op.conflict || op.error) return 'queued';
-    const result = await replayCall(op, op.payload as Record<string, unknown>);
+  // Solo el administrador global (sin empresa asignada) puede asumir la
+  // autoría de una operación firmada por otro usuario o en otra terminal.
+  const isGlobalAdministrator = (): boolean =>
+    !!currentUser && currentUser.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId;
+
+  const mayReplayPending = (op: PendingOp, assume = false): boolean => {
+    const persisted = loadQueue().find((item) => item.clientOpId === op.clientOpId);
+    if (!persisted) return false;
+    if (assume) return isGlobalAdministrator() && !!persisted.companyId;
+    if (requiresProvenanceReview(op.clientOpId)) return false;
+    return !!currentUser && !!persisted.deviceId && persisted.deviceId === sessionDeviceId && pendingAuthorization(persisted, {
+      userId: currentUser.id, authorizedCompanyIds: companies.map((company) => company.id), canPerformAction: canReplayAction(currentUser.role, persisted.op),
+    }) === 'author';
+  };
+
+  const syncProductOperation = async (op: PendingOp, assume = false): Promise<'saved' | 'queued'> => {
+    if ((!assume && (op.conflict || op.error)) || !mayReplayPending(op, assume)) return 'queued';
+    const result = await replayCall(op, op.payload as Record<string, unknown>, { assume });
     if (result.disposition === 'ok') {
       persistProductQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
       const server = mapProduct(result.data as ProductDTO);
@@ -853,7 +994,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const saveProduct = async (draft: ProductDraft, id?: string, expectedVersion?: number): Promise<'saved' | 'queued'> => {
+    if (!can('products.manage')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     if (id && productIsSending(id)) throw new Error('El producto se está sincronizando. Espere un momento.');
+    const priorPending = id && loadQueue().find((op) => isProductOp(op) && productIdOf(op) === id);
+    if (priorPending && !mayReplayPending(priorPending)) throw new Error('El cambio pendiente pertenece a otro usuario o necesita revisión.');
     const current = id ? products.find((p) => p.id === id) : undefined;
     if (current && current.companyId !== draft.companyId) throw new Error('No se puede cambiar la empresa de un producto existente.');
     const op = stageProduct(draft, current && expectedVersion !== undefined ? { ...current, version: expectedVersion } : current, id);
@@ -870,14 +1014,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const resolveProductConflict = async (id: string, choice: 'server' | 'local') => {
+    if (!can('products.manage')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     if (offlineState.isSimulatedOffline) throw new Error('Restablezca la conexión para revisar el producto.');
     if (productIsSending(id)) throw new Error('Espere a que termine la sincronización.');
-    const all = await apiClient.get<ProductDTO[]>('/catalogs/products');
+    const all = await permittedRead<ProductDTO[]>('products.sale_read', '/catalogs/products');
     const server = all.map(mapProduct).find((p) => p.id === id);
     if (!server) throw new Error('El producto fue retirado del servidor. Revise su uso antes de descartar el cambio.');
     const queue = loadQueue();
     const op = queue.find((item) => isProductOp(item) && productIdOf(item) === id);
     if (!op) { await refreshProductCatalog(); return; }
+    if (!mayReplayPending(op)) throw new Error('Este pendiente pertenece a otro usuario o requiere revisión por el administrador.');
     if (server.companyId !== (op.payload as ProductDraft).companyId) throw new Error('La empresa del producto no coincide.');
     const next = choice === 'server' ? queue.filter((item) => item.clientOpId !== op.clientOpId)
       : queue.map((item) => item.clientOpId !== op.clientOpId ? item : { ...item, op: 'updateProduct',
@@ -889,10 +1035,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     replayRef.current();
   };
 
-  const replayOfflineQueue = async (): Promise<void> => {
+  const replayOfflineQueue = async (assume = false, selectedId?: string): Promise<void> => {
     if (isReplayingRef.current) return;
+    // Restaura la resolución de identificadores temporales confirmada en otras
+    // corridas: una interrupción no deja operaciones con ids huérfanos.
+    applyResolvedReferences();
     // Las altas deben existir antes de que una apertura haga flush de sus ítems.
-    const queue = loadQueue().sort((a, b) => Number(['createProduct', 'createInsumo'].includes(b.op)) - Number(['createProduct', 'createInsumo'].includes(a.op)));
+    let queue = loadQueue().sort((a, b) => Number(['createProduct', 'createInsumo'].includes(b.op)) - Number(['createProduct', 'createInsumo'].includes(a.op)));
+    if (assume && selectedId) {
+      if (queue[0]?.clientOpId !== selectedId) {
+        addNotification('Operación pendiente anterior', 'Revise primero la operación que precede a esta en la cola.', 'warning');
+        return;
+      }
+      queue = queue.slice(0, 1);
+    } else if (assume) return;
     if (queue.length === 0) {
       syncPendingCount();
       return;
@@ -979,52 +1135,52 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     for (const opItem of queue) {
       if (activeOrderRequestsRef.current.has(opItem.clientOpId) || !loadQueue().some((op) => op.clientOpId === opItem.clientOpId)) continue;
+      if (!mayReplayPending(opItem, assume)) {
+        stuck++;
+        addNotification(
+          'Operación pendiente de revisión',
+          assume
+            ? 'Solo un administrador global puede asumir esta operación, y debe tener empresa declarada.'
+            : 'Falta el autor, la empresa o la terminal de origen, o la operación pertenece a otro usuario. Un administrador global puede asumirla desde el panel offline.',
+          'warning'
+        );
+        break;
+      }
       if (isInsumoOp(opItem)) {
-        if (await syncInsumoOperation(opItem) === 'saved') synced++;
+        if (await syncInsumoOperation(opItem, assume) === 'saved') synced++;
         else { stuck++; needsAuthentication = !getAuthToken(); break; }
         continue;
       }
       if (isProductOp(opItem)) {
         const fresh = loadQueue().find((op) => op.clientOpId === opItem.clientOpId);
         if (!fresh) continue;
-        if (await syncProductOperation(fresh) === 'saved') synced++;
+        if (await syncProductOperation(fresh, assume) === 'saved') synced++;
         else { stuck++; needsAuthentication = !getAuthToken(); break; }
         continue;
       }
-      if (opItem.conflict || opItem.error) { stuck++; break; }
-      const payload = { ...((opItem.payload ?? {}) as Record<string, unknown>) };
-      if (typeof payload.orderId === 'string' && tmpToOrder.has(payload.orderId)) {
-        payload.orderId = tmpToOrder.get(payload.orderId);
-      }
-      if (typeof payload.tableId === 'string' && tmpToTable.has(payload.tableId)) {
-        payload.tableId = tmpToTable.get(payload.tableId);
+      if (!assume && (opItem.conflict || opItem.error)) { stuck++; break; }
+      const payload = resolvePendingReferences((opItem.payload ?? {}) as Record<string, unknown>, tmpToOrder, tmpToTable);
+      if (!payload) {
+        markInsumoIssue(opItem, 'La operación depende de una mesa o pedido temporal sin referencia confirmada. Revísela antes de sincronizar.');
+        stuck++; break;
       }
 
       if (
         deadTmpOrder.has(payload.orderId as string) ||
         deadTmpTable.has(payload.tableId as string)
       ) {
-        removeByClientOpId(opItem.clientOpId);
-        dropped += 1;
-        continue;
+        markInsumoIssue(opItem, 'La operación depende de una apertura cancelada. Revísela antes de descartarla.');
+        stuck++; break;
       }
 
       if (opItem.op === 'openOrder' || opItem.op === 'quickOrder') {
         const tmpOrderId = payload.tmpOrderId as string;
         const tmpTableId = (payload.tmpTableId as string) ?? undefined;
-        const tmpOrder = tmpOrderId ? ordersRef.current[tmpOrderId] : undefined;
-        if (!tmpOrder) {
-          // La apertura pudo llegar al servidor aunque se perdiera su respuesta.
-          const cancelled = await replayCall({ ...opItem, op: 'cancelOpening' }, { openingClientOpId: opItem.clientOpId });
-          if (cancelled.disposition === 'retry') { stuck++; needsAuthentication = cancelled.unauthorized === true; break; }
-          if (cancelled.disposition === 'ok' && (cancelled.data as OrderDTO)?.id) reconcileOrderResult(cancelled.data as OrderDTO);
-          deadTmpOrder.add(tmpOrderId);
-          if (tmpTableId) deadTmpTable.add(tmpTableId);
-          removeByClientOpId(opItem.clientOpId);
-          dropped += 1;
-          continue;
+        if (!Array.isArray(payload.items)) {
+          markInsumoIssue(opItem, 'Apertura antigua sin detalle recuperable. Se conserva para revisión; no se cancelará automáticamente.');
+          stuck++; break;
         }
-        const result = await replayCall(opItem, payload);
+        const result = await replayCall(opItem, payload, { assume });
         if (result.disposition === 'retry') {
           stuck += 1;
           stuckNetwork = stuckNetwork || result.network === true;
@@ -1032,26 +1188,33 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           break;
         }
         if (result.disposition !== 'ok') {
-          removeByClientOpId(opItem.clientOpId);
-          dropped += 1;
-          if (result.disposition === 'business' && result.message) {
-            addNotification('Replay omitido', `${opItem.op}: ${result.message}`, 'warning');
-          }
-          continue;
+          markInsumoIssue(opItem, result.message ?? 'Revise la apertura antes de continuar.');
+          stuck++; break;
         }
         const serverOrder = mapOrder(result.data as OrderDTO);
         tmpToOrder.set(tmpOrderId, serverOrder.id);
         if (tmpTableId) tmpToTable.set(tmpTableId, serverOrder.tableId);
-        await finishOpening(result.data as OrderDTO, tmpOrderId, tmpTableId);
+        // La asociación temporal ↔ real queda guardada en este equipo: las
+        // operaciones que dependían de la apertura siguen siendo resolubles
+        // aunque el replay se interrumpa aquí.
+        recordResolution(tmpOrderId, {
+          openingClientOpId: opItem.clientOpId,
+          orderId: serverOrder.id,
+          tableId: serverOrder.tableId,
+          tmpTableId,
+          companyId: opItem.companyId,
+        });
+        applyResolutionToQueue(tmpOrderId, { orderId: serverOrder.id, tableId: serverOrder.tableId });
+        await finishOpening(result.data as OrderDTO, tmpOrderId, tmpTableId, assume);
         removeByClientOpId(opItem.clientOpId);
         synced += 1;
         setLastSyncResult({ ok: true, ts: Date.now(), op: opItem.op });
         continue;
       }
 
-      const result = await replayCall(opItem, payload);
+      const result = await replayCall(opItem, payload, { assume });
       if (result.disposition === 'conflict') {
-        markInsumoIssue(opItem, result.message ?? 'Revise el insumo vinculado a esta operación.');
+        markInsumoIssue(opItem, result.message ?? 'Revise los permisos y datos de esta operación.');
         addNotification('Operación pendiente de revisión', result.message ?? opItem.op, 'warning');
         stuck++; break;
       }
@@ -1087,13 +1250,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         stuckNetwork = stuckNetwork || result.network === true;
         needsAuthentication = result.unauthorized === true;
         break;
-      } else if (result.disposition === 'business') {
-        removeByClientOpId(opItem.clientOpId);
-        dropped += 1;
-        addNotification('Replay omitido', `${opItem.op}: ${result.message}`, 'warning');
       } else {
-        removeByClientOpId(opItem.clientOpId);
-        dropped += 1;
+        markInsumoIssue(opItem, result.message ?? 'No se pudo confirmar el resultado; requiere revisión.');
+        stuck++; break;
       }
     }
 
@@ -1144,8 +1303,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Replay siempre apunta a la versión más reciente de la función (listeners estables).
-  replayRef.current = () => {
-    void replayOfflineQueue();
+  replayRef.current = (assume = false) => {
+    void replayOfflineQueue(assume);
   };
 
   // Write-through unificado (contrato de sync mínimo, E3):
@@ -1233,7 +1392,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       disconnectRealtime();
       setRealtimeStatus('disconnected');
       setAuthToken(null);
+      activateSessionCache(null, null);
       setCurrentUser(null);
+      setSessionDeviceId(null);
       setCurrentScreen('mesas');
       setSelectedTableId(null);
       setAuthNotice((event as CustomEvent<{ message: string }>).detail.message);
@@ -1247,7 +1408,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const auth = getAuthToken();
     if (!auth) {
       setAuthToken(null);
+      activateSessionCache(null, null);
       setCurrentUser(null);
+      setSessionDeviceId(null);
       setIsSessionInitializing(false);
       return;
     }
@@ -1256,7 +1419,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       .get<MeResponse>('/auth/me')
       .then((res) => {
         if (cancelled) return;
+        activateSessionCache(res.user, res.deviceId ?? null, res.companies.map(c => c.id));
         setCurrentUser(res.user);
+        setSessionDeviceId(res.deviceId ?? null);
         setCompanies(res.companies);
         setCompanyShifts(mapCompanyShifts(res.companyShifts));
         setCompanyShiftCash(mapCompanyShiftCash(res.companyShifts));
@@ -1269,7 +1434,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (err instanceof ApiError && err.isUnauthorized) {
           clearAuthToken();
           setAuthToken(null);
+          activateSessionCache(null, null);
           setCurrentUser(null);
+          setSessionDeviceId(null);
         }
       })
       .finally(() => {
@@ -1295,10 +1462,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   useEffect(() => {
-    if (currentUser && offlineState.isOnline && !offlineState.isSimulatedOffline) {
+    if (currentUser && sessionDeviceId && offlineState.isOnline && !offlineState.isSimulatedOffline) {
       void replayRef.current();
     }
-  }, [currentUser, offlineState.isOnline, offlineState.isSimulatedOffline]);
+  }, [currentUser, sessionDeviceId, offlineState.isOnline, offlineState.isSimulatedOffline]);
 
   // Tiempo real (Fase D acotada): handlers estables que delegan vía refs.
   // - table:changed → merge de mesa (sin pisar mis tmps offline) + fetch de la
@@ -1322,7 +1489,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (e.status === 'libre' && e.sourceOrderId && local?.currentOrderId && local.currentOrderId !== e.sourceOrderId) return;
     if (!local) {
       if (e.companyId !== activeCompanyId && activeCompanyId !== 'todas') return;
-      void apiClient.get<TableDTO[]>('/catalogs/tables').then((rows) => {
+      void permittedRead<TableDTO[]>('tables.read', '/catalogs/tables').then((rows) => {
         const found = rows.find((row) => row.id === e.tableId);
         if (found) setTables((prev) => prev.some((t) => t.id === found.id) ? prev : [...prev, mapTable(found)]);
       }).catch(() => undefined);
@@ -1616,68 +1783,68 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Sync to Local Storage
   useEffect(() => {
-    if (currentUser) localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(currentUser));
+    if (currentUser) writeSessionCache(cacheScope, STORAGE_KEYS.USER, currentUser);
     else localStorage.removeItem(STORAGE_KEYS.USER);
   }, [currentUser]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_COMPANY, activeCompanyId);
+    writeSessionCache(cacheScope, STORAGE_KEYS.ACTIVE_COMPANY, activeCompanyId);
   }, [activeCompanyId]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TABLES, JSON.stringify(tables));
+    writeSessionCache(cacheScope, STORAGE_KEYS.TABLES, tables);
   }, [tables]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders));
+    writeSessionCache(cacheScope, STORAGE_KEYS.ORDERS, orders);
   }, [orders]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(transactions));
+    writeSessionCache(cacheScope, STORAGE_KEYS.TRANSACTIONS, transactions);
   }, [transactions]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products));
+    writeSessionCache(cacheScope, STORAGE_KEYS.PRODUCTS, products);
   }, [products]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.INSUMOS, JSON.stringify(insumos));
+    writeSessionCache(cacheScope, STORAGE_KEYS.INSUMOS, insumos);
   }, [insumos]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.RECIPES, JSON.stringify(recipes));
+    writeSessionCache(cacheScope, STORAGE_KEYS.RECIPES, recipes);
   }, [recipes]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PURCHASES, JSON.stringify(purchases));
+    writeSessionCache(cacheScope, STORAGE_KEYS.PURCHASES, purchases);
   }, [purchases]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.KARDEX, JSON.stringify(kardexMovements));
+    writeSessionCache(cacheScope, STORAGE_KEYS.KARDEX, kardexMovements);
   }, [kardexMovements]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.BANK_ACCOUNTS, JSON.stringify(bankAccounts));
+    writeSessionCache(cacheScope, STORAGE_KEYS.BANK_ACCOUNTS, bankAccounts);
   }, [bankAccounts]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PAYMENT_METHODS, JSON.stringify(paymentMethods));
+    writeSessionCache(cacheScope, STORAGE_KEYS.PAYMENT_METHODS, paymentMethods);
   }, [paymentMethods]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(companyShifts));
+    writeSessionCache(cacheScope, STORAGE_KEYS.SHIFTS, companyShifts);
   }, [companyShifts]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SHIFT_RECORDS, JSON.stringify(shiftRecords));
+    writeSessionCache(cacheScope, STORAGE_KEYS.SHIFT_RECORDS, shiftRecords);
   }, [shiftRecords]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PRINTERS, JSON.stringify(printers));
+    writeSessionCache(cacheScope, STORAGE_KEYS.PRINTERS, printers);
   }, [printers]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CATALOG_META, JSON.stringify(catalogSyncMeta));
+    writeSessionCache(cacheScope, STORAGE_KEYS.CATALOG_META, catalogSyncMeta);
   }, [catalogSyncMeta]);
 
   // Notifications helper
@@ -1712,7 +1879,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       storeAuthToken({ token: res.token, expiresAt: res.expiresAt });
       setAuthToken({ token: res.token, expiresAt: res.expiresAt });
+      activateSessionCache(res.user, res.device.id, res.companies.map(c => c.id));
       setCurrentUser(res.user);
+      setSessionDeviceId(res.device.id);
       setAuthNotice(null);
       setCompanies(res.companies);
       setCompanyShifts(mapCompanyShifts(res.companyShifts));
@@ -1721,7 +1890,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       // Mantiene la empresa activa si sigue existiendo; si no, prioriza la
       // empresa asignada al usuario (o la primera del catálogo).
-      const savedCompany = localStorage.getItem(STORAGE_KEYS.ACTIVE_COMPANY) as
+      const savedCompany = readSessionCache(cacheScopeRef.current, STORAGE_KEYS.ACTIVE_COMPANY, null) as
         | CompanyId
         | 'todas'
         | null;
@@ -1764,7 +1933,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setRealtimeStatus('disconnected');
     clearAuthToken();
     setAuthToken(null);
+    activateSessionCache(null, null);
     setCurrentUser(null);
+    setSessionDeviceId(null);
     setCurrentScreen('mesas');
     setSelectedTableId(null);
     setAuthNotice('Sesión cerrada en este equipo. Confirmando el cierre en el servidor…');
@@ -1928,11 +2099,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } else if (table.status === 'ocupada') {
       setCurrentScreen('pedido');
     } else if (table.status === 'por_cobrar') {
-      setCurrentScreen('cobro');
+      setCurrentScreen(can('payments.collect') ? 'cobro' : 'pedido');
     }
   };
 
   const openQuickOrder = (zone: Zone = 'Barra') => {
+    if (!allowAction('orders.modify')) return;
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
     if ((zone === 'Delivery' || zone === 'Llevar') && compId !== 'el-tayta') return;
     const service = zone === 'Delivery' || zone === 'Llevar';
@@ -1966,8 +2138,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // Los ítems de una apertura temporal se guardan dentro de la operación de
+  // apertura encolada: así la firma los cubre y sobreviven a una recarga o a
+  // una interrupción del replay.
+  const persistOpeningItems = (orderId: string, items: OrderItem[]) => {
+    const openingClientOpId = tmpOrderOpRef.current[orderId]
+      ?? loadQueue().find((op) => (op.payload as Record<string, unknown>)?.tmpOrderId === orderId)?.clientOpId;
+    if (!openingClientOpId) return;
+    try {
+      updateOpeningItems(openingClientOpId, items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        notes: item.notes || undefined,
+      })));
+    } catch {
+      // La apertura pertenece a otra terminal: su firma original manda.
+    }
+  };
+
   // Add Item to Order
   const addItemToOrder = (tableId: string, product: Product, notes: string = '') => {
+    if (!allowAction('orders.modify')) return;
     const targetTable = tables.find((t) => t.id === tableId);
     const currentProduct = products.find((p) => p.id === product.id);
     if (!currentProduct?.available || currentProduct.isDeleted || currentProduct.companyId !== targetTable?.companyId) {
@@ -2020,11 +2211,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addedAt: timeStr,
       };
       const createdOrder = recalculateOrder({ ...baseOrder, items: [firstItem] });
+      const openingItems = [{ productId: firstItem.productId, quantity: firstItem.quantity, notes: firstItem.notes || undefined }];
       orderId = tmpOrderId;
       currentOrder = createdOrder;
       const openingOp: PendingOp = { clientOpId: tmpClientOpId, entity: 'order', op: isExpressTmp ? 'quickOrder' : 'openOrder',
-        payload: isExpressTmp ? { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId }
-          : { tableId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId }, createdAt: new Date().toISOString() };
+        payload: isExpressTmp ? { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId, items: openingItems }
+          : { tableId, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, items: openingItems }, createdAt: new Date().toISOString() };
       try { stageOrderOperation(openingOp); }
       catch (error) { addNotification('No se pudo guardar el pedido', (error as Error).message, 'warning'); return; }
       syncPendingCount();
@@ -2050,7 +2242,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           clientOpId: tmpClientOpId,
           entity: 'order',
           op: 'quickOrder',
-          queuePayload: { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId },
+          queuePayload: { companyId: table.companyId, zone: table.zone, waiter: waiterName, clientOpId: tmpClientOpId, tmpOrderId, tmpTableId: tableId, items: openingItems },
           endpointOp: async () => {
             const res = await apiClient.post<OrderDTO>('/operations/orders/quick-bar', {
               companyId: table.companyId,
@@ -2082,7 +2274,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         clientOpId: tmpClientOpId,
         entity: 'order',
         op: 'openOrder',
-        queuePayload: { tableId, waiter: createdOrder.waiter, clientOpId: tmpClientOpId, tmpOrderId },
+        queuePayload: { tableId, waiter: createdOrder.waiter, clientOpId: tmpClientOpId, tmpOrderId, items: openingItems },
         endpointOp: async () => {
           const res = await apiClient.post<OrderDTO>('/operations/orders/open', {
             tableId,
@@ -2192,6 +2384,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
     } else if (orderId) {
       tmpOrderItemsRef.current[orderId] = updatedOrder.items;
+      persistOpeningItems(orderId, updatedOrder.items);
     }
   };
 
@@ -2250,6 +2443,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateItemQuantity = (tableId: string, itemId: string, delta: number) => {
+    if (!allowAction('orders.modify')) return;
     const table = tables.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return;
 
@@ -2337,7 +2531,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
-    if (orderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[orderId] = updatedItems;
+    if (orderId.startsWith('order-tmp-')) {
+      tmpOrderItemsRef.current[orderId] = updatedItems;
+      persistOpeningItems(orderId, updatedItems);
+    }
     setOrders((prev) => ({ ...prev, [orderId]: updatedOrder }));
 
     // Write-through (Fase E3): solo si la orden ya existe en el server.
@@ -2362,6 +2559,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateItemNotes = (tableId: string, itemId: string, notes: string) => {
+    if (!allowAction('orders.modify')) return;
     const table = tables.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return;
 
@@ -2373,7 +2571,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
 
     const updatedOrder = { ...currentOrder, items: updatedItems };
-    if (table.currentOrderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[table.currentOrderId] = updatedItems;
+    if (table.currentOrderId.startsWith('order-tmp-')) {
+      tmpOrderItemsRef.current[table.currentOrderId] = updatedItems;
+      persistOpeningItems(table.currentOrderId, updatedItems);
+    }
     setOrders((prev) => ({ ...prev, [table.currentOrderId!]: updatedOrder }));
     addNotification('Nota actualizada', 'Nota guardada para el pedido.', 'info');
 
@@ -2406,6 +2607,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const removeItemFromOrder = (tableId: string, itemId: string) => {
+    if (!allowAction('orders.modify')) return;
     const table = tables.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return;
 
@@ -2472,7 +2674,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
-    if (orderId.startsWith('order-tmp-')) tmpOrderItemsRef.current[orderId] = updatedItems;
+    if (orderId.startsWith('order-tmp-')) {
+      tmpOrderItemsRef.current[orderId] = updatedItems;
+      persistOpeningItems(orderId, updatedItems);
+    }
     setOrders((prev) => ({ ...prev, [orderId]: updatedOrder }));
 
     // Write-through (Fase E3): solo si la orden ya existe en el server.
@@ -2497,6 +2702,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Regla "no cobrar sin despacho": retorna true si el despacho quedó confirmado
   // ('ok') o encolado offline ('queued'); false si fue rechazado o no procede.
   const sendToKitchen = async (tableId: string): Promise<boolean> => {
+    if (!allowAction('orders.dispatch')) return;
     const table = tables.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return false;
 
@@ -2625,6 +2831,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const pendingCount = currentOrder.items.filter((i) => i.status === 'agregado').length;
     if (pendingCount > 0) {
+      if (!can('orders.dispatch')) { addNotification('Falta despachar', 'Solicite al mozo o jefe que envíe los platos a cocina antes del cobro.', 'warning'); return; }
       setPendingKitchenConfirm({ tableId, itemCount: pendingCount });
       return;
     }
@@ -2639,6 +2846,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const orderId = table.currentOrderId;
     const currentOrder = ordersRef.current[orderId];
     if (!currentOrder) return;
+
+    if (!can('orders.mark_for_billing')) {
+      if (!allowAction('payments.collect')) return;
+      setSelectedTableId(tableId);
+      setCurrentScreen('cobro');
+      setPendingKitchenConfirm(null);
+      return;
+    }
 
     setTables((prev) =>
       prev.map((t) =>
@@ -2660,7 +2875,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
 
     setSelectedTableId(tableId);
-    setCurrentScreen('cobro');
+    setCurrentScreen(can('payments.collect') ? 'cobro' : 'mesas');
     setPendingKitchenConfirm(null);
 
     // Nuevo orden: la BOLETA de la cuenta se muestra ANTES del cobro para que
@@ -2668,7 +2883,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // el modal y queda en la pantalla de Resumen + Método de Pago.
     setReceiptMode('preview');
     setLastCompletedOrder({ ...currentOrder });
-    setIsReceiptModalOpen(true);
+    setIsReceiptModalOpen(can('payments.collect'));
 
     // Write-through (Fase E3): persiste el estado "por cobrar" en el server.
     // (E4: también se encola si la orden es temporal y estamos offline.)
@@ -2721,6 +2936,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     customPaymentMethodId?: string,
     referenceNumber?: string
   ): Order | null => {
+    if (!allowAction('payments.collect')) return;
     const table = tables.find((t) => t.id === tableId);
     if (!table || !table.currentOrderId) return null;
 
@@ -2911,6 +3127,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     _customPaymentMethodId?: string,
     referenceNumber?: string
   ) => {
+    if (!allowAction('cash.manual')) return;
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
@@ -3004,6 +3221,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const correctSalePayment = async (
     transaction: Transaction, correctionId: string, newMethodId: string, referenceNumber: string, reason: string, supervisorPin: string
   ): Promise<void> => {
+    if (!can('payments.correct')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     if (!offlineState.isOnline || offlineState.isSimulatedOffline) throw new Error('Esta corrección requiere conexión con el servidor.');
     await apiClient.post(`/operations/transactions/${encodeURIComponent(transaction.id)}/corrections`, {
       correctionId, supervisorPin, expectedMethodId: transaction.customPaymentMethodId ?? null,
@@ -3021,7 +3239,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Add New Table (Fase E5: write-through a POST /catalogs/tables; F5 persiste)
   const createTaytaPhysicalTable = async (zone: 'Primer Piso' | 'Mezanine' | 'Jardín' | 'Terraza', capacity: number): Promise<Table> => {
-    if (currentUser?.role !== 'Administrador' && currentUser?.role !== 'Coordinador') throw new Error('No tiene permiso para crear mesas.');
+    if (!can('tables.manage')) throw new Error('No tiene permiso para crear mesas.');
     if (!offlineState.isOnline || offlineState.isSimulatedOffline) throw new Error('Para crear mesas físicas se requiere conexión.');
     const created = mapTable(await apiClient.post<TableDTO>('/catalogs/tables/physical', { zone, capacity }));
     setTables((prev) => prev.some((table) => table.id === created.id) ? prev : [...prev, created]);
@@ -3030,6 +3248,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const addNewTable = (number: string, capacity: number, zone: Zone) => {
+    if (!allowAction('tables.manage')) return;
     const compId = activeCompanyId === 'todas' ? 'el-tayta' : activeCompanyId;
     const tempId = `t-custom-${Date.now()}`;
     const clientOpId = newUuid();
@@ -3076,6 +3295,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Add Purchase (Compras -> Kardex & Cash Ledger Sync)
   const addPurchase = (newPurchaseData: Omit<Purchase, 'id' | 'time'>) => {
+    if (!allowAction('purchases.manage')) return;
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const purchaseId = `pur-${Date.now()}`;
@@ -3278,6 +3498,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     notes?: string,
     items?: PurchaseItem[]
   ) => {
+    if (!allowAction('purchases.manage')) return;
     const previousPurchase = purchases.find((purchase) => purchase.id === purchaseId);
     if (previousPurchase && items && previousPurchase.items.length > 0) {
       const deltas = new Map<string, number>();
@@ -3387,6 +3608,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     initialCashForNext: number,
     notes?: string
   ) => {
+    if (!allowAction('cash.close')) return;
     const currentShift = companyShifts[companyId];
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -3542,6 +3764,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Cuentas Bancarias CRUD (Fase E5: write-through a /catalogs/bank-accounts; F5 persiste)
   const addBankAccount = (acc: Omit<BankAccount, 'id'>) => {
+    if (!allowAction('banks.manage')) return;
     const tempId = `bank-${Date.now()}`;
     const clientOpId = newUuid();
     const newAccount: BankAccount = { ...acc, id: tempId };
@@ -3593,6 +3816,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateBankAccount = (id: string, updates: Partial<BankAccount>) => {
+    if (!allowAction('banks.manage')) return;
     // Edición de un alta aún no sincronizada: se parchea el create encolado.
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
@@ -3654,6 +3878,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteBankAccount = (id: string) => {
+    if (!allowAction('banks.manage')) return;
     // Borrado de un alta aún no sincronizada: se retira el create encolado.
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
@@ -3683,6 +3908,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Métodos de Pago CRUD (Fase E5: write-through a /catalogs/payment-methods; F5 persiste)
   const addPaymentMethod = (pm: Omit<CustomPaymentMethod, 'id'>) => {
+    if (!allowAction('banks.manage')) return;
     const tempId = `pm-${Date.now()}`;
     const clientOpId = newUuid();
     const newPm: CustomPaymentMethod = { ...pm, id: tempId };
@@ -3728,6 +3954,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updatePaymentMethod = (id: string, updates: Partial<CustomPaymentMethod>) => {
+    if (!allowAction('banks.manage')) return;
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
       setPaymentMethods((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
@@ -3781,6 +4008,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deletePaymentMethod = (id: string) => {
+    if (!allowAction('banks.manage')) return;
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
       delete tmpCatalogOpRef.current[id];
@@ -3809,6 +4037,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Multi-Printer CRUD & ESC/POS Simulation (Fase E5: write-through a /catalogs/printers)
   const addPrinter = (prn: Omit<ThermalPrinterConfig, 'id'>) => {
+    if (!allowAction('printers.manage')) return;
     const tempId = `prn-${Date.now()}`;
     const clientOpId = newUuid();
     const newPrinter: ThermalPrinterConfig = { ...prn, id: tempId };
@@ -3860,6 +4089,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updatePrinter = (id: string, updates: Partial<ThermalPrinterConfig>) => {
+    if (!allowAction('printers.manage')) return;
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
       setPrinters((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
@@ -3922,6 +4152,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deletePrinter = (id: string) => {
+    if (!allowAction('printers.manage')) return;
     const queuedOp = tmpCatalogOpRef.current[id];
     if (queuedOp) {
       delete tmpCatalogOpRef.current[id];
@@ -3949,6 +4180,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const testPrint = (printerId: string) => {
+    if (!allowAction('printers.manage')) return;
     const prn = printers.find((p) => p.id === printerId);
     if (!prn) return;
     const now = new Date();
@@ -4023,6 +4255,21 @@ Doble Alto: PEDIDO EXPRESS #8841
     void replayOfflineQueue();
   };
 
+  // La asunción es explícita y solo la puede iniciar un administrador global;
+  // el servidor vuelve a verificarlo y la registra junto a la escritura.
+  const assumeOfflineOperation = (clientOpId: string) => {
+    if (!isGlobalAdministrator()) {
+      addNotification('Acción no permitida', 'Solo un administrador global puede asumir operaciones firmadas por otro usuario.', 'warning');
+      return;
+    }
+    if (offlineState.isSimulatedOffline) {
+      syncPendingCount();
+      addNotification('Modo offline activo', 'Restablezca la conexión para asumir y sincronizar operaciones.', 'warning');
+      return;
+    }
+    void replayOfflineQueue(true, clientOpId);
+  };
+
   // Add Kardex Adjustment / Merma
   const addKardexAdjustment = (
     insumoId: string,
@@ -4030,6 +4277,7 @@ Doble Alto: PEDIDO EXPRESS #8841
     type: 'AJUSTE_MERMA' | 'ENTRADA_COMPRA',
     reason: string
   ) => {
+    if (!allowAction('inventory.manage')) return;
     const insumo = insumos.find((i) => i.id === insumoId);
     if (!insumo) return;
 
@@ -4107,6 +4355,7 @@ Doble Alto: PEDIDO EXPRESS #8841
   // Save / Update Recipe (Fase E5: upsert a /catalogs/recipes; F5 persiste).
   // El server genera el id real al crear; el id local se reemplaza al reconciliar.
   const saveRecipe = async (recipe: Recipe): Promise<'saved' | 'queued'> => {
+    if (!can('recipes.manage')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     const linked = products.find((p) => p.id === recipe.productId);
     if (linked && linked.companyId !== recipe.companyId) throw new Error('El producto y la ficha deben pertenecer a la misma empresa.');
     if (linked && productIsSending(linked.id)) throw new Error('Espere a que termine de sincronizar el producto.');
@@ -4125,7 +4374,8 @@ Doble Alto: PEDIDO EXPRESS #8841
       ingredients: normalized.ingredients.map((i) => ({ ...i, insumoId: i.insumoId || null })) };
     const queue = loadQueue();
     const index = queue.findIndex((op) => op.op === 'saveRecipe' && (op.payload as { id?: string }).id === recipe.id);
-    const op: PendingOp = { clientOpId: uuid(), entity: 'catalog', op: 'saveRecipe', payload: body,
+    if (index >= 0 && !mayReplayPending(queue[index])) throw new Error('Este cambio pendiente pertenece a otro usuario o necesita revisión.');
+    const op: PendingOp = { clientOpId: index >= 0 ? queue[index].clientOpId : uuid(), entity: 'catalog', op: 'saveRecipe', payload: body,
       createdAt: index >= 0 ? queue[index].createdAt : new Date().toISOString() };
     if (index >= 0) queue[index] = op; else queue.push(op);
     persistProductQueue(queue);
@@ -4142,6 +4392,7 @@ Doble Alto: PEDIDO EXPRESS #8841
       addNotification('Ficha pendiente', 'El cambio se guardó en este equipo y se sincronizará en orden.', 'info');
       return 'queued';
     }
+    if (!mayReplayPending(op)) return 'queued';
     const result = await replayCall(op, body);
     if (result.disposition === 'ok') {
       persistProductQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
@@ -4159,13 +4410,13 @@ Doble Alto: PEDIDO EXPRESS #8841
     throw new Error(result.message ?? 'No se pudo guardar la ficha.');
   };
 
-  const syncInsumoOperation = async (op: PendingOp): Promise<'saved' | 'queued'> => {
-    if (op.conflict || op.error) return 'queued';
+  const syncInsumoOperation = async (op: PendingOp, assume = false): Promise<'saved' | 'queued'> => {
+    if ((!assume && (op.conflict || op.error)) || !mayReplayPending(op, assume)) return 'queued';
     if (!insumoIdOf(op)) {
       markInsumoIssue(op, 'Este pendiente fue creado por una versión anterior. Revise el catálogo antes de volver a registrarlo para evitar duplicados.');
       return 'queued';
     }
-    const result = await replayCall(op, op.payload as Record<string, unknown>);
+    const result = await replayCall(op, op.payload as Record<string, unknown>, { assume });
     setLastSyncResult({ ok: result.disposition === 'ok', ts: Date.now(), op: op.op });
     if (result.disposition === 'ok') {
       persistInsumoQueue(loadQueue().filter((item) => item.clientOpId !== op.clientOpId));
@@ -4189,21 +4440,28 @@ Doble Alto: PEDIDO EXPRESS #8841
     return result;
   };
   const saveInsumo = async (draft: InsumoDraft, original?: Insumo, id?: string) => {
+    if (!can('inventory.manage')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     const stableId = id ?? original?.id;
     if (stableId && insumoIsSending(stableId)) throw new Error('Espere a que termine la sincronización.');
+    const pending = stableId && loadQueue().find((op) => isInsumoOp(op) && insumoIdOf(op) === stableId);
+    if (pending && !mayReplayPending(pending)) throw new Error('El cambio pendiente pertenece a otro usuario o necesita revisión.');
     return submitInsumoOperation(stageInsumo(draft, original, stableId));
   };
   const addInsumo = (draft: Omit<Insumo, 'id' | 'code'>) => saveInsumo(draft);
   const deleteInsumo = async (insumo: Insumo) => {
+    if (!can('inventory.manage')) throw new ApiError('Su perfil no tiene permiso para esta acción.', 'FORBIDDEN', 403);
     if (insumoIsSending(insumo.id)) throw new Error('Espere a que termine la sincronización.');
+    const pending = loadQueue().find((op) => isInsumoOp(op) && insumoIdOf(op) === insumo.id);
+    if (pending && !mayReplayPending(pending)) throw new Error('El cambio pendiente pertenece a otro usuario o necesita revisión.');
     return submitInsumoOperation(stageInsumoDelete(insumo));
   };
   const resolveInsumoConflict = async (id: string, choice: 'server' | 'local') => {
     if (offlineState.isSimulatedOffline) throw new Error('Restablezca la conexión para revisar.');
-    const all = await apiClient.get<InsumoDTO[]>('/catalogs/insumos');
+    const all = await permittedRead<InsumoDTO[]>('inventory.read', '/catalogs/insumos');
     const server = all.find((i) => i.id === id);
     const op = insumoPending().find((item) => insumoIdOf(item) === id);
     if (!op) return;
+    if (!mayReplayPending(op)) throw new Error('Este pendiente pertenece a otro usuario o requiere revisión por el administrador.');
     if (choice === 'local' && !server) throw new Error('El insumo fue eliminado. Descarte el cambio pendiente.');
     persistInsumoQueue(choice === 'server' ? loadQueue().filter((item) => item.clientOpId !== op.clientOpId)
       : loadQueue().map((item) => item.clientOpId !== op.clientOpId ? item : { ...item, clientOpId: newUuid(), error: undefined, conflict: undefined,
@@ -4214,6 +4472,7 @@ Doble Alto: PEDIDO EXPRESS #8841
   const discardInventoryDependency = async (clientOpId: string) => {
     const op = loadQueue().find((item) => item.clientOpId === clientOpId);
     if (!op || !isInventoryDependencyIssue(op)) return;
+    if (!mayReplayPending(op)) throw new Error('Este pendiente pertenece a otro usuario o requiere revisión por el administrador.');
     if (offlineState.isSimulatedOffline || !getAuthToken()) throw new Error('Restablezca la conexión para recuperar los datos confirmados.');
     persistInsumoQueue(loadQueue().filter((item) => item.clientOpId !== clientOpId));
     await Promise.allSettled([loadOperations(), loadCatalogs(), refreshProductCatalogRef.current()]);
@@ -4227,6 +4486,7 @@ Doble Alto: PEDIDO EXPRESS #8841
 
   // Reset to Demo Data
   const resetToDemoData = () => {
+    if (!allowAction('security.manage')) return;
     if (import.meta.env.PROD) return;
     setTables(INITIAL_TABLES);
     setProducts(INITIAL_PRODUCTS);
@@ -4397,16 +4657,18 @@ Doble Alto: PEDIDO EXPRESS #8841
         authNotice,
         login,
         logout,
+        cacheScope,
+        sessionDeviceId,
         catalogSyncMeta,
         isCatalogsLoading,
         isOperationsLoading,
         realtimeStatus,
         companies,
         activeCompanyId,
-        setActiveCompanyId,
+        setActiveCompanyId: (id) => { if ((id === 'todas' && companies.length > 1) || companies.some(c => c.id === id)) setActiveCompanyId(id); },
         activeCompany,
         currentScreen,
-        setCurrentScreen,
+        setCurrentScreen: (screen) => { if (currentUser && canOpenScreen(currentUser.role, screen)) setCurrentScreen(screen); },
         catalogTarget,
         setCatalogTarget,
         selectedTableId,
@@ -4502,6 +4764,7 @@ Doble Alto: PEDIDO EXPRESS #8841
     lastSyncResult,
     toggleSimulatedOffline,
         syncOfflineQueue,
+        assumeOfflineOperation,
         isOfflineModalOpen,
         setIsOfflineModalOpen,
         // Notifications & Reset

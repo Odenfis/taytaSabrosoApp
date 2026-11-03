@@ -45,6 +45,9 @@ choice /C SN /N /M "Respaldo verificado y terminales listas? [S/N]: "
 if errorlevel 2 (echo Actualizacion cancelada; la aplicacion sigue funcionando. & exit /b 1)
 
 echo.
+echo Verificando usuarios y roles antes de detener la aplicacion...
+docker compose -f "%COMPOSE_FILE%" run --rm --no-deps app node dist/scripts/report-user-roles.js --check || (echo ERROR: revise roles, empresas y administrador global antes de actualizar. & goto :error)
+echo.
 echo [3/10] Deteniendo la aplicacion para evitar escrituras durante la migracion y conciliacion...
 docker compose -f "%COMPOSE_FILE%" stop app web || goto :error
 

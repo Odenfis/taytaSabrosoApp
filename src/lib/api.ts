@@ -59,6 +59,23 @@ export function isTokenExpired(auth: AuthToken | null): boolean {
   return !Number.isNaN(exp) && exp <= Date.now();
 }
 
+/** Prueba de autoría y marcas del replay offline. */
+export interface OfflineRequestOptions {
+  proof?: { document: string; signature: string };
+  /** Marca el envío como replay de la cola; el servidor exige la prueba. */
+  replay?: boolean;
+  /** Asunción explícita de una operación firmada por otro usuario o terminal. */
+  assume?: boolean;
+}
+
+function withProof(body: unknown, proof: OfflineRequestOptions['proof']): unknown {
+  if (!proof) return body;
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    return { ...(body as Record<string, unknown>), __proof: proof };
+  }
+  return { __proof: proof };
+}
+
 interface ApiErrorBody {
   error?: {
     code?: string;
@@ -67,11 +84,13 @@ interface ApiErrorBody {
   };
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, offline?: OfflineRequestOptions): Promise<T> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> | undefined),
   };
   headers['Content-Type'] = 'application/json';
+  if (offline?.replay) headers['x-offline-replay'] = '1';
+  if (offline?.assume) headers['x-offline-assume'] = '1';
 
   const auth = path === '/auth/login' ? null : getAuthToken();
   if (auth) {
@@ -115,23 +134,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new ApiError(message, code, res.status, issues);
   }
 
+  if (auth && path !== '/auth/logout' && getAuthToken()?.token !== auth.token) {
+    throw new ApiError('La respuesta pertenece a una sesión anterior.', 'SESSION_CHANGED', 409);
+  }
   return body as T;
 }
 
 export const apiClient = {
-  get: <T>(path: string): Promise<T> => request<T>(path),
-  post: <T>(path: string, body?: unknown): Promise<T> =>
+  get: <T>(path: string, offline?: OfflineRequestOptions): Promise<T> => request<T>(path, {}, offline),
+  post: <T>(path: string, body?: unknown, offline?: OfflineRequestOptions): Promise<T> =>
     request<T>(path, {
       method: 'POST',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-  patch: <T>(path: string, body?: unknown): Promise<T> =>
+      body: body === undefined && !offline?.proof ? undefined : JSON.stringify(withProof(body, offline?.proof)),
+    }, offline),
+  patch: <T>(path: string, body?: unknown, offline?: OfflineRequestOptions): Promise<T> =>
     request<T>(path, {
       method: 'PATCH',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-  del: <T>(path: string): Promise<T> =>
+      body: body === undefined && !offline?.proof ? undefined : JSON.stringify(withProof(body, offline?.proof)),
+    }, offline),
+  del: <T>(path: string, offline?: OfflineRequestOptions): Promise<T> =>
     request<T>(path, {
       method: 'DELETE',
-    }),
+      body: offline?.proof ? JSON.stringify(withProof(undefined, offline.proof)) : undefined,
+    }, offline),
 };

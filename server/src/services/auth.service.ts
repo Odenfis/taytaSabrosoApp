@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { hashToken, signAccessToken } from '../lib/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { disconnectSession } from '../lib/realtime.js';
+import { canAccessCompany, hasPermission } from '../lib/permissions.js';
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -15,6 +16,18 @@ function publicUser(user: UserRecord) {
   void _pinHash;
   void _passwordHash;
   return safe;
+}
+
+async function sessionContext(user: UserRecord) {
+  const restrictions = [user.companyId, user.assignedCompanyId].filter((id): id is string => Boolean(id));
+  if (new Set(restrictions).size > 1) throw new AppError('La asignación de empresas de su usuario es inconsistente.', 403, 'FORBIDDEN');
+  const companyId = restrictions[0];
+  const companies = await prisma.company.findMany({ where: companyId ? { id: companyId } : undefined, orderBy: { name: 'asc' } });
+  const allowed = companies.filter((company) => canAccessCompany(user, company.id));
+  const companyShifts = hasPermission(user.role, 'cash.read')
+    ? await prisma.companyShift.findMany({ where: companyId ? { companyId } : undefined })
+    : [];
+  return { companies: plain(allowed), companyShifts: plain(companyShifts) };
 }
 
 export interface LoginInput {
@@ -42,6 +55,7 @@ export async function login(input: LoginInput) {
   if (!matchedUser) {
     throw new AppError('PIN incorrecto. Intente nuevamente.', 401, 'INVALID_CREDENTIALS');
   }
+  const { companies, companyShifts } = await sessionContext(matchedUser);
 
   const deviceCode = (input.deviceCode || `TERM-${randomUUID().slice(0, 8).toUpperCase()}`).toUpperCase();
   const terminalName = input.terminalName?.trim() || 'Terminal';
@@ -77,20 +91,13 @@ export async function login(input: LoginInput) {
     },
   });
 
-  const companies = await prisma.company.findMany({
-    orderBy: { name: 'asc' },
-  });
-
-  // Al iniciar sesión se reporta también el estado del turno vigente por empresa.
-  const companyShifts = await prisma.companyShift.findMany();
-
   return {
     token,
     expiresAt: session.expiresAt.toISOString(),
     user: publicUser(matchedUser),
     device: plain(device),
-    companies: plain(companies),
-    companyShifts: plain(companyShifts),
+    companies,
+    companyShifts,
   };
 }
 
@@ -108,8 +115,6 @@ export async function getMe(userId: string) {
   });
   if (!user) throw new AppError('Usuario no encontrado.', 404, 'NOT_FOUND');
 
-  const companies = await prisma.company.findMany({ orderBy: { name: 'asc' } });
-  const companyShifts = await prisma.companyShift.findMany();
-
-  return { user: publicUser(user), companies: plain(companies), companyShifts: plain(companyShifts) };
+  const { companies, companyShifts } = await sessionContext(user);
+  return { user: publicUser(user), companies, companyShifts };
 }

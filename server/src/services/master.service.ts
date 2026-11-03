@@ -8,6 +8,7 @@ import { prisma } from '../lib/prisma.js';
 import { emitRecipeChanged, emitInsumoChanged, emitPaymentMethodChanged, emitPrinterChanged, emitProductChanged } from '../lib/realtime.js';
 import { emitTableChanged } from '../lib/realtime.js';
 import { TAYTA_PHYSICAL_PREFIXES, type TaytaPhysicalZone } from '../lib/taytaTableLayout.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 // companyId opcional para filtrar recursos por empresa.
 // Los recursos 'ambas' (companyId NULL) siempre se incluyen cuando hay filtro.
@@ -47,9 +48,9 @@ export async function createTable(input: {
   capacity: number;
   zone: string;
   notes?: string;
-}) {
+}, actor?: OperationActor) {
   if (input.companyId === 'el-tayta') throw new AppError('Use la creación de mesas físicas de El Tayta.', 400, 'TAYTA_PHYSICAL_REQUIRED');
-  const table = await prisma.table.create({
+  const table = await prisma.$transaction(async (tx) => { const created = await tx.table.create({
     data: {
       id: randomUUID(),
       companyId: input.companyId,
@@ -59,11 +60,11 @@ export async function createTable(input: {
       status: 'libre',
       notes: input.notes,
     },
-  });
+  }); await auditOperation(tx, actor, created.companyId, 'crear_mesa', created.id); return created; });
   return plain(table);
 }
 
-export async function createTaytaPhysicalTable(input: { zone: TaytaPhysicalZone; capacity: number }) {
+export async function createTaytaPhysicalTable(input: { zone: TaytaPhysicalZone; capacity: number }, actor?: OperationActor) {
   const companyId = 'el-tayta';
   const prefix = TAYTA_PHYSICAL_PREFIXES[input.zone];
   const table = await prisma.$transaction(async (tx) => {
@@ -76,28 +77,30 @@ export async function createTaytaPhysicalTable(input: { zone: TaytaPhysicalZone;
     }, 0);
     const number = `${prefix}${String(next).padStart(2, '0')}`;
     if (existing.some((row) => row.number.toUpperCase() === number.toUpperCase())) throw new AppError('El número ya existe.', 409, 'TABLE_NUMBER_EXISTS');
-    return tx.table.create({ data: { id: randomUUID(), companyId, number, capacity: input.capacity, zone: input.zone, status: 'libre' } });
+    const created = await tx.table.create({ data: { id: randomUUID(), companyId, number, capacity: input.capacity, zone: input.zone, status: 'libre' } });
+    await auditOperation(tx, actor, companyId, 'crear_mesa', created.id);
+    return created;
   }, { timeout: 30000 });
   emitTableChanged(companyId, { tableId: table.id, companyId, status: table.status, currentOrderId: null, updatedAt: table.updatedAt.toISOString() });
   return plain(table);
 }
 
-export async function updateTable(id: string, updates: { number?: string; capacity?: number; zone?: string; notes?: string | null; status?: string }) {
-  const table = await prisma.table.update({
+export async function updateTable(id: string, updates: { number?: string; capacity?: number; zone?: string; notes?: string | null; status?: string }, actor?: OperationActor) {
+  const table = await prisma.$transaction(async (tx) => { const updated = await tx.table.update({
     where: { id },
     data: { ...updates },
-  });
+  }); await auditOperation(tx, actor, updated.companyId, 'actualizar_mesa', updated.id); return updated; });
   return plain(table);
 }
 
-export async function deleteTable(id: string) {
+export async function deleteTable(id: string, actor?: OperationActor) {
   // Se permite solo mesas libres (integridad operativa).
   const table = await prisma.table.findUnique({ where: { id } });
   if (!table) throw new AppError('Mesa no encontrada.', 404, 'NOT_FOUND');
   if (table.status !== 'libre') {
     throw new AppError('No se puede eliminar una mesa ocupada o por cobrar.', 409, 'TABLE_ACTIVE');
   }
-  return plain(await prisma.table.update({ where: { id }, data: { isDeleted: true } }));
+  return plain(await prisma.$transaction(async (tx) => { const updated = await tx.table.update({ where: { id }, data: { isDeleted: true } }); await auditOperation(tx, actor, updated.companyId, 'eliminar_mesa', id); return updated; }));
 }
 
 // ============================ PRODUCTS ============================
@@ -114,8 +117,12 @@ export async function listProducts(companyId?: string, category?: string) {
   return plain(products);
 }
 
-export async function deleteProduct(id: string) {
-  const product = plain(await prisma.product.update({ where: { id }, data: { isDeleted: true } }));
+export async function deleteProduct(id: string, actor?: OperationActor) {
+  const product = plain(await prisma.$transaction(async (tx) => {
+    const updated = await tx.product.update({ where: { id }, data: { isDeleted: true } });
+    await auditOperation(tx, actor, updated.companyId, 'eliminar_producto', updated.id);
+    return updated;
+  }));
   emitProductChanged(product.companyId, {
     productId: product.id,
     companyId: product.companyId,
@@ -190,7 +197,7 @@ async function notifyRecipeCommit(product: Awaited<ReturnType<typeof resolveReci
   await notifyLinkedRecipes(product.id).catch(() => undefined);
 }
 
-export async function createRecipe(input: RecipeInput) {
+export async function createRecipe(input: RecipeInput, actor?: OperationActor) {
   const result = await inventoryTransaction(async (tx) => {
     if (input.id) {
       const prior = await tx.recipe.findUnique({ where: { id: input.id }, include: { ingredients: true } });
@@ -209,13 +216,14 @@ export async function createRecipe(input: RecipeInput) {
       ingredients: { create: await ingredientData(tx, input.ingredients, input.companyId) },
     }, include: { ingredients: true } });
     const updated = await writeProduct(tx, product.id, { name: recipe.productName, price: toNum(recipe.salePrice), category: recipe.category as 'platos' });
+    await auditOperation(tx, actor, recipe.companyId, 'crear_receta', recipe.id);
     return { recipe: (await tx.recipe.findUnique({ where: { id: recipe.id }, include: { ingredients: true } }))!, product: updated };
   });
   if (result.product) await notifyRecipeCommit(result.product);
   return plain(result.recipe);
 }
 
-export async function updateRecipe(id: string, input: Partial<Omit<RecipeInput, 'companyId' | 'id'>>) {
+export async function updateRecipe(id: string, input: Partial<Omit<RecipeInput, 'companyId' | 'id'>>, actor?: OperationActor) {
   const result = await inventoryTransaction(async (tx) => {
     const prior = await tx.recipe.findUnique({ where: { id } });
     if (!prior || prior.isDeleted) throw new AppError('Ficha no encontrada.', 404, 'NOT_FOUND');
@@ -236,6 +244,7 @@ export async function updateRecipe(id: string, input: Partial<Omit<RecipeInput, 
     const synced = await writeProduct(tx, product.id, { name: updated.productName, price: toNum(updated.salePrice), category: updated.category as 'platos' });
     let previousProduct = null;
     if (prior.productId && prior.productId !== product.id) previousProduct = await writeProduct(tx, prior.productId, {});
+    await auditOperation(tx, actor, prior.companyId, 'actualizar_receta', id);
     return { recipe: (await tx.recipe.findUnique({ where: { id }, include: { ingredients: true } }))!, product: synced, previousProduct };
   });
   await notifyRecipeCommit(result.product);
@@ -243,11 +252,12 @@ export async function updateRecipe(id: string, input: Partial<Omit<RecipeInput, 
   return plain(result.recipe);
 }
 
-export async function deleteRecipe(id: string) {
+export async function deleteRecipe(id: string, actor?: OperationActor) {
   const result = await inventoryTransaction(async (tx) => {
     const recipe = await tx.recipe.findUnique({ where: { id } });
     if (!recipe) throw new AppError('Receta no encontrada.', 404, 'NOT_FOUND');
     await tx.recipe.update({ where: { id }, data: { isDeleted: true, version: { increment: 1 } } });
+    await auditOperation(tx, actor, recipe.companyId, 'eliminar_receta', id);
     return { recipe, product: recipe.productId ? await writeProduct(tx, recipe.productId, {}) : null };
   });
   if (result.product) await notifyRecipeCommit(result.product);
@@ -280,8 +290,8 @@ export async function createBankAccount(input: {
   alias: string;
   currentBalance?: number;
   notes?: string;
-}) {
-  const account = await prisma.bankAccount.create({
+}, actor?: OperationActor) {
+  const account = await prisma.$transaction(async (tx) => { const created = await tx.bankAccount.create({
     data: {
       id: randomUUID(),
       companyId: input.companyId,
@@ -295,21 +305,29 @@ export async function createBankAccount(input: {
       currentBalance: input.currentBalance ?? 0,
       notes: input.notes,
     },
-  });
+  }); await auditOperation(tx, actor, created.companyId, 'crear_cuenta_bancaria', created.id); return created; });
   return plain(account);
 }
 
 export async function updateBankAccount(id: string, updates: Partial<{
   companyId: string; bankName: string; accountNumber: string; cci: string | null; accountType: string; currency: string; holderName: string; alias: string; currentBalance: number; isActive: boolean; notes: string | null;
-}>) {
-  return plain(await prisma.bankAccount.update({ where: { id }, data: { ...updates } }));
+}>, actor?: OperationActor) {
+  return plain(await prisma.$transaction(async (tx) => { const updated = await tx.bankAccount.update({ where: { id }, data: { ...updates } }); await auditOperation(tx, actor, updated.companyId, 'actualizar_cuenta_bancaria', id); return updated; }));
 }
 
-export async function deleteBankAccount(id: string) {
-  return plain(await prisma.bankAccount.update({ where: { id }, data: { isDeleted: true } }));
+export async function deleteBankAccount(id: string, actor?: OperationActor) {
+  return plain(await prisma.$transaction(async (tx) => { const updated = await tx.bankAccount.update({ where: { id }, data: { isDeleted: true } }); await auditOperation(tx, actor, updated.companyId, 'eliminar_cuenta_bancaria', id); return updated; }));
 }
 
 // ============================ PAYMENT METHODS ============================
+
+async function validatePaymentBank(tx: Prisma.TransactionClient, companyId: string | null, bankAccountId: string | null) {
+  if (!bankAccountId) return;
+  const bank = await tx.bankAccount.findUnique({ where: { id: bankAccountId } });
+  if (!bank || !companyId || bank.companyId !== companyId || bank.isDeleted || !bank.isActive || bank.currency !== 'PEN') {
+    throw new AppError('El medio de pago debe tener una cuenta activa en soles de su misma empresa.', 400, 'INVALID_ACCOUNT');
+  }
+}
 
 export async function listPaymentMethods(companyId?: string) {
   const methods = await prisma.customPaymentMethod.findMany({
@@ -331,8 +349,10 @@ export async function createPaymentMethod(input: {
   commissionPct?: number;
   requiresReferenceNumber?: boolean;
   icon?: string;
-}) {
-  const method = await prisma.customPaymentMethod.create({
+}, actor?: OperationActor) {
+  const method = await prisma.$transaction(async (tx) => {
+    await validatePaymentBank(tx, input.companyId ?? null, input.bankAccountId ?? null);
+    const created = await tx.customPaymentMethod.create({
     data: {
       id: randomUUID(),
       companyId: input.companyId ?? null,
@@ -343,6 +363,9 @@ export async function createPaymentMethod(input: {
       requiresReferenceNumber: input.requiresReferenceNumber ?? false,
       icon: input.icon ?? 'payments',
     },
+    });
+    await auditOperation(tx, actor, created.companyId ?? 'ambas', 'crear_medio_pago', created.id);
+    return created;
   });
 
   // Notifica en tiempo real la creación del método de pago a los terminales de la empresa.
@@ -361,8 +384,16 @@ export async function createPaymentMethod(input: {
 
 export async function updatePaymentMethod(id: string, updates: Partial<{
   companyId: string | null; name: string; category: string; bankAccountId: string | null; commissionPct: number | null; requiresReferenceNumber: boolean; icon: string; isActive: boolean;
-}>) {
-  const updated = await prisma.customPaymentMethod.update({ where: { id }, data: { ...updates } });
+}>, actor?: OperationActor) {
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT [id] FROM [dbo].[metodos_pago] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${id}`;
+    const previous = await tx.customPaymentMethod.findUnique({ where: { id } });
+    if (!previous) throw new AppError('Medio de pago no encontrado.', 404, 'NOT_FOUND');
+    await validatePaymentBank(tx, updates.companyId === undefined ? previous.companyId : updates.companyId, updates.bankAccountId === undefined ? previous.bankAccountId : updates.bankAccountId);
+    const next = await tx.customPaymentMethod.update({ where: { id }, data: { ...updates } });
+    await auditOperation(tx, actor, next.companyId ?? 'ambas', 'actualizar_medio_pago', next.id);
+    return next;
+  });
 
   // Notifica en tiempo real la actualización del método de pago a los terminales de la empresa.
   emitPaymentMethodChanged(updated.companyId, {
@@ -378,10 +409,14 @@ export async function updatePaymentMethod(id: string, updates: Partial<{
   return plain(updated);
 }
 
-export async function deletePaymentMethod(id: string) {
-  const method = await prisma.customPaymentMethod.findUnique({ where: { id } });
-  if (!method) throw new AppError('Método de pago no encontrado.', 404, 'NOT_FOUND');
-  await prisma.customPaymentMethod.update({ where: { id }, data: { isDeleted: true } });
+export async function deletePaymentMethod(id: string, actor?: OperationActor) {
+  const method = await prisma.$transaction(async (tx) => {
+    const previous = await tx.customPaymentMethod.findUnique({ where: { id } });
+    if (!previous) throw new AppError('Método de pago no encontrado.', 404, 'NOT_FOUND');
+    await tx.customPaymentMethod.update({ where: { id }, data: { isDeleted: true } });
+    await auditOperation(tx, actor, previous.companyId ?? 'ambas', 'eliminar_medio_pago', id);
+    return previous;
+  });
 
   // Notifica en tiempo real la eliminación (soft-delete) del método de pago a los terminales de la empresa.
   emitPaymentMethodChanged(method.companyId, {
@@ -422,8 +457,8 @@ export async function createPrinter(input: {
   autoCut?: boolean;
   beepOnPrint?: boolean;
   categories?: string[];
-}) {
-  const printer = await prisma.printer.create({
+}, actor?: OperationActor) {
+  const printer = await prisma.$transaction(async (tx) => { const created = await tx.printer.create({
     data: {
       id: randomUUID(),
       companyId: input.companyId ?? null,
@@ -446,7 +481,7 @@ export async function createPrinter(input: {
         : undefined,
     },
     include: { categories: { orderBy: { idx: 'asc' } } },
-  });
+  }); await auditOperation(tx, actor, created.companyId ?? 'ambas', 'crear_impresora', created.id); return created; });
 
   // Notifica en tiempo real la creación de la impresora a los terminales de la empresa.
   emitPrinterChanged(input.companyId ?? null, {
@@ -467,7 +502,7 @@ export async function updatePrinter(
   id: string,
   input: Partial<{
     name: string; role: string; connectionType: string; ipAddress: string | null; port: number | null; paperWidth: string; autoCut: boolean; beepOnPrint: boolean; status: string; isEnabled: boolean;
-  }> & { categories?: string[] }
+  }> & { categories?: string[] }, actor?: OperationActor
 ) {
   const { categories, ...data } = input;
   const updated = await prisma.$transaction(async (tx) => {
@@ -483,6 +518,7 @@ export async function updatePrinter(
         })),
       });
     }
+    await auditOperation(tx, actor, printer.companyId ?? 'ambas', 'actualizar_impresora', id);
     return printer;
   });
 
@@ -501,10 +537,14 @@ export async function updatePrinter(
   return plain(updated);
 }
 
-export async function deletePrinter(id: string) {
-  const printer = await prisma.printer.findUnique({ where: { id } });
-  if (!printer) throw new AppError('Impresora no encontrada.', 404, 'NOT_FOUND');
-  await prisma.printer.update({ where: { id }, data: { isDeleted: true } });
+export async function deletePrinter(id: string, actor?: OperationActor) {
+  const printer = await prisma.$transaction(async (tx) => {
+    const previous = await tx.printer.findUnique({ where: { id } });
+    if (!previous) throw new AppError('Impresora no encontrada.', 404, 'NOT_FOUND');
+    await tx.printer.update({ where: { id }, data: { isDeleted: true } });
+    await auditOperation(tx, actor, previous.companyId ?? 'ambas', 'eliminar_impresora', id);
+    return previous;
+  });
 
   // Notifica en tiempo real la eliminación (soft-delete) de la impresora a los terminales de la empresa.
   emitPrinterChanged(printer.companyId ?? null, {

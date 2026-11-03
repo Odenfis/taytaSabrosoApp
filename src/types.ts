@@ -1,4 +1,4 @@
-export type Role = 'Cajero' | 'Mesero' | 'Administrador' | 'Coordinador' | 'Jefe de Cocina';
+export type Role = 'Cajero' | 'Mesero' | 'Administrador' | 'Jefe de restaurante' | 'Coordinador' | 'Jefe de Cocina';
 
 export type CompanyId = 'el-tayta' | 'el-sabroso';
 
@@ -77,6 +77,8 @@ export interface MeResponse {
   user: User;
   companies: Company[];
   companyShifts: CompanyShiftDTO[];
+  /** Terminal de la sesión; liga la clave de firma offline a este equipo. */
+  deviceId?: string;
 }
 
 export interface ApiErrorPayload {
@@ -494,8 +496,26 @@ export type PendingOpEntity =
   | 'shift'
   | 'catalog';
 
+// Prueba de autoría firmada en el equipo que originó la operación. El documento
+// son los bytes exactos firmados y la firma viaja en base64url. Cada operación
+// puede necesitar una prueba por variante de ruta (p.ej. PATCH y POST de la
+// misma ficha).
+export interface PendingOpProof {
+  /** Acción lógica del contrato compartido que la firma autoriza. */
+  action: string;
+  /** Variante de la acción (índice dentro de sus variantes de ruta). */
+  variant: number;
+  document: string;
+  signature: string;
+}
+
 // Operación local que aún no se sincronizó con la API (write-through fallido o creada offline).
 export interface PendingOp {
+  authorId?: string;
+  companyId?: string;
+  /** Terminal que originó la operación; la clave privada no sale del navegador. */
+  deviceId?: string;
+  proofs?: PendingOpProof[];
   conflict?: boolean;
   error?: string;
   clientOpId: string;

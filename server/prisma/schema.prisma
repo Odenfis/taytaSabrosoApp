@@ -132,6 +132,81 @@ model Session {
   @@map("sesiones")
 }
 
+// Cambios de cuentas de acceso; no contiene PIN ni hashes.
+model UserAccessAudit {
+  id             String   @id @db.NVarChar(36)
+  actorUserId    String   @map("actor_usuario_id") @db.NVarChar(36)
+  subjectUserId  String   @map("usuario_afectado_id") @db.NVarChar(36)
+  deviceId       String   @map("dispositivo_id") @db.NVarChar(36)
+  action         String   @map("accion") @db.NVarChar(40)
+  oldRole        String?  @map("rol_anterior") @db.NVarChar(20)
+  newRole        String?  @map("rol_nuevo") @db.NVarChar(20)
+  oldCompanyId   String?  @map("empresa_anterior_id") @db.NVarChar(36)
+  newCompanyId   String?  @map("empresa_nueva_id") @db.NVarChar(36)
+  oldActive      Boolean? @map("activo_anterior")
+  newActive      Boolean  @map("activo_nuevo")
+  pinReset       Boolean  @default(false) @map("pin_restablecido")
+  createdAt      DateTime @default(now()) @map("creado_en") @db.DateTime2
+
+  @@index([subjectUserId, createdAt])
+  @@map("auditoria_acceso_usuarios")
+}
+
+model OperationAudit {
+  id             String   @id @db.NVarChar(36)
+  actorUserId    String   @map("actor_usuario_id") @db.NVarChar(36)
+  deviceId       String   @map("dispositivo_id") @db.NVarChar(36)
+  companyId      String   @map("empresa_id") @db.NVarChar(36)
+  action         String   @map("accion") @db.NVarChar(100)
+  entityId       String   @map("entidad_id") @db.NVarChar(36)
+  // Prueba de autoría offline conservada junto a la escritura que autorizó.
+  clientOpId     String?  @map("client_op_id") @db.NVarChar(36)
+  proofDocument  String?  @map("prueba_documento") @db.NVarChar(Max)
+  proofSignature String?  @map("prueba_firma") @db.NVarChar(512)
+  // Acción lógica del contrato offline que la firma autorizó (vínculo
+  // prueba ↔ escritura). Nulo cuando la operación fue online.
+  offlineAction  String?  @map("accion_offline") @db.NVarChar(100)
+  createdAt      DateTime @default(now()) @map("creado_en") @db.DateTime2
+
+  @@index([companyId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([clientOpId])
+  @@map("auditoria_operaciones")
+}
+
+// Cuando un administrador global sincroniza una operación firmada por otro
+// usuario, la asunción queda registrada en la misma transacción de la escritura.
+model OfflineAssumptionAudit {
+  id                  String   @id @db.NVarChar(36)
+  clientOpId          String   @unique @map("client_op_id") @db.NVarChar(36)
+  authorUserId        String   @map("autor_usuario_id") @db.NVarChar(36)
+  assumedByUserId     String   @map("asumido_por_usuario_id") @db.NVarChar(36)
+  deviceId            String   @map("dispositivo_id") @db.NVarChar(36)
+  companyId           String   @map("empresa_id") @db.NVarChar(36)
+  documentFingerprint String   @map("huella_documento") @db.VarChar(64)
+  createdAt           DateTime @default(now()) @map("creado_en") @db.DateTime2
+
+  @@index([authorUserId, createdAt])
+  @@index([assumedByUserId, createdAt])
+  @@map("auditoria_asuncion_offline")
+}
+
+// La asociación se crea exclusivamente desde la sesión autenticada. La clave
+// privada nunca se envía al servidor.
+model OfflineSigningKey {
+  id          String    @id @db.NVarChar(36)
+  userId      String    @map("usuario_id") @db.NVarChar(36)
+  deviceId    String    @map("dispositivo_id") @db.NVarChar(36)
+  fingerprint String    @unique @map("huella") @db.VarChar(64)
+  publicKey   String    @map("clave_publica") @db.NVarChar(1000)
+  createdAt   DateTime  @default(now()) @map("creado_en") @db.DateTime2
+  revokedAt   DateTime? @map("revocado_en") @db.DateTime2
+  revokedBy   String?   @map("revocado_por") @db.NVarChar(36)
+
+  @@index([userId, deviceId])
+  @@map("claves_firma_offline")
+}
+
 // ============================ OPERACION (MESAS / PEDIDOS) ============================
 
 model Table {
@@ -663,6 +738,7 @@ model PrinterCategory {
 // con clientOpId y se aplica en una transaccion unica del servidor.
 model ClientOp {
   id           String    @id @db.NVarChar(36)
+  actorUserId  String?   @map("actor_usuario_id") @db.NVarChar(36)
   deviceId     String    @map("dispositivo_id") @db.NVarChar(36)
   companyId    String?   @map("empresa_id") @db.NVarChar(36)
   entity       String    @map("entidad") @db.NVarChar(50)
@@ -680,6 +756,7 @@ model ClientOp {
 
   @@index([deviceId, status])
   @@index([createdAt])
+  @@index([actorUserId, createdAt])
   @@map("operaciones_cliente")
 }
 // Recibos sin FK: sobreviven a la eliminación física de un borrador.

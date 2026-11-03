@@ -1,11 +1,17 @@
 import { isInsumoOp, runInsumoRequest } from './insumoCatalog';
-import type { PendingOp } from '../types';
-import { apiClient, ApiError } from './api';
+import type { PendingOp, PendingOpProof } from '../types';
+import { apiClient, ApiError, type OfflineRequestOptions } from './api';
+import { ensureOfflineProofs } from './offlineSigning';
 import { isProductOp, productIdOf, signalProductQueue } from './productCatalog';
+import { offlineApiPath, offlinePlansForOp, offlinePrimaryActionId, type OfflineRequestPlan } from './offlineRequest';
 
 // Dispatcher de replay de la cola offline (Fase E4).
 // Convierte una PendingOp guardada en localStorage en la llamada HTTP real del server,
 // y clasifica el resultado para que el replay decida: quitar / omitir / reintentar.
+//
+// La petición se construye desde el contrato compartido (server/src/lib/offline-actions):
+// la misma definición que el servidor usa para verificar la firma. Así el cliente
+// no puede enviar un cuerpo distinto del firmado.
 //
 // Disposiciones:
 //   - 'ok'       → la operación se aplicó (o el server deduplicó por clientOpId).
@@ -27,140 +33,102 @@ export interface ReplayCallResult {
 
 type AnyPayload = Record<string, unknown>;
 
-function pick(p: AnyPayload, keys: string[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const k of keys) {
-    if (p[k] !== undefined) out[k] = p[k];
-  }
-  return out;
-}
-
 const productRequests = new Map<string, Promise<ReplayCallResult>>();
 const sendingProducts = new Set<string>();
 export const productIsSending = (id: string) => sendingProducts.has(id);
-export function replayCall(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
-  if (isInsumoOp(op)) return runInsumoRequest(op, () => replayOne(op, payload));
-  if (!isProductOp(op)) return replayOne(op, payload);
+
+export interface ReplayOptions {
+  /** Solo un administrador global puede asumir una firma ajena. */
+  assume?: boolean;
+}
+
+function replayClient(options: OfflineRequestOptions) {
+  return {
+    post: <T>(path: string, body?: unknown) => apiClient.post<T>(path, body, options),
+    patch: <T>(path: string, body?: unknown) => apiClient.patch<T>(path, body, options),
+    del: <T>(path: string) => apiClient.del<T>(path, options),
+  };
+}
+
+export function replayCall(op: PendingOp, payload: AnyPayload, options?: ReplayOptions): Promise<ReplayCallResult> {
+  if (isInsumoOp(op)) return runInsumoRequest(op, () => replayOne(op, payload, options));
+  if (!isProductOp(op)) return replayOne(op, payload, options);
   const existing = productRequests.get(op.clientOpId);
   if (existing) return existing;
   const id = productIdOf(op);
   sendingProducts.add(id);
-  const request = replayOne(op, payload).finally(() => {
+  const request = replayOne(op, payload, options).finally(() => {
     productRequests.delete(op.clientOpId); sendingProducts.delete(id); signalProductQueue();
   });
   productRequests.set(op.clientOpId, request);
   signalProductQueue();
   return request;
 }
-async function replayOne(op: PendingOp, payload: AnyPayload): Promise<ReplayCallResult> {
-  const tryRun = async (): Promise<unknown> => {
-    switch (op.op) {
-      case 'openOrder':
-        return apiClient.post('/operations/orders/open', pick(payload, ['tableId', 'waiter', 'clientOpId']));
-      case 'quickOrder':
-        return apiClient.post('/operations/orders/quick-bar', pick(payload, ['companyId', 'zone', 'waiter', 'clientOpId']));
-      case 'cancelOpening':
-        return apiClient.post('/operations/orders/cancel-opening', { openingClientOpId: payload.openingClientOpId });
-      case 'addItem':
-        return apiClient.post(`/operations/orders/${String(payload.orderId)}/items`, pick(payload, ['productId', 'quantity', 'notes']));
-      case 'updateItemQuantity':
-        return apiClient.patch(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}/quantity`, { delta: payload.delta, clientOpId: op.clientOpId });
-      case 'updateItemNotes':
-        return apiClient.patch(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}/notes`, { notes: payload.notes });
-      case 'removeItem':
-        return apiClient.del(`/operations/orders/${String(payload.orderId)}/items/${String(payload.itemId)}?clientOpId=${encodeURIComponent(op.clientOpId)}`);
-      case 'sendToKitchen':
-        return apiClient.post(`/operations/orders/${String(payload.orderId)}/send-to-kitchen`, pick(payload, ['clientOpId']));
-      case 'markForBilling':
-        return apiClient.post(`/operations/tables/${String(payload.tableId)}/por-cobrar`);
-      case 'payOrder':
-        return apiClient.post(`/operations/tables/${String(payload.tableId)}/pay`, pick(payload, ['paymentMethod', 'amountReceived', 'customPaymentMethodId', 'referenceNumber', 'clientOpId']));
-      case 'createDinerBills':
-        return apiClient.post(`/operations/orders/${String(payload.orderId)}/bills`, pick(payload, ['bills', 'clientOpId']));
-      case 'payDinerBill':
-        return apiClient.post(`/operations/bills/${String(payload.billId)}/pay`, pick(payload, ['amount', 'amountReceived', 'customPaymentMethodId', 'referenceNumber', 'contributorName', 'clientOpId']));
-      case 'manualTransaction':
-        return apiClient.post('/operations/transactions', pick(payload, ['companyId', 'type', 'description', 'amount', 'isIncome', 'bankAccountId', 'customPaymentMethodId', 'referenceNumber', 'clientOpId']));
-      case 'createPurchase':
-        return apiClient.post('/operations/purchases', pick(payload, ['companyId', 'category', 'supplierName', 'supplierRuc', 'invoiceNumber', 'documentStatus', 'provisionalNoteNumber', 'notes', 'shift', 'subtotal', 'igv', 'total', 'paymentStatus', 'paidFromCash', 'bankAccountId', 'bankAccountAlias', 'items', 'clientOpId']));
-      case 'regularizePurchase':
-        return apiClient.post(`/operations/purchases/${String(payload.purchaseId)}/regularize`, pick(payload, ['invoiceNumber', 'supplierRuc', 'notes', 'items', 'clientOpId']));
-      case 'switchShift':
-        return apiClient.post('/operations/shifts/switch', pick(payload, ['companyId', 'targetShift', 'reportedCash', 'initialCashForNext', 'notes', 'clientOpId']));
-      case 'kardexAdjustment':
-        return apiClient.post('/operations/kardex/adjustments', pick(payload, ['insumoId', 'quantity', 'type', 'reason', 'companyId', 'clientOpId']));
-      // ---- Fase E5: mutaciones de catálogos (el payload lleva solo campos del server;
-      // `tempId`/`clientOpId` se excluyen salvo que la ruta los acepte) ----
-      case 'createProduct':
-        return apiClient.post('/catalogs/products', { ...pick(payload, ['id', 'companyId', 'name', 'description', 'price', 'category', 'image', 'available']), clientOpId: op.clientOpId });
-      case 'updateProduct':
-        return apiClient.patch(`/catalogs/products/${String(payload.id)}`, { ...pick(payload, ['name', 'description', 'price', 'category', 'image', 'available', 'expectedVersion']), clientOpId: op.clientOpId });
-      case 'createTable':
-        return apiClient.post('/catalogs/tables', pick(payload, ['companyId', 'number', 'capacity', 'zone', 'notes']));
-      case 'updateTable':
-        return apiClient.patch(`/catalogs/tables/${String(payload.id)}`, pick(payload, ['number', 'capacity', 'zone', 'notes', 'status']));
-      case 'deleteTable':
-        return apiClient.del(`/catalogs/tables/${String(payload.id)}`);
-      case 'createBankAccount':
-        return apiClient.post('/catalogs/bank-accounts', pick(payload, ['companyId', 'bankName', 'accountNumber', 'cci', 'accountType', 'currency', 'holderName', 'alias', 'currentBalance', 'notes']));
-      case 'updateBankAccount':
-        return apiClient.patch(`/catalogs/bank-accounts/${String(payload.id)}`, pick(payload, ['bankName', 'accountNumber', 'cci', 'accountType', 'currency', 'holderName', 'alias', 'currentBalance', 'isActive', 'notes']));
-      case 'deleteBankAccount':
-        return apiClient.del(`/catalogs/bank-accounts/${String(payload.id)}`);
-      case 'createPaymentMethod':
-        return apiClient.post('/catalogs/payment-methods', pick(payload, ['companyId', 'name', 'category', 'bankAccountId', 'commissionPct', 'requiresReferenceNumber', 'icon']));
-      case 'updatePaymentMethod':
-        return apiClient.patch(`/catalogs/payment-methods/${String(payload.id)}`, pick(payload, ['companyId', 'name', 'category', 'bankAccountId', 'commissionPct', 'requiresReferenceNumber', 'icon', 'isActive']));
-      case 'deletePaymentMethod':
-        return apiClient.del(`/catalogs/payment-methods/${String(payload.id)}`);
-      case 'createPrinter':
-        return apiClient.post('/catalogs/printers', pick(payload, ['companyId', 'name', 'role', 'connectionType', 'ipAddress', 'port', 'paperWidth', 'autoCut', 'beepOnPrint', 'categories']));
-      case 'updatePrinter':
-        return apiClient.patch(`/catalogs/printers/${String(payload.id)}`, pick(payload, ['name', 'role', 'connectionType', 'ipAddress', 'port', 'paperWidth', 'autoCut', 'beepOnPrint', 'status', 'isEnabled', 'categories']));
-      case 'deletePrinter':
-        return apiClient.del(`/catalogs/printers/${String(payload.id)}`);
-      case 'createRecipe':
-        return apiClient.post('/catalogs/recipes', pick(payload, ['id', 'companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
-      case 'updateRecipe':
-        return apiClient.patch(`/catalogs/recipes/${String(payload.id)}`, pick(payload, ['productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']));
-      case 'deleteRecipe':
-        return apiClient.del(`/catalogs/recipes/${String(payload.id)}`);
-      case 'createInsumo':
-        return apiClient.post('/catalogs/insumos', { ...pick(payload, ['id', 'companyId', 'name', 'category', 'unit', 'currentStock', 'minStock', 'costPerUnit', 'lastPurchaseDate']), clientOpId: op.clientOpId });
-      case 'updateInsumo':
-        return apiClient.patch(`/catalogs/insumos/${String(payload.id)}`, { ...pick(payload, ['name', 'category', 'unit', 'minStock', 'costPerUnit', 'expectedVersion']), clientOpId: op.clientOpId });
-      case 'deleteInsumo':
-        return apiClient.del(`/catalogs/insumos/${String(payload.id)}${payload.expectedVersion ? `?expectedVersion=${Number(payload.expectedVersion)}` : ''}`);
-      case 'saveRecipe': {
-        // Upsert: intenta PATCH y si la receta no existe (404) la crea con POST.
-        const id = String(payload.id);
-        const body = pick(payload, ['productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']);
-        try {
-          return await apiClient.patch(`/catalogs/recipes/${id}`, body);
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 404) {
-            return await apiClient.post('/catalogs/recipes', {
-              ...pick(payload, ['id', 'companyId', 'productId', 'productName', 'category', 'portions', 'salePrice', 'totalCost', 'theoreticalFoodCostPct', 'preparationNotes', 'ingredients']),
-            });
-          }
-          throw err;
-        }
-      }
-      default:
-        throw new ApiError(`Operación desconocida en la cola de sincronización: ${op.op}`, 'UNKNOWN_OP', 422);
-    }
-  };
 
+function proofForPlan(proofs: PendingOpProof[], plan: OfflineRequestPlan): PendingOpProof | undefined {
+  return proofs.find((proof) => proof.action === plan.action.id && proof.variant === plan.variantIndex);
+}
+
+async function sendPlan(
+  plan: OfflineRequestPlan,
+  proof: PendingOpProof,
+  options?: ReplayOptions,
+): Promise<unknown> {
+  const path = offlineApiPath(plan);
+  const client = replayClient({
+    proof: { document: proof.document, signature: proof.signature },
+    replay: true,
+    assume: options?.assume,
+  });
+  if (plan.method === 'POST') return client.post(path, plan.body);
+  if (plan.method === 'PATCH') return client.patch(path, plan.body);
+  return client.del(path);
+}
+
+async function replayOne(op: PendingOp, payload: AnyPayload, options?: ReplayOptions): Promise<ReplayCallResult> {
   const isCreateOrder = op.op === 'openOrder' || op.op === 'quickOrder';
 
   try {
-    const data = await tryRun();
-    return { disposition: 'ok', data };
+    // La prueba se obtiene en el equipo del autor. Sin firma no se envía: el
+    // servidor rechazaría el replay y una asunción administrativa quedaría sin
+    // base criptográfica.
+    const proofs = await ensureOfflineProofs(op);
+    if (!proofs) {
+      throw new ApiError('La operación no tiene una prueba de autoría firmada en este equipo. Si fue creada en otra terminal, solo un administrador global puede asumirla desde la terminal donde se firmó.', 'OFFLINE_PROOF_REQUIRED', 403);
+    }
+    const primary = offlinePrimaryActionId(op);
+    const candidates = offlinePlansForOp(op, payload)
+      .filter((plan) => plan.action.id === primary && !!proofForPlan(proofs, plan));
+    if (!candidates.length) {
+      throw new ApiError('La operación no tiene una prueba de autoría válida para la acción que va a ejecutar.', 'OFFLINE_PROOF_REQUIRED', 403);
+    }
+    if (candidates.some((plan) => plan.unresolved)) {
+      throw new ApiError('La operación depende de una apertura sin resolver: no se puede enviar hasta que la apertura se sincronice.', 'OFFLINE_PROOF_REF_UNRESOLVED', 409);
+    }
+
+    let failure: unknown = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const plan = candidates[index];
+      const proof = proofForPlan(proofs, plan)!;
+      try {
+        const data = await sendPlan(plan, proof, options);
+        return { disposition: 'ok', data };
+      } catch (err) {
+        failure = err;
+        // Variante alternativa de la misma acción (p.ej. PATCH y luego POST).
+        const hasFallback = index < candidates.length - 1;
+        if (hasFallback && err instanceof ApiError && err.status === 404) continue;
+        throw err;
+      }
+    }
+    throw failure;
   } catch (err) {
     if (err instanceof ApiError) {
       if (err.status === 0) return { disposition: 'retry', network: true };
       if (err.status === 401 || err.isUnauthorized) return { disposition: 'retry', network: false, unauthorized: true, message: err.message };
       if (err.status >= 500) return { disposition: 'retry', network: false, message: err.message };
+      // Nunca descartar una operación por pérdida de permisos: requiere revisión.
+      if (err.status === 403) return { disposition: 'conflict', message: err.message };
       if (err.code.startsWith('INSUMO_') || ['BILLS_EXIST', 'BILL_CLOSED', 'TABLE_CHANGED', 'TOTAL_MISMATCH', 'UNASSIGNED_ITEMS', 'PAYMENT_ID_CONFLICT'].includes(err.code)) return { disposition: 'conflict', message: err.message };
       if (op.op === 'createDinerBills' || op.op === 'payDinerBill') return { disposition: 'conflict', message: err.message };
       if (isProductOp(op) && err.code === 'PRODUCT_VERSION_CONFLICT') return { disposition: 'conflict', message: err.message };

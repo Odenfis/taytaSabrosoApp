@@ -1,3 +1,4 @@
+import { usePermission } from '../lib/usePermission';
 import React, { useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Zone } from '../types';
@@ -7,6 +8,7 @@ interface NewTableModalProps {
 }
 
 export const NewTableModal: React.FC<NewTableModalProps> = ({ onClose }) => {
+  const can = usePermission();
   const { addNewTable, createTaytaPhysicalTable, openQuickOrder, activeCompanyId, currentUser, offlineState } = usePOS();
   const [tableNumber, setTableNumber] = useState('');
   const [capacity, setCapacity] = useState('4');
@@ -16,7 +18,7 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ onClose }) => {
   const [saving, setSaving] = useState(false);
 
   const isTayta = activeCompanyId !== 'el-sabroso';
-  const canCreatePhysical = currentUser?.role === 'Administrador' || currentUser?.role === 'Coordinador';
+  const canCreatePhysical = can('tables.manage');
   const online = offlineState.isOnline && !offlineState.isSimulatedOffline;
 
   const handleCreateTable = (e: React.FormEvent) => {
@@ -36,6 +38,7 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ onClose }) => {
     finally { setSaving(false); }
   };
 
+  if (!canCreatePhysical) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-surface-scrim-2 backdrop-blur-sm animate-in fade-in duration-150">
       <div className="bg-panel-15 border border-edge-outline rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-6 animate-in zoom-in-95 duration-150">
@@ -98,7 +101,7 @@ export const NewTableModal: React.FC<NewTableModalProps> = ({ onClose }) => {
             </select>
           </label>
           <p className="text-xs text-ink-muted-2">El número se asigna automáticamente con el prefijo del ambiente.</p>
-          {!canCreatePhysical && <p className="text-sm text-ink-warning">Solo el administrador puede añadir mesas físicas.</p>}
+          {!canCreatePhysical && <p className="text-sm text-ink-warning">Solo el administrador y el jefe pueden añadir mesas físicas.</p>}
           {!online && <p className="text-sm text-ink-warning">Se requiere conexión para añadir una mesa física.</p>}
           {error && <p role="alert" className="text-sm text-ink-danger">{error}</p>}
           <button type="submit" disabled={!canCreatePhysical || !online || saving} className="w-full bg-surface-brand-solid text-ink-on-solid py-3 rounded-xl font-bold disabled:opacity-50">{saving ? 'Guardando...' : 'Crear Mesa'}</button>

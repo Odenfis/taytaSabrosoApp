@@ -7,6 +7,7 @@ import {
 import { getTerminalIdentity } from '../src/lib/terminal';
 import { enqueue, loadQueue } from '../src/lib/offlineQueue';
 import { replayCall } from '../src/lib/replayQueue';
+import { signReplay } from './replayFixtures';
 import type { PendingOp } from '../src/types';
 
 class MemoryStorage implements Storage {
@@ -48,7 +49,8 @@ test('401 durante replay conserva la operación y solicita autenticación una so
     clientOpId: 'queued-id', entity: 'order', op: 'openOrder',
     payload: { tableId: 'table-1' }, createdAt: new Date().toISOString(),
   };
-  enqueue(op);
+  const signed = await signReplay(op);
+  enqueue(signed);
   const serialized = localStorage.getItem('ts_pending_queue_v2');
   storeAuthToken(auth('expired-session'));
   let notices = 0;
@@ -56,18 +58,18 @@ test('401 durante replay conserva la operación y solicita autenticación una so
   mock.method(globalThis, 'fetch', async () => new Response(
     JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Sesión revocada' } }), { status: 401 }
   ));
-  const result = await replayCall(op, op.payload as Record<string, unknown>);
+  const result = await replayCall(signed, signed.payload as Record<string, unknown>);
   assert.equal(result.disposition, 'retry');
   assert.equal(result.unauthorized, true);
   assert.equal(result.network, false);
   assert.equal(notices, 1);
   assert.equal(getAuthToken(), null);
   assert.equal(localStorage.getItem('ts_pending_queue_v2'), serialized);
-  assert.deepEqual(loadQueue(), [op]);
+  assert.deepEqual(loadQueue(), [signed]);
 
   storeAuthToken(auth('new-session'));
   mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ id: 'order-1' }), { status: 200 }));
-  assert.equal((await replayCall(op, op.payload as Record<string, unknown>)).disposition, 'ok');
+  assert.equal((await replayCall(signed, signed.payload as Record<string, unknown>)).disposition, 'ok');
 });
 
 test('una respuesta 401 tardía no invalida la nueva sesión', async () => {
@@ -110,4 +112,15 @@ test('expiración local pide autenticación sin enviar la operación ni borrar l
   assert.equal(fetchMock.mock.callCount(), 0);
   assert.equal(notices, 1);
   assert.equal(loadQueue().length, 1);
+});
+
+test('respuesta exitosa de sesión anterior no hidrata la caché de otra sesión', async () => {
+  storeAuthToken(auth('old-session'));
+  let resolveResponse!: (response: Response) => void;
+  mock.method(globalThis, 'fetch', () => new Promise<Response>((resolve) => { resolveResponse = resolve; }));
+  const pending = apiClient.get('/operations/transactions');
+  storeAuthToken(auth('new-session'));
+  resolveResponse(new Response(JSON.stringify([{ amount: 1000 }]), { status: 200 }));
+  await assert.rejects(pending, (error) => error instanceof ApiError && error.code === 'SESSION_CHANGED');
+  assert.equal(getAuthToken()?.token, 'new-session');
 });

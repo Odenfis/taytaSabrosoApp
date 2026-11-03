@@ -1,3 +1,6 @@
+import { orderNeedsOfflineReview } from '../lib/offlineAuthorization';
+import { loadQueue } from '../lib/offlineQueue';
+import { readSessionCache } from '../lib/sessionCache';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { availablePaymentMethods, reconcilePaymentSelection, paymentDetails } from '../lib/paymentSelection';
 import { usePOS } from '../context/POSContext';
@@ -13,6 +16,10 @@ export const PaymentScreen: React.FC = () => {
     completePayment,
     setCurrentScreen,
     paymentMethods,
+    cacheScope,
+    currentUser,
+    sessionDeviceId,
+    offlineState,
   } = usePOS();
 
   const [selection, setSelection] = useState<{ scope: string; id: string | null | undefined }>({ scope: '', id: undefined });
@@ -33,19 +40,20 @@ export const PaymentScreen: React.FC = () => {
   const splitSnapshot = useRef<{ order: NonNullable<typeof currentOrder>; table: NonNullable<typeof currentTable> } | null>(null);
   if (currentOrder && currentTable) splitSnapshot.current = { order: currentOrder, table: currentTable };
 
+  const pendingReview = orderNeedsOfflineReview(loadQueue(), currentOrder?.id, currentUser?.id, sessionDeviceId);
   const total = currentOrder?.total || 0;
   useEffect(() => {
     if (!currentOrder) return;
     let active = true;
     setHasBills(false);
     setSplitPayment(false);
-    const cached = localStorage.getItem(`ts_diner_bills_${currentOrder.id}`);
-    if (cached && cached !== '[]') { setHasBills(true); setSplitPayment(true); }
+    const cached = readSessionCache<unknown[]>(cacheScope, `ts_diner_bills_${currentOrder.id}`, []);
+    if (cached.length || loadQueue().some(op => ['createDinerBills', 'payDinerBill'].includes(op.op) && (op.payload as Record<string, unknown>)?.orderId === currentOrder.id)) { setHasBills(true); setSplitPayment(true); }
     apiClient.get<unknown[]>(`/operations/orders/${currentOrder.id}/bills`).then((bills) => {
       if (active && bills.length) { setHasBills(true); setSplitPayment(true); }
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [currentOrder?.id]);
+  }, [currentOrder?.id, cacheScope]);
 
   const availableMethods = useMemo(() => availablePaymentMethods(paymentMethods, currentTable?.companyId), [paymentMethods, currentTable?.companyId]);
   const scope = `${currentTable?.id ?? ''}:${currentOrder?.id ?? ''}`;
@@ -79,8 +87,8 @@ export const PaymentScreen: React.FC = () => {
   };
 
   const handleConfirmPayment = () => {
-    if (!currentTable || !currentOrder || details.error || !activeCustomMethod) return;
-    if (hasBills || localStorage.getItem(`ts_diner_bills_${currentOrder.id}`)) {
+    if (pendingReview || !currentTable || !currentOrder || details.error || !activeCustomMethod) return;
+    if (hasBills || readSessionCache<unknown[]>(cacheScope, `ts_diner_bills_${currentOrder.id}`, []).length) {
       setSplitPayment(true);
       return;
     }
@@ -118,7 +126,7 @@ export const PaymentScreen: React.FC = () => {
   }
 
   if (splitPayment && currentTable) return <SplitBillsPanel order={currentOrder} table={currentTable} onClose={() => {
-    if (hasBills || localStorage.getItem(`ts_diner_bills_${currentOrder.id}`)) setCurrentScreen('mesas');
+    if (hasBills || readSessionCache<unknown[]>(cacheScope, `ts_diner_bills_${currentOrder.id}`, []).length) setCurrentScreen('mesas');
     else setSplitPayment(false);
   }} />;
 
@@ -272,7 +280,7 @@ export const PaymentScreen: React.FC = () => {
               </div>
             </div>
 
-            {!availableMethods.length && <p role="status" className="text-[13px] text-ink-muted-2">No hay métodos de cobro activos para esta empresa. Configúralos en Administrar Bancos y Métodos.</p>}
+            {!availableMethods.length && <p role="status" className="text-[13px] text-ink-muted-2">No hay métodos de cobro activos para esta empresa. Solicite al administrador que revise los medios de pago.</p>}
 
             {/* Linked Bank Destination Banner */}
             {activeCustomMethod?.bankAccountId && (
@@ -402,11 +410,11 @@ export const PaymentScreen: React.FC = () => {
 
           {/* Confirm Payment Button */}
           <div className="pt-4 border-t border-edge-outline-2">
-            {details.error && <p id="payment-validation" role="status" className="mb-3 text-[12px] text-ink-danger">{details.error}</p>}
+            {pendingReview && <p role="alert" className="text-sm text-ink-warning-2">Esta mesa tiene operaciones pendientes que requieren conciliación antes de otro cobro.</p>}{details.error && <p id="payment-validation" role="status" className="mb-3 text-[12px] text-ink-danger">{details.error}</p>}
             <button
               id="btn-confirm-payment"
               type="button"
-              disabled={!!details.error}
+              disabled={pendingReview || !!details.error}
               aria-describedby={details.error ? "payment-validation" : undefined}
               onClick={handleConfirmPayment}
               className="w-full bg-gradient-to-r from-payment-start to-surface-gold-4 text-ink-on-accent-3 hover:brightness-110 active:scale-[0.98] font-black text-[16px] py-4 rounded-xl flex items-center justify-center gap-2 shadow-ui-8 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"

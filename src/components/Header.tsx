@@ -1,3 +1,4 @@
+import { usePermission } from '../lib/usePermission';
 import React, { useState, useEffect } from 'react';
 import { usePOS } from '../context/POSContext';
 import { CompanyId } from '../types';
@@ -7,6 +8,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
+  const can = usePermission();
   const {
     currentScreen,
     currentUser,
@@ -93,7 +95,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
       <div className="flex items-center gap-2 md:gap-3">
         {/* Multi-Company Selector Pill */}
         <div className="flex items-center bg-panel p-1 rounded-xl border border-edge-outline-3">
-          <button
+{companies.some(c => c.id === 'el-tayta') && (          <button
             onClick={() => setActiveCompanyId('el-tayta')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'el-tayta'
@@ -104,9 +106,9 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             <span className="w-2 h-2 rounded-full bg-surface-brand" />
             <span className="hidden sm:inline">El Tayta</span>
             <span className="sm:hidden">Tayta</span>
-          </button>
+          </button>)}
 
-          <button
+{companies.some(c => c.id === 'el-sabroso') && (          <button
             onClick={() => setActiveCompanyId('el-sabroso')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'el-sabroso'
@@ -117,9 +119,9 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
             <span className="w-2 h-2 rounded-full bg-surface-gold-2" />
             <span className="hidden sm:inline">El Sabroso</span>
             <span className="sm:hidden">Sabroso</span>
-          </button>
+          </button>)}
 
-          <button
+{companies.length > 1 && (          <button
             onClick={() => setActiveCompanyId('todas')}
             className={`text-[11px] md:text-[12px] font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 ${
               activeCompanyId === 'todas'
@@ -129,11 +131,11 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           >
             <span className="w-2 h-2 rounded-full bg-surface-muted-alt" />
             <span>Ambas</span>
-          </button>
+          </button>)}
         </div>
 
         {/* Financial Expense Health Pill */}
-        <button
+{can('reports.financial') && (        <button
           onClick={() => setCurrentScreen('ratios')}
           className={`hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-xl text-[12px] font-bold border transition-colors ${
             expenseAnalysis.status === 'critico'
@@ -157,7 +159,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileMenu }) => {
           <span className="opacity-70 text-[10px] uppercase">
             ({expenseAnalysis.status === 'critico' ? 'Sobrecosto' : expenseAnalysis.status === 'alerta' ? 'Alerta' : 'Óptimo'})
           </span>
-        </button>
+        </button>)}
 
         {/* Live Clock */}
         <div className="text-[13px] font-medium text-ink-muted-2 hidden xl:flex items-center gap-1.5 bg-panel px-3 py-1.5 rounded-lg border border-edge-outline-5">

@@ -4,6 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { AppError } from './utils.js';
 import { prisma } from './prisma.js';
 import { getJwtSecret } from './config.js';
+import { hasPermission, type PosPermission } from './permissions.js';
 
 const TOKEN_TTL_HOURS = 12;
 
@@ -91,6 +92,17 @@ export function requireRoles(...roles: string[]) {
     if (roles.length > 0 && !roles.includes(user.role)) {
       return next(new AppError('No tiene permisos para esta operación.', 403, 'FORBIDDEN'));
     }
+    next();
+  };
+}
+
+/** Middleware para rutas autorizadas. La identidad proviene de la sesión,
+ * no del rol incluido por el cliente ni del JWT aislado. */
+export function requirePermission(permission: PosPermission) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const user = req.auth?.user;
+    if (!user) return next(new AppError('No autorizado.', 401, 'UNAUTHORIZED'));
+    if (!hasPermission(user.role, permission)) return next(new AppError('No tiene permiso para esta operación.', 403, 'FORBIDDEN'));
     next();
   };
 }

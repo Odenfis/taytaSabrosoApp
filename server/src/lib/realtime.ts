@@ -8,6 +8,7 @@ import { prisma } from './prisma.js';
 import { authenticateAccessToken } from './auth.js';
 import { AppError } from './utils.js';
 import { getCorsOrigins } from './config.js';
+import { canAccessCompany, hasPermission, POS_PERMISSIONS, type PosPermission } from './permissions.js';
 
 export interface TableChangedPayload {
   tableId: string;
@@ -52,6 +53,7 @@ export interface KardexChangedPayload {
 let io: Server | null = null;
 
 const roomOf = (companyId: string) => `company:${companyId}`;
+const permissionRoom = (companyId: string, permission: PosPermission) => `${roomOf(companyId)}:permission:${permission}`;
 
 function targetRooms(companyId: string): string[] {
   return [roomOf(companyId)];
@@ -59,7 +61,7 @@ function targetRooms(companyId: string): string[] {
 
 export function emitTableChanged(companyId: string, payload: TableChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('table:changed', payload);
+    io?.to(permissionRoom(companyId, 'tables.read')).emit('table:changed', payload);
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -67,7 +69,7 @@ export function emitTableChanged(companyId: string, payload: TableChangedPayload
 
 export function emitOrderChanged(companyId: string, payload: OrderChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('order:changed', payload);
+    io?.to(permissionRoom(companyId, 'orders.read')).emit('order:changed', payload);
   } catch {
     /* best-effort */
   }
@@ -75,7 +77,7 @@ export function emitOrderChanged(companyId: string, payload: OrderChangedPayload
 
 export function emitKardexChanged(companyId: string, payload: KardexChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('kardex:changed', payload);
+    io?.to(permissionRoom(companyId, 'inventory.read')).emit('kardex:changed', payload);
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -96,7 +98,7 @@ export interface PurchaseChangedPayload {
 
 export function emitPurchaseChanged(companyId: string, payload: PurchaseChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('purchase:changed', payload);
+    io?.to(permissionRoom(companyId, 'purchases.read')).emit('purchase:changed', payload);
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -121,7 +123,7 @@ export interface TransactionChangedPayload {
 
 export function emitTransactionChanged(companyId: string, payload: TransactionChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('transaction:changed', payload);
+    io?.to(permissionRoom(companyId, 'cash.read')).emit('transaction:changed', { ...payload, bankAccountId: null, bankAccountAlias: null });
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -142,7 +144,7 @@ export interface ShiftChangedPayload {
 
 export function emitShiftChanged(companyId: string, payload: ShiftChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('shift:changed', payload);
+    io?.to(permissionRoom(companyId, 'cash.read')).emit('shift:changed', payload);
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -159,7 +161,7 @@ export interface RecipeChangedPayload {
 
 export function emitRecipeChanged(companyId: string, payload: RecipeChangedPayload): void {
   try {
-    io?.to(targetRooms(companyId)).emit('recipe:changed', payload);
+    io?.to(permissionRoom(companyId, 'recipes.manage')).emit('recipe:changed', payload);
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -178,7 +180,7 @@ export interface InsumoChangedPayload {
 }
 
 export function emitInsumoChanged(companyId: string | null, payload: InsumoChangedPayload): void {
-  const rooms = payload.companyId ? [roomOf(payload.companyId)] : [roomOf('el-tayta'), roomOf('el-sabroso')];
+  const rooms = payload.companyId ? [permissionRoom(payload.companyId, 'inventory.read')] : [permissionRoom('el-tayta', 'inventory.read'), permissionRoom('el-sabroso', 'inventory.read')];
   try {
     for (const r of rooms) io?.to(r).emit('insumo:changed', payload);
   } catch {
@@ -197,7 +199,7 @@ export interface PaymentMethodChangedPayload {
 }
 
 export function emitPaymentMethodChanged(companyId: string | null, payload: PaymentMethodChangedPayload): void {
-  const rooms = payload.companyId ? [roomOf(payload.companyId)] : [roomOf('el-tayta'), roomOf('el-sabroso')];
+  const rooms = payload.companyId ? [permissionRoom(payload.companyId, 'payments.read')] : [permissionRoom('el-tayta', 'payments.read'), permissionRoom('el-sabroso', 'payments.read')];
   try {
     for (const r of rooms) io?.to(r).emit('paymentMethod:changed', payload);
   } catch {
@@ -217,7 +219,7 @@ export interface PrinterChangedPayload {
 }
 
 export function emitPrinterChanged(companyId: string | null, payload: PrinterChangedPayload): void {
-  const rooms = payload.companyId ? [roomOf(payload.companyId)] : [roomOf('el-tayta'), roomOf('el-sabroso')];
+  const rooms = payload.companyId ? [permissionRoom(payload.companyId, 'printers.read')] : [permissionRoom('el-tayta', 'printers.read'), permissionRoom('el-sabroso', 'printers.read')];
   try {
     for (const r of rooms) io?.to(r).emit('printer:changed', payload);
   } catch {
@@ -237,7 +239,7 @@ export interface ProductChangedPayload {
 }
 
 export function emitProductChanged(companyId: string | null, payload: ProductChangedPayload): void {
-  const rooms = payload.companyId ? [roomOf(payload.companyId)] : [roomOf('el-tayta'), roomOf('el-sabroso')];
+  const rooms = payload.companyId ? [permissionRoom(payload.companyId, 'products.sale_read')] : [permissionRoom('el-tayta', 'products.sale_read'), permissionRoom('el-sabroso', 'products.sale_read')];
   try {
     for (const r of rooms) io?.to(r).emit('product:changed', payload);
   } catch {
@@ -409,6 +411,10 @@ export function initRealtime(httpServer: HttpServer): Server {
       const request = ++joinRequest;
       try {
         const session = await authenticateAccessToken(socket.data.token);
+        if (!hasPermission(session.user.role, 'tables.read')) {
+          socket.emit('company:error', { code: 'FORBIDDEN' });
+          return;
+        }
         const id = msg?.companyId;
         const assigned = session.user.assignedCompanyId ?? session.user.companyId;
         const companies = await prisma.company.findMany({
@@ -416,9 +422,9 @@ export function initRealtime(httpServer: HttpServer): Server {
           select: { id: true },
         });
         if (!socket.connected || request !== joinRequest) return;
-        const permitted = companies.map((company) => company.id);
+        const permitted = companies.filter((company) => canAccessCompany(session.user, company.id)).map((company) => company.id);
         const ids = id === 'todas' ? permitted : typeof id === 'string' && permitted.includes(id) ? [id] : [];
-        const rooms = ids.map(roomOf);
+        const rooms = ids.flatMap((companyId) => [roomOf(companyId), ...POS_PERMISSIONS.filter((permission) => hasPermission(session.user.role, permission)).map((permission) => permissionRoom(companyId, permission))]);
         for (const room of socket.rooms) {
           if (room.startsWith('company:') && !rooms.includes(room)) await socket.leave(room);
         }

@@ -1,9 +1,11 @@
+import { usePermission } from '../lib/usePermission';
 import React, { useState, useMemo, useEffect } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Zone, TableStatus, Table, CompanyId } from '../types';
 import { NewTableModal } from './NewTableModal';
 
 export const TableMapScreen: React.FC = () => {
+  const can = usePermission();
   const {
     tables,
     selectAndOpenTable,
@@ -82,22 +84,22 @@ export const TableMapScreen: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+{can('orders.modify') && (          <button
             onClick={() => openQuickOrder('Barra')}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-panel-7 hover:bg-panel-8 text-ink-muted-2 hover:text-ink-strong border border-edge-outline-2 text-[12px] font-bold transition-all"
           >
             <span className="material-symbols-outlined text-[16px]">local_bar</span>
             <span>Venta Barra</span>
-          </button>
+          </button>)}
 
-          {activeCompanyId !== 'el-sabroso' && (['Delivery', 'Llevar'] as const).map((zone) => (
+          {can('orders.modify') && activeCompanyId !== 'el-sabroso' && (['Delivery', 'Llevar'] as const).map((zone) => (
             <button key={zone} onClick={() => openQuickOrder(zone)}
               className="px-3 py-2 rounded-xl bg-panel-7 hover:bg-panel-8 border border-edge-outline-2 text-[12px] font-bold">
               + {zone}
             </button>
           ))}
 
-          {(activeCompanyId === 'el-sabroso' || currentUser?.role === 'Administrador' || currentUser?.role === 'Coordinador') && <button
+          {can('tables.manage') && <button
             onClick={() => setIsNewTableModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-brand-solid hover:bg-surface-brand-hover-bright text-ink-on-brand text-[12px] font-bold transition-all shadow-md"
           >

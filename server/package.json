@@ -17,7 +17,11 @@
     "test:products:sql": "node scripts/test-products-sql.mjs",
     "test:orders:sql": "node scripts/test-orders-sql.mjs",
     "orders:review": "tsx scripts/review-empty-orders.ts",
-    "test:insumos:sql": "node scripts/test-insumos-sql.mjs"
+    "test:insumos:sql": "node scripts/test-insumos-sql.mjs",
+    "test:users:sql": "node scripts/test-user-management-sql.mjs",
+    "users:review-roles": "tsx src/scripts/report-user-roles.ts",
+    "test:roles:migration": "node scripts/test-roles-migration.mjs",
+    "backup:verify": "node scripts/backup-local-verify.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

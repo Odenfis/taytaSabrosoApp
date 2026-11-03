@@ -5,6 +5,7 @@ import { AppError, plain, round2, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged, emitPurchaseChanged, emitTransactionChanged } from '../lib/realtime.js';
 import { checkedPurchaseLine, checkedPurchaseTotals } from '../lib/purchaseMath.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 function nowParts() {
   const now = new Date();
@@ -37,7 +38,7 @@ export interface CreatePurchaseInput {
 }
 
 // Registra compra + movimientos Kardex ENTRADA_COMPRA + costo promedio ponderado + libro de caja.
-export async function createPurchase(input: CreatePurchaseInput) {
+export async function createPurchase(input: CreatePurchaseInput, actor?: OperationActor) {
   if (!Number.isFinite(input.total) || input.total < 0 ||
       (input.subtotal !== undefined && !Number.isFinite(input.subtotal)) ||
       (input.igv !== undefined && !Number.isFinite(input.igv))) {
@@ -57,7 +58,10 @@ export async function createPurchase(input: CreatePurchaseInput) {
         where: { clientOpId: data.clientOpId, isDeleted: false },
         include: { items: true },
       });
-      if (existing) return existing;
+      if (existing) {
+        if (existing.companyId !== data.companyId) throw new AppError('El identificador pertenece a otra empresa.', 409, 'PURCHASE_ID_CONFLICT');
+        return existing;
+      }
     }
 
     const selected = await requireActiveInsumos(tx, items.map((i) => i.insumoId), data.companyId);
@@ -216,6 +220,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
       }));
     } else if (purchase.bankAccountId) {
       const bankAcc = await tx.bankAccount.findUnique({ where: { id: purchase.bankAccountId } });
+      if (!bankAcc || bankAcc.companyId !== purchase.companyId || !bankAcc.isActive || bankAcc.isDeleted || bankAcc.currency !== 'PEN') throw new AppError('La cuenta bancaria no está disponible para esta empresa.', 400, 'INVALID_ACCOUNT');
       if (bankAcc) {
         await tx.bankAccount.update({
           where: { id: bankAcc.id },
@@ -275,6 +280,7 @@ export async function createPurchase(input: CreatePurchaseInput) {
       updatedAt: utc.toISOString(),
     }));
 
+    await auditOperation(tx, actor, purchase.companyId, 'crear_compra', purchase.id);
     return enriched;
   }).then((p) => plain(p));
 }
@@ -282,7 +288,8 @@ export async function createPurchase(input: CreatePurchaseInput) {
 // Pasar un vale provisional a documento formal (regularizar).
 export async function regularizePurchase(
   purchaseId: string,
-  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string; items?: CreatePurchaseInput['items'] }
+  input: { invoiceNumber: string; supplierRuc: string; notes?: string; operator?: string; clientOpId?: string; items?: CreatePurchaseInput['items'] },
+  actor?: OperationActor
 ) {
   return inventoryTransaction(async (tx) => {
     await tx.$queryRaw`SELECT [id] FROM [dbo].[compras] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${purchaseId}`;
@@ -437,6 +444,7 @@ export async function regularizePurchase(
       updatedAt: utc.toISOString(),
     }));
 
+    await auditOperation(tx, actor, updated.companyId, 'regularizar_compra', updated.id);
     return tx.purchase.findUniqueOrThrow({ where: { id: updated.id }, include: { items: true } });
   }).then((p) => plain(p));
 }

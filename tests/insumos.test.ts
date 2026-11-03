@@ -4,6 +4,7 @@ import { stageInsumo, stageInsumoDelete, overlayInsumos, insumoPending, markInsu
 import { loadQueue } from '../src/lib/offlineQueue';
 import { replayCall } from '../src/lib/replayQueue';
 import { storeAuthToken } from '../src/lib/api';
+import { signReplay } from './replayFixtures';
 import type { Insumo } from '../src/types';
 class MemoryStorage { data = new Map<string, string>(); getItem(key: string) { return this.data.get(key) ?? null; } setItem(key: string, value: string) { this.data.set(key, value); } removeItem(key: string) { this.data.delete(key); } }
 beforeEach(() => { Object.defineProperty(globalThis, 'localStorage', { value: new MemoryStorage(), configurable: true }); Object.defineProperty(globalThis, 'window', { value: new EventTarget(), configurable: true }); storeAuthToken({ token: 'test', expiresAt: new Date(Date.now() + 60000).toISOString() }); });
@@ -52,14 +53,16 @@ test('replay de edición usa delta y convierte errores de insumo en revisión', 
     const body = JSON.parse(init.body as string); assert.equal(body.minStock, 0); assert.equal(body.expectedVersion, 3); assert.equal(body.companyId, undefined); assert.equal(body.currentStock, undefined);
     return new Response(JSON.stringify({ error: { code: 'INSUMO_VERSION_CONFLICT', message: 'Cambió' } }), { status: 409 });
   });
-  assert.equal((await replayCall(op, op.payload as any)).disposition, 'conflict'); assert.equal(loadQueue().length, 1);
+  assert.equal((await replayCall(await signReplay(op), op.payload as any)).disposition, 'conflict'); assert.equal(loadQueue().length, 1);
 });
 test('replay dependiente de compra con insumo eliminado se conserva para revisión', async () => {
   mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ error: { code: 'INSUMO_DELETED', message: 'Eliminado' } }), { status: 409 }));
-  assert.equal((await replayCall({ clientOpId: 'p', op: 'createPurchase', entity: 'purchase', payload: {}, createdAt: '' }, {})).disposition, 'conflict');
+  const purchase = await signReplay({ clientOpId: '4c9f8a3e-1d2b-4c5d-8e7f-a1b2c3d4e5f6', op: 'createPurchase', entity: 'purchase', payload: {}, createdAt: '' });
+  assert.equal((await replayCall(purchase, {})).disposition, 'conflict');
 });
 test('401 conserva el alta y doble envío comparte una sola petición', async () => {
-  const op = stageInsumo(draft); let calls = 0;
+  const staged = stageInsumo(draft); let calls = 0;
+  const op = await signReplay(staged);
   mock.method(globalThis, 'fetch', async () => { calls++; return new Response(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Reingresa' } }), { status: 401 }); });
   const a = replayCall(op, op.payload as any); const b = replayCall(op, op.payload as any);
   assert.equal(insumoIsSending(String((op.payload as any).id)), true);

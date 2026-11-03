@@ -1,0 +1,156 @@
+import assert from 'node:assert/strict';
+import bcrypt from 'bcryptjs';
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { verifyRegisteredOfflineProof } from '../src/lib/offline-proof.js';
+const database = process.env.USER_TEST_DATABASE;
+assert.match(database ?? '', /^tayta_users_test_[a-f0-9]{32}$/);
+assert.ok(process.env.DATABASE_URL?.includes(';database=' + database));
+const { prisma } = await import('../src/lib/prisma.js');
+const { createManagedUser, updateManagedUser, changeOwnPin, listManagedUsers, setUserArchived } = await import('../src/services/user-management.service.js');
+const { recordClientOp } = await import('../src/lib/oplog.js');
+const master = await import('../src/services/master.service.js');
+const { switchCompanyShift } = await import('../src/services/shift.service.js');
+try {
+  await prisma.company.create({ data: { id: 'tayta', name: 'Empresa', tradeName: 'Empresa', ruc: '20111111111', specialty: '', themeColor: '', accentColor: '', badgeText: '', address: '' } });
+  await prisma.user.create({ data: { id: 'admin-legacy', name: 'Administrador', role: 'Administrador', pinHash: await bcrypt.hash('456789', 4), terminal: 'Prueba' } });
+  await prisma.device.create({ data: { id: 'device', name: 'Prueba', terminalCode: 'TEST' } });
+  // Verificación con registro SQL real: no confundir esta prueba de
+  // procedencia con la ejecución o la asunción administrativa de la cola.
+  {
+    const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const jwk = pair.publicKey.export({ format: 'jwk' });
+    const publicKey = JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
+    const keyId = randomUUID();
+    await prisma.offlineSigningKey.create({ data: { id: keyId, userId: 'admin-legacy', deviceId: 'device', fingerprint: createHash('sha256').update(publicKey).digest('hex'), publicKey } });
+    const envelope = { version: 2, keyId, authorId: 'admin-legacy', deviceId: 'device', companyId: 'tayta', action: 'orders.open', method: 'POST' as const, path: '/orders/open', clientOpId: randomUUID(), body: { tableId: 'mesa' }, params: {}, query: {} };
+    const document = JSON.stringify(envelope);
+    const signature = sign('sha256', Buffer.from(document), { key: pair.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url');
+    const actor = { userId: 'admin-legacy', deviceId: 'device' };
+    assert.deepEqual(await verifyRegisteredOfflineProof(prisma, actor, document, signature), envelope);
+    assert.deepEqual(await verifyRegisteredOfflineProof(prisma, actor, document, signature), envelope);
+    assert.equal(await prisma.offlineSigningKey.count(), 1);
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, { ...actor, userId: 'otro' }, document, signature), (e: any) => e.code === 'OFFLINE_PROOF_SESSION_MISMATCH');
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, actor, document.replace('mesa', 'otra'), signature), (e: any) => e.code === 'OFFLINE_PROOF_INVALID');
+    await prisma.user.update({ where: { id: actor.userId }, data: { isDeleted: true, isActive: false } });
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, actor, document, signature), (e: any) => e.code === 'OFFLINE_ACCESS_REVOKED');
+    const { verifyOfflineProofForAuthor } = await import('../src/lib/offline-proof.js');
+    assert.deepEqual(await verifyOfflineProofForAuthor(prisma, document, signature, { allowInactiveIdentity: true }), envelope);
+    await prisma.user.update({ where: { id: actor.userId }, data: { isDeleted: false, isActive: true } });
+    await prisma.user.update({ where: { id: actor.userId }, data: { assignedCompanyId: 'ajena' } });
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, actor, document, signature), (e: any) => e.code === 'OFFLINE_ACCESS_REVOKED');
+    await prisma.user.update({ where: { id: actor.userId }, data: { assignedCompanyId: null } });
+    await prisma.device.update({ where: { id: actor.deviceId }, data: { isActive: false } });
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, actor, document, signature), (e: any) => e.code === 'OFFLINE_ACCESS_REVOKED');
+    await prisma.device.update({ where: { id: actor.deviceId }, data: { isActive: true } });
+    await prisma.offlineSigningKey.update({ where: { id: keyId }, data: { revokedAt: new Date(), revokedBy: actor.userId } });
+    await assert.rejects(verifyRegisteredOfflineProof(prisma, actor, document, signature), (e: any) => e.code === 'OFFLINE_KEY_UNAVAILABLE');
+  }
+  {
+    const user = await createManagedUser('admin-legacy', 'device', { name:'Temporal', role:'Mesero', companyId:'tayta', isActive:true, pin:'555555' });
+    await prisma.session.create({ data: { id:'archive-session', userId:user.id, deviceId:'device', tokenHash:'archive-hash', expiresAt:new Date(Date.now()+60000) } });
+    await assert.rejects(setUserArchived('admin-legacy','device','admin-legacy',1,true));
+    await assert.rejects(setUserArchived(user.id,'device',user.id,user.version,true), (e:any) => e.code === 'FORBIDDEN');
+    await assert.rejects(setUserArchived('admin-legacy','x'.repeat(100),user.id,user.version,true));
+    assert.equal((await prisma.user.findUniqueOrThrow({where:{id:user.id}})).isDeleted,false);
+    assert.equal(await prisma.session.count({where:{userId:user.id}}),1);
+    const archived = await setUserArchived('admin-legacy','device',user.id,user.version,true);
+    assert.equal(archived.isDeleted,true); assert.equal(archived.isActive,false);
+    assert.equal(await prisma.session.count({where:{userId:user.id}}),0);
+    assert.equal((await listManagedUsers('admin-legacy',true)).some((u:any)=>u.id===user.id),true);
+    await assert.rejects(setUserArchived('admin-legacy','device',user.id,user.version,false,'444444'), (e:any)=>e.code==='USER_VERSION_CONFLICT');
+    await assert.rejects(setUserArchived('admin-legacy','device',user.id,archived.version,false,'456789'), (e:any)=>e.code==='PIN_IN_USE');
+    const restored = await setUserArchived('admin-legacy','device',user.id,archived.version,false,'444444');
+    assert.equal(restored.isDeleted,false); assert.equal(restored.isActive,false);
+    assert.deepEqual((await prisma.userAccessAudit.findMany({where:{subjectUserId:user.id},orderBy:{createdAt:'asc'}})).map(a=>a.action),['crear','archivar','restaurar']);
+    // El resto de la suite utiliza contadores absolutos.
+    await prisma.userAccessAudit.deleteMany({where:{subjectUserId:user.id}});
+    await prisma.user.delete({where:{id:user.id}});
+    console.log('Archivo y restauración SQL: sesiones, auditoría, rollback, versión y PIN aprobados.');
+  }
+  const data = { name: 'Mozo', role: 'Mesero' as const, companyId: 'tayta', isActive: true, pin: '123456' };
+  await prisma.user.create({ data: { id: 'scoped-admin', name: 'Admin limitado', role: 'Administrador', companyId: 'tayta', assignedCompanyId: 'tayta', pinHash: await bcrypt.hash('987654', 4), terminal: 'Prueba' } });
+  await assert.rejects(listManagedUsers('scoped-admin'), (e: any) => e.code === 'FORBIDDEN');
+  await assert.rejects(createManagedUser('scoped-admin', 'device', { ...data, companyId: null }), (e: any) => e.code === 'FORBIDDEN');
+  await assert.rejects(updateManagedUser('admin-legacy', 'device', 'admin-legacy', 1, { name: 'Admin', role: 'Administrador', companyId: 'tayta', isActive: true }), (e: any) => e.code === 'LAST_GLOBAL_ADMINISTRATOR');
+  await prisma.user.delete({ where: { id: 'scoped-admin' } });
+  const created = await createManagedUser('admin-legacy', 'device', data);
+  assert.equal(created.role, 'Mesero'); assert.equal(created.companyId, 'tayta');
+  assert.equal('pinHash' in created, false);
+  await assert.rejects(createManagedUser('admin-legacy', 'device', { ...data, name: 'Duplicado' }), (e: any) => e.code === 'PIN_IN_USE');
+  await assert.rejects(updateManagedUser('admin-legacy', 'device', 'admin-legacy', 1, { name: 'Admin', role: 'Cajero', companyId: null, isActive: false }), (e: any) => e.code === 'LAST_ADMINISTRATOR');
+  await prisma.session.create({ data: { id: 'session', userId: created.id, deviceId: 'device', tokenHash: 'test-hash', expiresAt: new Date(Date.now() + 60000) } });
+  const changed = await updateManagedUser('admin-legacy', 'device', created.id, created.version, { name: 'Cajera', role: 'Cajero', companyId: 'tayta', isActive: true });
+  assert.equal(changed.version, created.version + 1);
+  assert.equal(await prisma.session.count({ where: { userId: created.id } }), 0);
+  await assert.rejects(updateManagedUser('admin-legacy', 'device', created.id, created.version, { name: 'Anterior', role: 'Mesero', companyId: 'tayta', isActive: true }), (e: any) => e.code === 'USER_VERSION_CONFLICT');
+  await assert.rejects(createManagedUser(created.id, 'device', { ...data, pin: '654321' }), (e: any) => e.code === 'FORBIDDEN');
+  assert.equal(await prisma.userAccessAudit.count(), 2);
+  assert.equal(await prisma.user.count(), 2);
+  const concurrent = await Promise.allSettled([
+    createManagedUser('admin-legacy', 'device', { ...data, name: 'Uno', pin: '777777' }),
+    createManagedUser('admin-legacy', 'device', { ...data, name: 'Dos', pin: '777777' }),
+  ]);
+  assert.equal(concurrent.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+  const candidateHashes = await prisma.user.findMany({ select: { pinHash: true } });
+  let matching = 0;
+  for (const candidate of candidateHashes) if (await bcrypt.compare('777777', candidate.pinHash)) matching++;
+  assert.equal(matching, 1);
+  assert.equal(await prisma.userAccessAudit.count(), 3);
+  await assert.rejects(changeOwnPin(created.id, 'device', '123456', '777777'), (e: any) => e.code === 'PIN_IN_USE');
+  await assert.rejects(changeOwnPin(created.id, 'device', 'incorrecto', '765432'), (e: any) => e.code === 'INVALID_CURRENT_PIN');
+  await prisma.session.create({ data: { id: 'session-2', userId: created.id, deviceId: 'device', tokenHash: 'test-hash-2', expiresAt: new Date(Date.now() + 60000) } });
+  await changeOwnPin(created.id, 'device', '123456', '765432');
+  assert.equal(await prisma.session.count({ where: { userId: created.id } }), 0);
+  assert.equal(await prisma.userAccessAudit.count(), 4);
+  assert.equal(await bcrypt.compare('765432', (await prisma.user.findUniqueOrThrow({ where: { id: created.id } })).pinHash), true);
+  await recordClientOp({ auth: { user: { id: 'admin-legacy' }, deviceId: 'device' }, body: { companyId: 'tayta', clientOpId: 'op-audit-test', adminPin: 'sensitive' }, params: {}, query: {} } as never, { entity: 'pedido', operation: 'prueba' }, { status: 'APLICADO' });
+  const logged = await prisma.clientOp.findUniqueOrThrow({ where: { clientOpId: 'op-audit-test' } });
+  assert.equal(logged.actorUserId, 'admin-legacy');
+  assert.equal(logged.companyId, 'tayta');
+  assert.equal(logged.payload.includes('sensitive'), false);
+  const actor = { userId: 'admin-legacy', deviceId: 'device' };
+  const invalidActor = { ...actor, userId: 'x'.repeat(100) };
+  await assert.rejects(master.createTable({ companyId: 'tayta', number: 'ROLLBACK', capacity: 4, zone: 'Salón' }, invalidActor));
+  assert.equal(await prisma.table.count({ where: { companyId: 'tayta', number: 'ROLLBACK' } }), 0);
+  await assert.rejects(master.createProduct({ companyId: 'tayta', name: 'Producto rollback', price: 10, category: 'platos' }, invalidActor));
+  assert.equal(await prisma.product.count({ where: { companyId: 'tayta', name: 'Producto rollback' } }), 0);
+  await assert.rejects(master.createInsumo({ companyId: 'tayta', name: 'Insumo rollback', category: 'Abarrotes & Especias', unit: 'kg', currentStock: 0, minStock: 0, costPerUnit: 1 }, null, invalidActor));
+  assert.equal(await prisma.insumo.count({ where: { companyId: 'tayta', name: 'Insumo rollback' } }), 0);
+  await assert.rejects(master.createBankAccount({ companyId: 'tayta', bankName: 'Prueba', accountNumber: 'rollback', accountType: 'Ahorros', holderName: 'Empresa', alias: 'Rollback' }, invalidActor));
+  assert.equal(await prisma.bankAccount.count({ where: { companyId: 'tayta', alias: 'Rollback' } }), 0);
+  const account = await master.createBankAccount({ companyId: 'tayta', bankName: 'Prueba', accountNumber: '123', accountType: 'Ahorros', holderName: 'Empresa', alias: 'Prueba' }, actor);
+  await master.updateBankAccount(account.id, { alias: 'Nuevo' }, actor);
+  const method = await master.createPaymentMethod({ companyId: 'tayta', name: 'Prueba', category: 'Transferencia Bancaria', bankAccountId: account.id }, actor);
+  await master.updatePaymentMethod(method.id, { name: 'Prueba actualizada' }, actor);
+  await master.deletePaymentMethod(method.id, actor);
+  const printer = await master.createPrinter({ companyId: 'tayta', name: 'Prueba', role: 'caja', connectionType: 'LAN_TCP' }, actor);
+  await master.updatePrinter(printer.id, { name: 'Nueva' }, actor);
+  await master.deletePrinter(printer.id, actor);
+  const table = await master.createTable({ companyId: 'tayta', number: 'T1', capacity: 4, zone: 'Salón' }, actor);
+  await master.updateTable(table.id, { capacity: 5 }, actor);
+  await master.deleteTable(table.id, actor);
+  await master.deleteBankAccount(account.id, actor);
+  const product = await master.createProduct({ companyId: 'tayta', name: 'Producto prueba', price: 10, category: 'platos' }, actor);
+  await master.updateProduct(product.id, { name: 'Producto nuevo', expectedVersion: product.version }, actor);
+  const supply = await master.createInsumo({ companyId: 'tayta', name: 'Insumo prueba', category: 'Abarrotes & Especias', unit: 'kg', currentStock: 0, minStock: 0, costPerUnit: 1 }, null, actor);
+  await master.updateInsumo(supply.id, { name: 'Insumo nuevo', expectedVersion: supply.version }, null, actor);
+  const recipe = await master.createRecipe({ companyId: 'tayta', productId: product.id, productName: 'Producto nuevo', category: 'platos', salePrice: 10, totalCost: 0, theoreticalFoodCostPct: 0, ingredients: [] }, actor);
+  await master.updateRecipe(recipe.id, { preparationNotes: 'Prueba' }, actor);
+  await master.deleteRecipe(recipe.id, actor);
+  await master.deleteInsumo(supply.id, undefined, null, actor);
+  await master.deleteProduct(product.id, actor);
+  const shiftInput = { companyId: 'tayta', targetShift: 'Noche', reportedCash: 350, initialCashForNext: 100, operator: 'Administrador', clientOpId: 'shift-audit-test' };
+  const [shiftA, shiftB] = await Promise.all([switchCompanyShift(shiftInput, actor), switchCompanyShift(shiftInput, actor)]);
+  assert.deepEqual(shiftA, shiftB);
+  assert.equal(await prisma.shiftRecord.count({ where: { companyId: 'tayta' } }), 1);
+  await assert.rejects(switchCompanyShift({ ...shiftInput, companyId: 'otra-empresa' }, actor), (e: any) => e.code === 'SHIFT_ID_CONFLICT');
+  await assert.rejects(switchCompanyShift({ ...shiftInput, targetShift: 'Día', clientOpId: 'shift-rollback-test' }, invalidActor));
+  assert.equal(await prisma.shiftRecord.count({ where: { companyId: 'tayta' } }), 1);
+  assert.equal((await prisma.companyShift.findUniqueOrThrow({ where: { companyId: 'tayta' } })).currentShift, 'Noche');
+  assert.equal(await prisma.orderOperationResult.count({ where: { id: 'shift:shift-rollback-test' } }), 0);
+  const actions = await prisma.operationAudit.findMany({ where: { actorUserId: actor.userId }, select: { action: true, companyId: true, deviceId: true } });
+  for (const action of ['crear_cuenta_bancaria', 'actualizar_cuenta_bancaria', 'eliminar_cuenta_bancaria', 'crear_medio_pago', 'actualizar_medio_pago', 'eliminar_medio_pago', 'crear_impresora', 'actualizar_impresora', 'eliminar_impresora', 'crear_mesa', 'actualizar_mesa', 'eliminar_mesa', 'crear_producto', 'actualizar_producto', 'eliminar_producto', 'crear_insumo', 'actualizar_insumo', 'eliminar_insumo', 'crear_receta', 'actualizar_receta', 'eliminar_receta', 'cerrar_turno']) {
+    assert.equal(actions.filter((entry) => entry.action === action && entry.companyId === 'tayta' && entry.deviceId === 'device').length, 1, action);
+  }
+  console.log('Gestión de usuarios SQL: PIN único, último administrador, sesiones y auditoría correctos.');
+} finally { await prisma.$disconnect(); }

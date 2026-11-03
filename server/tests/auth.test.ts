@@ -4,10 +4,11 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { generateKeyPairSync } from 'node:crypto';
 import { io as connect, type Socket as ClientSocket } from 'socket.io-client';
 import type { Server as SocketServer } from 'socket.io';
 import { createApp } from '../src/app.js';
-import { initRealtime } from '../src/lib/realtime.js';
+import { emitKardexChanged, initRealtime } from '../src/lib/realtime.js';
 import { prisma } from '../src/lib/prisma.js';
 import { authenticateAccessToken, hashToken, signAccessToken } from '../src/lib/auth.js';
 
@@ -65,6 +66,7 @@ beforeEach(async () => {
   stubRepository(prisma.user, 'findFirst', async () => user);
   stubRepository(prisma.device, 'upsert', async () => device);
   stubRepository(prisma.device, 'update', async () => device);
+  stubRepository(prisma.clientOp, 'upsert', async () => ({}));
   stubRepository(prisma.company, 'findMany', async ({ where }: { where?: { id?: string } } = {}) => (
     ['el-tayta', 'el-sabroso'].filter((id) => !where?.id || where.id === id).map((id) => ({ id }))
   ));
@@ -104,6 +106,176 @@ function sessionToken() {
 
 function getSession(token: string) { return sessions.get(hashToken(token))!; }
 
+test('registro de clave usa identidad autenticada, impide reutilización ajena y respeta revocación', async () => {
+  const token = sessionToken();
+  const jwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
+  const body = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
+  let key: any;
+  stubRepository(prisma.offlineSigningKey, 'findUnique', async ({ where }: any) => key && (where.id === key.id || where.fingerprint === key.fingerprint) ? key : null);
+  stubRepository(prisma.offlineSigningKey, 'create', async ({ data }: any) => (key = { ...data, revokedAt: null }));
+  stubRepository(prisma.offlineSigningKey, 'updateMany', async ({ data }: any) => { Object.assign(key, data); return { count: 1 }; });
+  stubRepository(prisma, '$transaction', async (run: any) => run(prisma));
+  stubRepository(prisma.user, 'findUniqueOrThrow', async () => user);
+  const audits: any[] = [];
+  stubRepository(prisma.userAccessAudit, 'create', async ({ data }: any) => { audits.push(data); return data; });
+  assert.equal((await request('/sync/signing-keys', undefined, body)).status, 401);
+  assert.equal((await request('/sync/signing-keys', token, { ...body, userId: 'otro' })).status, 400);
+  const created = await request('/sync/signing-keys', token, body);
+  assert.equal(created.status, 201);
+  assert.equal(key.userId, user.id);
+  assert.equal(key.deviceId, device.id);
+  assert.equal((await request('/sync/signing-keys', token, body)).status, 200);
+  getSession(token).user.id = 'otro';
+  assert.equal((await request('/sync/signing-keys', token, body)).status, 409);
+  const remove = () => fetch(`${url}/api/sync/signing-keys/${key.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  assert.equal((await remove()).status, 404);
+  getSession(token).user.id = user.id;
+  assert.equal((await remove()).status, 200);
+  assert.equal(key.revokedBy, user.id);
+  assert.equal(audits[0].actorUserId, user.id);
+  assert.equal(audits[0].deviceId, device.id);
+  assert.equal(audits[0].action, 'revocar_clave_offline');
+  assert.equal((await request('/sync/signing-keys', token, body)).status, 409);
+});
+
+test('informes financieros rechazan perfiles limitados y empresas ajenas mediante HTTP', async () => {
+  const token = sessionToken();
+  for (const role of ['Mesero', 'Cajero', 'Jefe de restaurante', 'Coordinador']) {
+    getSession(token).user.role = role;
+    assert.equal((await request('/reports/summary', token)).status, 403, role);
+    assert.equal((await request('/reports/ratios', token)).status, 403, role);
+  }
+  getSession(token).user.role = 'Administrador';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  assert.equal((await request('/reports/summary?companyId=el-sabroso', token)).status, 403);
+  assert.equal((await request('/reports/ratios?companyId=el-sabroso', token)).status, 403);
+});
+
+test('informe de administrador limitado excluye movimientos sin empresa mediante HTTP', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Administrador';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  let transactionWhere: unknown;
+  stubRepository(prisma.transaction, 'findMany', async ({ where }: { where: unknown }) => { transactionWhere = where; return []; });
+  stubRepository(prisma.order, 'findMany', async () => []);
+  stubRepository(prisma.table, 'findMany', async () => []);
+  stubRepository(prisma.shiftRecord, 'findMany', async () => []);
+  stubRepository(prisma.companyShift, 'findUnique', async () => null);
+  const response = await request('/reports/summary', token);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).companyId, 'el-tayta');
+  assert.deepEqual(transactionWhere, { isDeleted: false, companyId: 'el-tayta' });
+});
+
+test('cuentas bancarias requieren administrador y respetan empresa en HTTP', async () => {
+  const token = sessionToken();
+  let writes = 0;
+  stubRepository(prisma.bankAccount, 'findUnique', async () => ({ companyId: 'el-sabroso', isDeleted: false }));
+  stubRepository(prisma.bankAccount, 'update', async () => { writes++; return {}; });
+  for (const role of ['Mesero', 'Cajero', 'Jefe de restaurante']) {
+    getSession(token).user.role = role;
+    assert.equal((await request('/catalogs/bank-accounts', token)).status, 403, role);
+    assert.equal((await request('/catalogs/bank-accounts', token, {})).status, 403, role);
+  }
+  getSession(token).user.role = 'Administrador';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  assert.equal((await request('/catalogs/bank-accounts?companyId=el-sabroso', token)).status, 403);
+  const response = await fetch(`${url}/api/catalogs/bank-accounts/other`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(response.status, 403);
+  assert.equal(writes, 0);
+});
+
+test('medios de pago no revelan cuentas ni comisiones a cajero', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Cajero';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  let receivedWhere: unknown;
+  stubRepository(prisma.customPaymentMethod, 'findMany', async ({ where }: { where: unknown }) => {
+    receivedWhere = where;
+    return [{ id: 'method', name: 'Yape', companyId: 'el-tayta', bankAccountId: 'account', bankAccountAlias: 'privado', commissionPct: 2, bankAccount: { accountNumber: 'privado', currentBalance: 500 } }];
+  });
+  const response = await request('/catalogs/payment-methods', token);
+  assert.equal(response.status, 200);
+  const [method] = await response.json();
+  assert.equal(method.name, 'Yape');
+  assert.equal(method.bankAccount, undefined);
+  assert.equal(method.bankAccountAlias, undefined);
+  assert.equal(method.commissionPct, undefined);
+  assert.deepEqual(receivedWhere, { isDeleted: false, OR: [{ companyId: 'el-tayta' }, { companyId: null }] });
+  assert.equal((await request('/catalogs/payment-methods', token, {})).status, 403);
+});
+
+test('API rechaza acciones no permitidas aunque se invoquen directamente', async () => {
+  const token = sessionToken();
+  const forbidden = async (role: string, path: string, method = 'GET') => {
+    getSession(token).user.role = role;
+    const response = await fetch(`${url}/api${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(method === 'GET' ? {} : { body: '{}' }) });
+    assert.equal(response.status, 403, `${role} ${method} ${path}`);
+  };
+  await forbidden('Mesero', '/operations/transactions');
+  await forbidden('Mesero', '/operations/tables/t/pay', 'POST');
+  await forbidden('Mesero', '/catalogs/insumos');
+  await forbidden('Cajero', '/operations/orders/open', 'POST');
+  await forbidden('Cajero', '/catalogs/products', 'POST');
+  await forbidden('Jefe de restaurante', '/sync/client-ops');
+  await forbidden('Coordinador', '/operations/orders/active');
+});
+
+test('catálogo de venta limita la consulta omitida o explícita a la empresa del usuario', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Mesero';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  let receivedWhere: unknown;
+  stubRepository(prisma.product, 'findMany', async ({ where }: { where: unknown }) => { receivedWhere = where; return []; });
+  assert.equal((await request('/catalogs/products', token)).status, 200);
+  assert.deepEqual(receivedWhere, { isDeleted: false, companyId: 'el-tayta' });
+  assert.equal((await request('/catalogs/products?companyId=el-sabroso', token)).status, 403);
+});
+
+test('operaciones por identificador comprueban empresa del recurso en el servidor', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Mesero';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  stubRepository(prisma.order, 'findUnique', async () => ({ companyId: 'el-sabroso' }));
+  stubRepository(prisma.table, 'findUnique', async () => ({ companyId: 'el-sabroso' }));
+  assert.equal((await request('/operations/orders/other', token)).status, 403);
+  assert.equal((await request('/operations/orders/open', token, { tableId: 'other' })).status, 403);
+  assert.equal((await request('/operations/orders/quick-bar', token, { companyId: 'el-sabroso' })).status, 403);
+});
+
+test('gestor limitado no modifica productos de otra empresa por identificador', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Jefe de restaurante';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  stubRepository(prisma.product, 'findUnique', async () => ({ companyId: 'el-sabroso' }));
+  const response = await fetch(`${url}/api/catalogs/products/other`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Cambio' }) });
+  assert.equal(response.status, 403);
+  assert.equal((await request('/catalogs/products', token, { companyId: 'el-sabroso' })).status, 403);
+});
+
+test('operación no admite producto relacionado de otra empresa', async () => {
+  const token = sessionToken();
+  getSession(token).user.role = 'Mesero';
+  getSession(token).user.assignedCompanyId = 'el-tayta';
+  stubRepository(prisma.order, 'findUnique', async () => ({ companyId: 'el-tayta' }));
+  stubRepository(prisma.product, 'findUnique', async () => ({ companyId: 'el-sabroso' }));
+  assert.equal((await request('/operations/orders/one/items', token, { productId: 'other', quantity: 1 })).status, 403);
+  getSession(token).user.role = 'Administrador';
+  getSession(token).user.assignedCompanyId = null;
+  assert.equal((await request('/operations/orders/one/items', token, { productId: 'other', quantity: 1 })).status, 403);
+});
+
+test('sesión de mozo no recibe turnos financieros ni empresas ajenas', async () => {
+  const token = sessionToken();
+  const assigned = { ...user, role: 'Mesero', assignedCompanyId: 'el-tayta' };
+  stubRepository(prisma.user, 'findFirst', async () => assigned);
+  const response = await request('/auth/me', token);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.deepEqual(data.companies.map((company: { id: string }) => company.id), ['el-tayta']);
+  assert.deepEqual(data.companyShifts, []);
+});
+
 function request(path: string, token?: string, body?: unknown) {
   return fetch(`${url}/api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
@@ -136,6 +308,29 @@ async function connectClient(token: string) {
   await connected;
   return client;
 }
+
+test('eventos de inventario no llegan a mozo ni cajero', async () => {
+  const waiterToken = sessionToken();
+  getSession(waiterToken).user.role = 'Mesero';
+  const cashierToken = sessionToken();
+  getSession(cashierToken).user.role = 'Cajero';
+  const managerToken = sessionToken();
+  getSession(managerToken).user.role = 'Jefe de restaurante';
+  const sockets = await Promise.all([waiterToken, cashierToken, managerToken].map(connectClient));
+  let receivedByRestricted = false;
+  sockets.slice(0, 2).forEach((socket) => socket.on('kardex:changed', () => { receivedByRestricted = true; }));
+  sockets.forEach((socket) => socket.emit('join-company', { companyId: 'el-tayta' }));
+  for (let i = 0; i < 100; i++) {
+    if (sockets.every((socket) => realtime.sockets.sockets.get(socket.id!)?.rooms.has('company:el-tayta'))) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(sockets.every((socket) => realtime.sockets.sockets.get(socket.id!)?.rooms.has('company:el-tayta')));
+  const received = event(sockets[2], 'kardex:changed');
+  emitKardexChanged('el-tayta', { insumoId: 'i', insumoName: 'Insumo', companyId: 'el-tayta', type: 'entrada', quantity: 1, unit: 'kg', unitCost: 5, totalCost: 5, stockBefore: 0, stockAfter: 1, referenceDoc: '', updatedAt: new Date().toISOString() });
+  await received;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(receivedByRestricted, false);
+});
 
 test('login conserva el contrato, oculta hashes y emite JWT únicos', async () => {
   const responses = await Promise.all([

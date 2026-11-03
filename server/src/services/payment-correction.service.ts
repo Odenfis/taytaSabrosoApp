@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { AppError, plain, toNum } from '../lib/utils.js';
 import { emitTransactionChanged } from '../lib/realtime.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 export interface CorrectPaymentInput {
   transactionId: string;
@@ -25,7 +26,7 @@ export async function listPaymentCorrections(transactionId: string) {
   }));
 }
 
-export async function correctPayment(input: CorrectPaymentInput) {
+export async function correctPayment(input: CorrectPaymentInput, actor?: OperationActor) {
   // Verify authority before taking financial locks. The PIN is never logged or persisted.
   const subject = await prisma.transaction.findUnique({ where: { id: input.transactionId }, select: { companyId: true } });
   if (!subject?.companyId) throw new AppError('Cobro no encontrado.', 404, 'NOT_FOUND');
@@ -140,6 +141,7 @@ export async function correctPayment(input: CorrectPaymentInput) {
       newBankAccountAlias: alias, newReference: reference, reason: input.reason.trim(), amount, closedShift,
       adjustmentTransactionId,
     } });
+    await auditOperation(db, actor, order.companyId, 'corregir_medio_pago', correction.id);
     return { correction, changed: true };
   }, { timeout: 15000 });
   if (result.changed) emitTransactionChanged(subject.companyId, {

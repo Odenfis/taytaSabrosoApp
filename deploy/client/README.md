@@ -32,7 +32,7 @@ Luego detiene `app` y `web`, aplica y verifica las migraciones y genera `deploy\
 
 Antes de reiniciar, el mismo archivo genera `mesas-antes.json` con las mesas y pedidos activos de El Tayta. Si el informe indica `ready`, revise la distribución propuesta y confirme la actualización; se guardan `mesas-aplicado.json` y `mesas-despues.json`. Si indica `blocked`, el script no modifica mesas: revise pedidos abiertos, mesas ocupadas o números en conflicto. La operación es idempotente (`already_configured` en un segundo intento), conserva el historial y deja El Sabroso intacto. Delivery y Llevar comparten la serie automática desde 36; sus pedidos sin conexión muestran `Pendiente` hasta sincronizar.
 
-Con la distribución instalada, el administrador puede añadir mesas físicas desde «Nueva Mesa» en Primer Piso, Mezanine, Jardín o Terraza. La API asigna `P01`, `M01`, `J01` o `T01` y continúa cada serie sin reutilizar números retirados; exige conexión y muestra el alta en otras terminales. La cuenta de coordinador tendrá el mismo permiso cuando se habilite su gestión. El configurador de futuras actualizaciones reconoce las mesas añadidas y las conserva; si falta una mesa base y ya existen ampliaciones, se bloquea para revisión.
+Con la distribución instalada, el administrador puede añadir mesas físicas desde «Nueva Mesa» en Primer Piso, Mezanine, Jardín o Terraza. La API asigna `P01`, `M01`, `J01` o `T01` y continúa cada serie sin reutilizar números retirados; exige conexión y muestra el alta en otras terminales. El jefe de restaurante también tiene este permiso. Los perfiles antiguos requieren asignación explícita; Coordinador no recibe privilegios automáticamente. El configurador de futuras actualizaciones reconoce las mesas añadidas y las conserva; si falta una mesa base y ya existen ampliaciones, se bloquea para revisión.
 
 Después recargue cada navegador con `Ctrl+F5`, compruebe el saldo de Tomate Italiano y registre el efecto de una compra pequeña. Conserve la salida del `.bat`, el commit, la imagen y los tres informes. Si un insumo figura como `revision_manual`, no fuerce su corrección con este procedimiento.
 
@@ -50,3 +50,7 @@ Caddy crea una CA local persistida en el volumen `caddy_data`. Exporte su certif
 - Antes de operar ventas reales, compruebe en una base de prueba el flujo completo de catálogo, compra, despacho, cobro, caja, dos terminales, corte de Internet con LAN disponible, impresión física y restauración. Registre el resultado y cualquier incidente. El arranque de los contenedores no acredita esas pruebas de campo.
 
 Esta versión no incluye Azure ni la pantalla dedicada de Cocina/Barra. El texto de voucher debe validarse con el cliente antes de imprimir comprobantes reales; el POS no implementa emisión electrónica fiscal.
+
+## Actualización de roles
+
+Consulte [el procedimiento de roles](ROLES.md) antes de actualizar. El actualizador comprueba los usuarios con `report-user-roles.js --check` antes de detener la aplicación: exige administrador global activo y bloquea roles antiguos o empresas incoherentes. Esa comprobación no reemplaza la revisión de pendientes en cada navegador ni la prueba de restauración.

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AppError, plain, round2, toNum } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import { emitKardexChanged } from '../lib/realtime.js';
+import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
 
 function nowParts() {
   const now = new Date();
@@ -22,13 +23,19 @@ export async function addKardexAdjustment(input: {
   reason: string;
   companyId?: string;
   clientOpId?: string;
-}) {
+}, actor?: OperationActor) {
   return inventoryTransaction(async (tx) => {
     await lockInsumos(tx, [input.insumoId]);
     // Un reintento ya aplicado sigue siendo válido aunque el insumo se haya dado de baja.
     if (input.clientOpId) {
       const movement = await tx.kardexMovement.findUnique({ where: { clientOpId: input.clientOpId } });
-      if (movement) return { movement, companyId: movement.companyId };
+      if (movement) {
+        const expectedQuantity = input.type === 'AJUSTE_MERMA' ? -Math.abs(input.quantity) : Math.abs(input.quantity);
+        if (movement.insumoId !== input.insumoId || (input.companyId && movement.companyId !== input.companyId) || movement.type !== input.type || toNum(movement.quantity) !== expectedQuantity) {
+          throw new AppError('El identificador corresponde a otro ajuste.', 409, 'KARDEX_ID_CONFLICT');
+        }
+        return { movement, companyId: movement.companyId };
+      }
     }
     const insumo = await tx.insumo.findFirst({ where: { id: input.insumoId, isDeleted: false } });
     if (!insumo) throw new AppError('El insumo fue eliminado o no existe.', 409, 'INSUMO_DELETED');
@@ -99,6 +106,7 @@ export async function addKardexAdjustment(input: {
       updatedAt: movement.timestamp.toISOString(),
     }));
 
+    await auditOperation(tx, actor, companyId, 'ajustar_kardex', movement.id);
     return { movement, companyId };
   }).then((r) => plain(r));
 }

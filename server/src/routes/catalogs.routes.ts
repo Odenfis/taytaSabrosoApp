@@ -1,6 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth, requireRoles } from '../lib/auth.js';
+import { requireAuth, requirePermission, requireRoles } from '../lib/auth.js';
+import { canAccessCompany, hasPermission } from '../lib/permissions.js';
+import { reportCompany } from '../lib/report-access.js';
+import { enforceRoutePermission } from '../lib/route-permissions.js';
+import { scopeCompanyQueries } from '../lib/company-query.js';
+import { scopeCatalogMutations } from '../lib/catalog-company.js';
+import { operationActor } from '../lib/operation-audit.js';
+import { verifyOfflineAuthorship } from '../lib/offline-authorship.js';
 import { AppError } from '../lib/utils.js';
 import { prisma } from '../lib/prisma.js';
 import * as master from '../services/master.service.js';
@@ -11,7 +18,7 @@ import { createProductSchema, updateProductSchema } from '../services/product.se
 import { TAYTA_PHYSICAL_PREFIXES } from '../lib/taytaTableLayout.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, enforceRoutePermission('catalogs'), verifyOfflineAuthorship('catalogs'), scopeCompanyQueries(['/companies', '/tables', '/products', '/insumos', '/recipes', '/bank-accounts', '/payment-methods', '/printers']), scopeCatalogMutations);
 
 // Ledger de operaciones (operaciones_cliente): APPLIED tras el servicio, FAILED_* en fallos.
 function oplog(req: Request, entity: OpEntity, operation: string) {
@@ -37,13 +44,13 @@ router.get('/companies', async (req, res, next) => {
 });
 
 // ============ TABLES ============
-router.post('/tables/physical', requireRoles('Administrador', 'Coordinador'), async (req, res, next) => {
+router.post('/tables/physical', async (req, res, next) => {
   try {
     const user = req.auth!.user;
     if ((user.assignedCompanyId ?? user.companyId) && (user.assignedCompanyId ?? user.companyId) !== 'el-tayta')
       throw new AppError('No tiene acceso a El Tayta.', 403, 'FORBIDDEN');
     const body = z.object({ zone: z.enum(Object.keys(TAYTA_PHYSICAL_PREFIXES) as [keyof typeof TAYTA_PHYSICAL_PREFIXES, ...(keyof typeof TAYTA_PHYSICAL_PREFIXES)[]]), capacity: z.number().int().min(1).max(20) }).parse(req.body);
-    res.status(201).json(await master.createTaytaPhysicalTable(body));
+    res.status(201).json(await master.createTaytaPhysicalTable(body, operationActor(req)));
   } catch (err) { next(err); }
 });
 router.get('/tables', async (req, res, next) => {
@@ -67,7 +74,7 @@ router.post('/tables', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    const created = await master.createTable(body);
+    const created = await master.createTable(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -89,7 +96,7 @@ router.patch('/tables/:id', async (req, res, next) => {
         status: z.enum(['libre', 'ocupada', 'por_cobrar']).optional(),
       })
       .parse(req.body);
-    const created = await master.updateTable(id, body);
+    const created = await master.updateTable(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -102,7 +109,7 @@ router.delete('/tables/:id', async (req, res, next) => {
   const op = oplog(req, 'mesa', 'eliminar_mesa');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deleteTable(id);
+    const created = await master.deleteTable(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -127,7 +134,7 @@ router.post('/products', async (req, res, next) => {
   const op = oplog(req, 'producto', 'crear_producto');
   try {
     const body = createProductSchema.parse(req.body);
-    const created = await master.createProduct(body);
+    const created = await master.createProduct(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -141,7 +148,7 @@ router.patch('/products/:id', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
     const body = updateProductSchema.parse(req.body);
-    const created = await master.updateProduct(id, body);
+    const created = await master.updateProduct(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -154,7 +161,7 @@ router.delete('/products/:id', async (req, res, next) => {
   const op = oplog(req, 'producto', 'eliminar_producto');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deleteProduct(id);
+    const created = await master.deleteProduct(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -179,7 +186,7 @@ router.post('/insumos', async (req, res, next) => {
   const op = oplog(req, 'insumo', 'crear_insumo');
   try {
     const body = createInsumoSchema.parse(req.body);
-    const created = await master.createInsumo(body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
+    const created = await master.createInsumo(body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -193,7 +200,7 @@ router.patch('/insumos/:id', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
     const body = updateInsumoSchema.parse(req.body);
-    const created = await master.updateInsumo(id, body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
+    const created = await master.updateInsumo(id, body, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -207,7 +214,7 @@ router.delete('/insumos/:id', async (req, res, next) => {
   try {
     const { id } = idParam.parse(req.params);
     const query = z.object({ expectedVersion: z.coerce.number().int().positive().optional() }).parse(req.query);
-    const created = await master.deleteInsumo(id, query.expectedVersion, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId);
+    const created = await master.deleteInsumo(id, query.expectedVersion, req.auth?.user.assignedCompanyId ?? req.auth?.user.companyId, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -253,7 +260,7 @@ router.post('/recipes', async (req, res, next) => {
         ingredients: z.array(recipeIngredientSchema).default([]),
       })
       .parse(req.body);
-    const created = await master.createRecipe(body);
+    const created = await master.createRecipe(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -287,7 +294,7 @@ router.patch('/recipes/:id', async (req, res, next) => {
         ingredients: z.array(recipeIngredientSchema).optional(),
       })
       .parse(req.body);
-    const created = await master.updateRecipe(id, body);
+    const created = await master.updateRecipe(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -300,7 +307,7 @@ router.delete('/recipes/:id', async (req, res, next) => {
   const op = oplog(req, 'receta', 'eliminar_receta');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deleteRecipe(id);
+    const created = await master.deleteRecipe(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -310,10 +317,19 @@ router.delete('/recipes/:id', async (req, res, next) => {
 });
 
 // ============ BANK ACCOUNTS ============
+router.use('/bank-accounts', requirePermission('banks.manage'));
+
+async function assertBankAccountAccess(req: Request, id: string) {
+  const account = await prisma.bankAccount.findUnique({ where: { id }, select: { companyId: true, isDeleted: true } });
+  if (!account || account.isDeleted) throw new AppError('Cuenta bancaria no encontrada.', 404, 'BANK_ACCOUNT_NOT_FOUND');
+  if (!canAccessCompany(req.auth!.user, account.companyId)) throw new AppError('No tiene acceso a esta empresa.', 403, 'FORBIDDEN');
+}
+
 router.get('/bank-accounts', async (req, res, next) => {
   try {
     const q = companyQuery.parse(req.query);
-    res.json(await master.listBankAccounts(q.companyId));
+    const company = reportCompany(req.auth!.user, q.companyId ?? 'all');
+    res.json(await master.listBankAccounts(company === 'all' ? undefined : company));
   } catch (err) {
     next(err);
   }
@@ -336,7 +352,8 @@ router.post('/bank-accounts', async (req, res, next) => {
         notes: z.string().optional(),
       })
       .parse(req.body);
-    const created = await master.createBankAccount(body);
+    if (!canAccessCompany(req.auth!.user, body.companyId)) throw new AppError('No tiene acceso a esta empresa.', 403, 'FORBIDDEN');
+    const created = await master.createBankAccount(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -349,6 +366,7 @@ router.patch('/bank-accounts/:id', async (req, res, next) => {
   const op = oplog(req, 'cuenta_bancaria', 'actualizar_cuenta_bancaria');
   try {
     const { id } = idParam.parse(req.params);
+    await assertBankAccountAccess(req, id);
     const body = z
       .object({
         bankName: z.string().optional(),
@@ -363,7 +381,7 @@ router.patch('/bank-accounts/:id', async (req, res, next) => {
         notes: z.string().nullable().optional(),
       })
       .parse(req.body);
-    const created = await master.updateBankAccount(id, body);
+    const created = await master.updateBankAccount(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -376,7 +394,8 @@ router.delete('/bank-accounts/:id', async (req, res, next) => {
   const op = oplog(req, 'cuenta_bancaria', 'eliminar_cuenta_bancaria');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deleteBankAccount(id);
+    await assertBankAccountAccess(req, id);
+    const created = await master.deleteBankAccount(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -386,16 +405,26 @@ router.delete('/bank-accounts/:id', async (req, res, next) => {
 });
 
 // ============ PAYMENT METHODS ============
-router.get('/payment-methods', async (req, res, next) => {
+router.get('/payment-methods', requirePermission('payments.read'), async (req, res, next) => {
   try {
     const q = companyQuery.parse(req.query);
-    res.json(await master.listPaymentMethods(q.companyId));
+    const user = req.auth!.user;
+    const company = reportCompany(user, q.companyId ?? 'all');
+    const methods = await master.listPaymentMethods(company === 'all' ? undefined : company);
+    if (hasPermission(user.role, 'banks.manage') && !user.companyId && !user.assignedCompanyId) return res.json(methods);
+    res.json(methods.map(({ bankAccount: _account, bankAccountAlias: _alias, commissionPct: _commission, ...method }) => method));
   } catch (err) {
     next(err);
   }
 });
 
-router.post('/payment-methods', async (req, res, next) => {
+const requireGlobalBankAdmin = (req: Request, _res: import('express').Response, next: import('express').NextFunction) => {
+  const user = req.auth!.user;
+  if (user.companyId || user.assignedCompanyId) return next(new AppError('La configuración de medios de pago requiere acceso global.', 403, 'FORBIDDEN'));
+  next();
+};
+
+router.post('/payment-methods', requirePermission('banks.manage'), requireGlobalBankAdmin, async (req, res, next) => {
   const op = oplog(req, 'metodo_pago', 'crear_metodo_pago');
   try {
     const body = z
@@ -409,7 +438,7 @@ router.post('/payment-methods', async (req, res, next) => {
         icon: z.string().optional(),
       })
       .parse(req.body);
-    const created = await master.createPaymentMethod(body);
+    const created = await master.createPaymentMethod(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -418,7 +447,7 @@ router.post('/payment-methods', async (req, res, next) => {
   }
 });
 
-router.patch('/payment-methods/:id', async (req, res, next) => {
+router.patch('/payment-methods/:id', requirePermission('banks.manage'), requireGlobalBankAdmin, async (req, res, next) => {
   const op = oplog(req, 'metodo_pago', 'actualizar_metodo_pago');
   try {
     const { id } = idParam.parse(req.params);
@@ -434,7 +463,7 @@ router.patch('/payment-methods/:id', async (req, res, next) => {
         isActive: z.boolean().optional(),
       })
       .parse(req.body);
-    const created = await master.updatePaymentMethod(id, body);
+    const created = await master.updatePaymentMethod(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -443,11 +472,11 @@ router.patch('/payment-methods/:id', async (req, res, next) => {
   }
 });
 
-router.delete('/payment-methods/:id', async (req, res, next) => {
+router.delete('/payment-methods/:id', requirePermission('banks.manage'), requireGlobalBankAdmin, async (req, res, next) => {
   const op = oplog(req, 'metodo_pago', 'eliminar_metodo_pago');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deletePaymentMethod(id);
+    const created = await master.deletePaymentMethod(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -483,7 +512,7 @@ router.post('/printers', async (req, res, next) => {
         categories: z.array(z.string()).optional(),
       })
       .parse(req.body);
-    const created = await master.createPrinter(body);
+    const created = await master.createPrinter(body, operationActor(req));
     op.ok(created);
     res.status(201).json(created);
   } catch (err) {
@@ -511,7 +540,7 @@ router.patch('/printers/:id', async (req, res, next) => {
         categories: z.array(z.string()).optional(),
       })
       .parse(req.body);
-    const created = await master.updatePrinter(id, body);
+    const created = await master.updatePrinter(id, body, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {
@@ -524,7 +553,7 @@ router.delete('/printers/:id', async (req, res, next) => {
   const op = oplog(req, 'impresora', 'eliminar_impresora');
   try {
     const { id } = idParam.parse(req.params);
-    const created = await master.deletePrinter(id);
+    const created = await master.deletePrinter(id, operationActor(req));
     op.ok(created);
     res.json(created);
   } catch (err) {

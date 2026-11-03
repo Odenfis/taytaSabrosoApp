@@ -9,11 +9,19 @@ const database = 'tayta_orders_test_' + randomUUID().replaceAll('-', '');
 const admin = new PrismaClient({ datasourceUrl: source.replace(/;database=[^;]+/i, ';database=master') });
 const env = { ...process.env, DATABASE_URL: source.replace(/;database=[^;]+/i, ';database=' + database), ORDER_TEST_DATABASE: database,
   NODE_ENV: 'test', JWT_SECRET: 'isolated-order-test-secret', CORS_ORIGIN: 'http://localhost:4310' };
-function run(args) {
+function run(args, timeoutMs = 15 * 60 * 1000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
-    child.on('error', reject);
-    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error('Prueba SQL falló: ' + code)));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`La prueba excedió ${Math.round(timeoutMs / 1000)} s y se detuvo.`));
+    }, timeoutMs);
+    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error('Prueba SQL falló: ' + code));
+    });
   });
 }
 let created = false;
@@ -22,7 +30,7 @@ try {
   created = true;
   console.log('Base aislada creada: ' + database);
   await run(['node_modules/prisma/build/index.js', 'db', 'push', '--skip-generate']);
-  await run(['--import', 'tsx', 'tests/orders.sql.ts', ...(process.argv.includes('--browser') ? ['--browser'] : [])]);
+  await run(['--import', 'tsx', 'tests/orders.sql.ts', ...(process.argv.includes('--browser') ? ['--browser'] : []), ...(process.argv.includes('--browser-recovery') ? ['--browser-recovery'] : []), ...(process.argv.includes('--roles') ? ['--roles'] : [])]);
 } finally {
   if (created) {
     await admin.$executeRawUnsafe('ALTER DATABASE [' + database + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE');
