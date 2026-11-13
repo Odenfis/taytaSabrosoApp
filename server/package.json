@@ -21,16 +21,22 @@
     "test:users:sql": "node scripts/test-user-management-sql.mjs",
     "users:review-roles": "tsx src/scripts/report-user-roles.ts",
     "test:roles:migration": "node scripts/test-roles-migration.mjs",
-    "backup:verify": "node scripts/backup-local-verify.mjs"
+    "backup:verify": "node scripts/backup-local-verify.mjs",
+    "test:fiscal:sql": "node scripts/test-fiscal-sql.mjs",
+    "test:transformations:sql": "node scripts/test-transformations-sql.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
+    "@xmldom/xmldom": "^0.9.12",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
+    "fflate": "^0.8.3",
     "jsonwebtoken": "^9.0.3",
+    "pdfkit": "^0.20.2",
     "socket.io": "^4.8.4",
+    "xml-crypto": "^6.4.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {
@@ -39,6 +45,7 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.14.0",
+    "@types/pdfkit": "^0.17.7",
     "prisma": "^6.12.0",
     "tsx": "^4.19.2",
     "typescript": "~5.8.2"

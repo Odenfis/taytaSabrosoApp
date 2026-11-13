@@ -26,6 +26,11 @@ datasource db {
 // ============================ TENANCY ============================
 
 model Company {
+  transformationTemplates TransformationTemplate[]
+  transformationExecutions TransformationExecution[]
+  fiscalProfile FiscalProfile?
+  fiscalIntents FiscalTestIntent[]
+  fiscalDocuments FiscalTestDocument[]
   id          String @id @db.NVarChar(36)
   name        String @map("nombre") @db.NVarChar(200)
   tradeName   String @map("nombre_comercial") @db.NVarChar(120)
@@ -259,6 +264,8 @@ model Product {
 }
 
 model Order {
+  fiscalIntents FiscalTestIntent[]
+  fiscalDocuments FiscalTestDocument[]
   id             String    @id @db.NVarChar(36)
   companyId      String    @map("empresa_id") @db.NVarChar(36)
   ticketNumber   String    @map("numero_ticket") @db.NVarChar(30)
@@ -318,6 +325,8 @@ model OrderItem {
 
 // Cuenta documental independiente dentro de una comanda.
 model DinerBill {
+  fiscalIntents FiscalTestIntent[]
+  fiscalDocuments FiscalTestDocument[]
   id             String   @id @db.NVarChar(36)
   orderId        String   @map("pedido_id") @db.NVarChar(36)
   companyId      String   @map("empresa_id") @db.NVarChar(36)
@@ -536,6 +545,7 @@ model CompanyShift {
 // ============================ INVENTARIO (INSUMOS / RECETAS / COMPRAS / KARDEX) ============================
 
 model Insumo {
+  transformationSources TransformationTemplate[]
   id               String    @id @db.NVarChar(36)
   companyId        String?   @map("empresa_id") @db.NVarChar(36) // null = 'ambas'
   code             String    @unique @map("codigo") @db.NVarChar(20)
@@ -663,6 +673,8 @@ model PurchaseItem {
 }
 
 model KardexMovement {
+  transformationExecutionId String? @map("transformacion_id") @db.NVarChar(36)
+  transformationExecution TransformationExecution? @relation(fields: [transformationExecutionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   id           String   @id @db.NVarChar(36)
   companyId    String   @map("empresa_id") @db.NVarChar(36)
   timestamp    DateTime @map("marca_tiempo") @db.DateTime2
@@ -767,4 +779,86 @@ model OrderOperationResult {
   createdAt DateTime @default(now()) @map("creado_utc") @db.DateTime2
   @@index([orderId])
   @@map("resultados_pedidos")
+}
+
+// Preparación aislada; ningún registro habilita emisión productiva.
+model FiscalProfile {
+  companyId String @id @db.NVarChar(36)
+  version Int @default(1)
+  configuration String @db.NVarChar(Max)
+  updatedAt DateTime @updatedAt @db.DateTime2
+  company Company @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+model FiscalTestDocument {
+  id String @id @db.NVarChar(36)
+  companyId String @db.NVarChar(36)
+  orderId String @db.NVarChar(36)
+  billId String? @db.NVarChar(36)
+  sourceKey String @unique @db.NVarChar(100)
+  requestKey String @unique @db.NVarChar(36)
+  requestHash String @db.NVarChar(64)
+  number String @db.NVarChar(30)
+  documentType String @db.NVarChar(10)
+  state String @default("prepared") @db.NVarChar(30)
+  snapshot String @db.NVarChar(Max)
+  signedXml String? @db.NVarChar(Max)
+  cdr Bytes? @db.VarBinary(Max)
+  responseCode String? @db.NVarChar(30)
+  responseMessage String? @db.NVarChar(1000)
+  sendingAt DateTime? @db.DateTime2
+  createdAt DateTime @default(now()) @db.DateTime2
+  updatedAt DateTime @updatedAt @db.DateTime2
+  company Company @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  order Order @relation(fields: [orderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  bill DinerBill? @relation(fields: [billId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@unique([companyId, number])
+  @@index([companyId, createdAt])
+}
+
+// Online-only fiscal intent, separate from signed offline payment payloads.
+model FiscalTestIntent {
+  sourceKey String @id @db.NVarChar(100)
+  companyId String @db.NVarChar(36)
+  orderId String @db.NVarChar(36)
+  billId String? @db.NVarChar(36)
+  version Int @default(1)
+  data String @db.NVarChar(Max)
+  updatedAt DateTime @updatedAt @db.DateTime2
+  company Company @relation(fields:[companyId],references:[id],onDelete:NoAction,onUpdate:NoAction,map:"FiscalTestIntent_company_fkey")
+  order Order @relation(fields:[orderId],references:[id],onDelete:NoAction,onUpdate:NoAction,map:"FiscalTestIntent_order_fkey")
+  bill DinerBill? @relation(fields:[billId],references:[id],onDelete:NoAction,onUpdate:NoAction,map:"FiscalTestIntent_bill_fkey")
+  @@index([companyId,orderId])
+}
+
+// Fichas versionadas y ejecuciones inmutables. Sus referencias se validan bajo bloqueo.
+model TransformationTemplate {
+  id String @id @db.NVarChar(36)
+  companyId String @db.NVarChar(36)
+  name String @db.NVarChar(150)
+  sourceId String @db.NVarChar(36)
+  definition String @db.NVarChar(Max)
+  version Int @default(1)
+  active Boolean @default(true)
+  isDeleted Boolean @default(false) @map("is_deleted")
+  updatedAt DateTime @updatedAt @db.DateTime2
+  @@index([companyId])
+  company Company @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source Insumo @relation(fields: [sourceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  executions TransformationExecution[]
+  @@map("transformacion_fichas")
+}
+model TransformationExecution {
+  movements KardexMovement[]
+  id String @id @db.NVarChar(36)
+  companyId String @db.NVarChar(36)
+  templateId String @db.NVarChar(36)
+  requestHash String @db.NVarChar(64)
+  snapshot String @db.NVarChar(Max)
+  actorUserId String @db.NVarChar(36)
+  deviceId String @db.NVarChar(100)
+  createdAt DateTime @default(now()) @db.DateTime2
+  @@index([companyId, createdAt])
+  company Company @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  template TransformationTemplate @relation(fields: [templateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@map("transformacion_ejecuciones")
 }

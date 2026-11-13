@@ -128,6 +128,7 @@ export interface TransactionChangedEvent {
 
 export interface ShiftChangedEvent {
   companyId: string;
+  openedUtc?: string;
   closedShift: string;
   newShift: string;
   initialCash: number;

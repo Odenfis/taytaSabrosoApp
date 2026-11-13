@@ -1,7 +1,8 @@
 import { isInsumoOp, runInsumoRequest } from './insumoCatalog';
 import type { PendingOp, PendingOpProof } from '../types';
 import { apiClient, ApiError, type OfflineRequestOptions } from './api';
-import { ensureOfflineProofs } from './offlineSigning';
+import { canSignOffline, ensureOfflineProofs, localSigningKeyUnavailable } from './offlineSigning';
+import { loadQueue } from './offlineQueue';
 import { isProductOp, productIdOf, signalProductQueue } from './productCatalog';
 import { offlineApiPath, offlinePlansForOp, offlinePrimaryActionId, type OfflineRequestPlan } from './offlineRequest';
 
@@ -51,6 +52,11 @@ function replayClient(options: OfflineRequestOptions) {
 }
 
 export function replayCall(op: PendingOp, payload: AnyPayload, options?: ReplayOptions): Promise<ReplayCallResult> {
+  // La cola añade la identidad al guardar. Una copia anterior a ese guardado
+  // no contiene autor, empresa ni terminal y no puede producir una firma.
+  if (!op.authorId || !op.companyId || !op.deviceId) {
+    op = loadQueue().find((pending) => pending.clientOpId === op.clientOpId) ?? op;
+  }
   if (isInsumoOp(op)) return runInsumoRequest(op, () => replayOne(op, payload, options));
   if (!isProductOp(op)) return replayOne(op, payload, options);
   const existing = productRequests.get(op.clientOpId);
@@ -94,6 +100,8 @@ async function replayOne(op: PendingOp, payload: AnyPayload, options?: ReplayOpt
     // base criptográfica.
     const proofs = await ensureOfflineProofs(op);
     if (!proofs) {
+      if (!canSignOffline()) throw new ApiError('Este navegador no dispone de la función de firma. Abra el sistema mediante localhost o HTTPS y conserve el cambio pendiente para revisión.', 'OFFLINE_PROOF_REQUIRED', 403);
+      if (await localSigningKeyUnavailable(op)) throw new ApiError('No está disponible la clave de firma de esta sesión en este equipo. El cambio se conserva para revisión.', 'OFFLINE_PROOF_REQUIRED', 403);
       throw new ApiError('La operación no tiene una prueba de autoría firmada en este equipo. Si fue creada en otra terminal, solo un administrador global puede asumirla desde la terminal donde se firmó.', 'OFFLINE_PROOF_REQUIRED', 403);
     }
     const primary = offlinePrimaryActionId(op);

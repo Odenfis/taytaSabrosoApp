@@ -1,7 +1,9 @@
+import { NumericInput } from './NumericInput';
 import React, { useEffect, useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { CompanyId, ShiftType } from '../types';
 import { isBankMovement, isCashMovement } from '../lib/finance';
+import { expectedShiftCash } from '../lib/shiftCash';
 
 export const ShiftModal: React.FC = () => {
   const {
@@ -9,6 +11,7 @@ export const ShiftModal: React.FC = () => {
     setIsShiftModalOpen,
     companyShifts,
     companyShiftCash,
+    companyShiftOpenedUtc,
     activeShift,
     shiftRecords,
     switchCompanyShift,
@@ -28,17 +31,18 @@ export const ShiftModal: React.FC = () => {
 
   // Calculate live shift numbers for the selected company
   const compTxs = transactions.filter(
-    (t) => t.companyId === targetCompany && (!t.shift || t.shift === currentCompanyShift)
+    (t) => t.companyId === targetCompany && t.timestamp >= companyShiftOpenedUtc[targetCompany] && (!t.shift || t.shift === currentCompanyShift)
   );
 
   const cashSales = compTxs
     .filter((t) => t.isIncome && isCashMovement(t))
     .reduce((sum, t) => sum + t.amount, 0);
+  const cashOutflow = compTxs.filter((t) => !t.isIncome && isCashMovement(t)).reduce((sum, t) => sum + t.amount, 0);
 
   const cardSales = compTxs
     .filter(
       (t) =>
-        t.isIncome &&
+        t.isIncome && t.type.startsWith('Venta (') &&
         (t.paymentMethod === 'Tarjeta' ||
           (t.description && t.description.toLowerCase().includes('tarjeta')))
     )
@@ -47,7 +51,7 @@ export const ShiftModal: React.FC = () => {
   const walletSales = compTxs
     .filter(
       (t) =>
-        t.isIncome &&
+        t.isIncome && t.type.startsWith('Venta (') &&
         (t.paymentMethod === 'Billetera Digital' ||
           (t.description &&
             (t.description.toLowerCase().includes('yape') ||
@@ -66,15 +70,13 @@ export const ShiftModal: React.FC = () => {
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const totalSales = cashSales + cardSales + walletSales;
+  const totalSales = compTxs.filter((t) => t.isIncome && t.type.startsWith('Venta (') && isCashMovement(t)).reduce((sum, t) => sum + t.amount, 0) + cardSales + walletSales;
   // Regla de gaveta: solo egresos sin cuenta bancaria salen de la caja efectivo
   // (un 'Caja Chica' pagado desde banco decrementa el banco, no la gaveta).
-  const cashExpenses = compTxs
-    .filter((t) => !t.isIncome && isCashMovement(t))
-    .reduce((sum, t) => sum + t.amount, 0);
+  const cashExpenses = cashOutflow;
 
   const initialCash = companyShiftCash[targetCompany] ?? 350.0;
-  const expectedCashInDrawer = +(initialCash + cashSales - cashExpenses).toFixed(2);
+  const expectedCashInDrawer = expectedShiftCash(compTxs, initialCash);
 
   const [reportedCash, setReportedCash] = useState<number>(expectedCashInDrawer);
   const [initialForNext, setInitialForNext] = useState<number>(350.0);
@@ -149,7 +151,7 @@ export const ShiftModal: React.FC = () => {
               <span className="material-symbols-outlined text-[16px]">sync_alt</span>
               Arqueo &amp; Cambio de Turno
             </button>
-            <button
+            {currentUser?.role === 'Administrador' && <button
               type="button"
               onClick={() => setActiveTab('historial')}
               className={`px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all flex items-center gap-1.5 ${
@@ -160,7 +162,7 @@ export const ShiftModal: React.FC = () => {
             >
               <span className="material-symbols-outlined text-[16px]">history</span>
               Historial de Turnos ({shiftRecords.length})
-            </button>
+            </button>}
           </div>
 
           {/* Target Company Pill */}
@@ -198,7 +200,7 @@ export const ShiftModal: React.FC = () => {
 
         {/* Content Body */}
         <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-4">
-          {activeTab === 'cambiar' ? (
+          {activeTab === 'cambiar' || currentUser?.role !== 'Administrador' ? (
             <form onSubmit={handleCloseShift} className="space-y-4">
               {/* Current Status Card */}
               <div className="bg-panel-33 border border-edge-outline-2 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
@@ -244,7 +246,7 @@ export const ShiftModal: React.FC = () => {
                   <p className="text-[15px] font-bold text-ink-body">S/ {initialCash.toFixed(2)}</p>
                 </div>
                 <div className="bg-panel-32 border border-edge-outline-5 p-2.5 rounded-xl">
-                  <p className="text-[11px] text-ink-muted font-semibold">Ventas Efectivo</p>
+                  <p className="text-[11px] text-ink-muted font-semibold">Ingresos a Caja</p>
                   <p className="text-[15px] font-bold text-ink-success">+ S/ {cashSales.toFixed(2)}</p>
                 </div>
                 <div className="bg-panel-32 border border-edge-outline-5 p-2.5 rounded-xl">
@@ -282,7 +284,7 @@ export const ShiftModal: React.FC = () => {
                     </label>
                     <div className="relative">
                       <span className="absolute left-3 top-2.5 text-ink-muted text-[14px] font-bold">S/</span>
-                      <input
+                      <NumericInput
                         type="number"
                         step="0.10"
                         min="0"
@@ -300,7 +302,7 @@ export const ShiftModal: React.FC = () => {
                     </label>
                     <div className="relative">
                       <span className="absolute left-3 top-2.5 text-ink-muted text-[14px] font-bold">S/</span>
-                      <input
+                      <NumericInput
                         type="number"
                         step="10"
                         min="0"

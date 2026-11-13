@@ -4,6 +4,9 @@ services:
     platform: linux/amd64
     build: .
     env_file: ./deploy/client/app.env
+    environment:
+      FISCAL_TEST_ENABLED: "false"
+      FISCAL_BETA_SEND_ENABLED: "false"
     restart: unless-stopped
     networks: [internal]
 

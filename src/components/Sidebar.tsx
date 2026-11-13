@@ -53,7 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
         expenseAnalysis.status === 'critico'
           ? 'bg-surface-danger-6 text-ink-on-solid animate-pulse'
           : expenseAnalysis.status === 'alerta'
-          ? 'bg-surface-warning-4 text-ink-on-light'
+          ? 'expense-review-badge bg-surface-warning-4 text-ink-on-light'
           : 'bg-surface-success-2 text-ink-on-solid',
     },
     { id: 'movimientos', label: 'Libro de Caja', icon: 'receipt_long' },
@@ -170,6 +170,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
 
                 {item.badge && (
                   <span
+                    title={item.id === 'ratios' && item.badge === 'REV' ? 'Gastos por revisar' : undefined}
                     className={`hidden md:inline-flex text-[10px] font-black px-1.5 py-0.5 rounded-md ${
                       item.badgeColor || 'bg-surface-gold-solid text-ink-on-light'
                     }`}

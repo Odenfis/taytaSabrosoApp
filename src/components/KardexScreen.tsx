@@ -1,3 +1,7 @@
+import { NumericInput } from './NumericInput';
+import { inventoryButton } from '../lib/inventoryUi';
+import { useDialogFocus } from '../lib/useDialogFocus';
+import { TransformationsPanel } from './TransformationsPanel';
 import { loadQueue } from '../lib/offlineQueue';
 import type { PendingOp } from '../types';
 import { InsumoFormModal } from './InsumoFormModal';
@@ -93,7 +97,7 @@ export const KardexScreen: React.FC = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('todas');
-  const [activeTab, setActiveTab] = useState<'stock' | 'movimientos'>('stock');
+  const [activeTab, setActiveTab] = useState<'stock' | 'movimientos' | 'transformaciones'>('stock');
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [isAddInsumoModalOpen, setIsAddInsumoModalOpen] = useState(false);
 
@@ -188,10 +192,11 @@ export const KardexScreen: React.FC = () => {
     setAdjustReason('');
   };
 
+  const deleteDialogRef = useDialogFocus(!!deleting);
   return (
-    <div className="flex-1 flex flex-col h-full bg-panel-20 text-ink-body overflow-hidden">
+    <div className={`flex-1 flex flex-col h-full min-h-0 bg-panel-20 text-ink-body ${activeTab === 'transformaciones' ? 'overflow-y-auto md:overflow-hidden' : 'kardex-tables-screen overflow-hidden'}`}>
       {/* Header bar with metrics */}
-      <div className="bg-panel-21 border-b border-edge-outline-2 p-4 md:px-6">
+      <div className={`shrink-0 bg-panel-21 border-b border-edge-outline-2 ${activeTab === 'transformaciones' ? 'px-4 py-3 md:px-6' : 'p-4 md:px-6'}`}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -230,37 +235,37 @@ export const KardexScreen: React.FC = () => {
         </div>
 
         {/* Metrics Row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-          <div className="bg-panel-9 p-3 rounded-xl border border-edge-outline-3">
+        <div className={`grid grid-cols-2 md:grid-cols-4 gap-3 ${activeTab === 'transformaciones' ? 'mt-3' : 'mt-4'}`}>
+          <div className={`bg-panel-9 rounded-xl border border-edge-outline-3 ${activeTab === 'transformaciones' ? 'px-3 py-1.5' : 'p-3'}`}>
             <p className="text-[11px] font-semibold text-ink-muted-3 uppercase">Insumos Registrados</p>
-            <p className="text-[20px] font-black text-ink-strong mt-0.5">{filteredInsumos.length}</p>
+            <p className={`${activeTab === 'transformaciones' ? 'text-[16px]' : 'text-[20px]'} font-black text-ink-strong mt-0.5`}>{filteredInsumos.length}</p>
           </div>
 
-          <div className="bg-panel-9 p-3 rounded-xl border border-edge-outline-3">
+          <div className={`bg-panel-9 rounded-xl border border-edge-outline-3 ${activeTab === 'transformaciones' ? 'px-3 py-1.5' : 'p-3'}`}>
             <p className="text-[11px] font-semibold text-ink-muted-3 uppercase">Stock Valorado Total</p>
-            <p className="text-[20px] font-black text-ink-gold mt-0.5">
+            <p className={`${activeTab === 'transformaciones' ? 'text-[16px]' : 'text-[20px]'} font-black text-ink-gold mt-0.5`}>
               S/ {totalValuedStock.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </p>
           </div>
 
-          <div className="bg-panel-9 p-3 rounded-xl border border-edge-outline-3">
+          <div className={`bg-panel-9 rounded-xl border border-edge-outline-3 ${activeTab === 'transformaciones' ? 'px-3 py-1.5' : 'p-3'}`}>
             <p className="text-[11px] font-semibold text-ink-muted-3 uppercase">Insumos en Alerta</p>
-            <p className={`text-[20px] font-black mt-0.5 ${lowStockCount > 0 ? 'text-ink-danger-3' : 'text-ink-success'}`}>
+            <p className={`${activeTab === 'transformaciones' ? 'text-[16px]' : 'text-[20px]'} font-black mt-0.5 ${lowStockCount > 0 ? 'text-ink-danger-3' : 'text-ink-success'}`}>
               {lowStockCount} {lowStockCount > 0 ? 'por reponer' : 'óptimo'}
             </p>
           </div>
 
-          <div className="bg-panel-9 p-3 rounded-xl border border-edge-outline-3">
+          <div className={`bg-panel-9 rounded-xl border border-edge-outline-3 ${activeTab === 'transformaciones' ? 'px-3 py-1.5' : 'p-3'}`}>
             <p className="text-[11px] font-semibold text-ink-muted-3 uppercase">Movimientos Hoy</p>
-            <p className="text-[20px] font-black text-ink-info mt-0.5">{filteredMovements.length}</p>
+            <p className={`${activeTab === 'transformaciones' ? 'text-[16px]' : 'text-[20px]'} font-black text-ink-info mt-0.5`}>{filteredMovements.length}</p>
           </div>
         </div>
       </div>
 
       {/* Tabs and filters */}
-      <div className="p-4 md:px-6 flex flex-col md:flex-row gap-3 items-center justify-between border-b border-edge-outline-5 bg-panel-22">
+      <div className={`shrink-0 px-4 md:px-6 flex flex-col md:flex-row gap-3 items-center justify-between border-b border-edge-outline-5 bg-panel-22 ${activeTab === 'transformaciones' ? 'py-2' : 'py-4'}`}>
         <div className="flex items-center gap-2 w-full md:w-auto">
-          <div className="bg-panel-14 p-1 rounded-xl border border-edge-outline-2 flex gap-1">
+          <div className="bg-panel-14 p-1 rounded-xl border border-edge-outline-2 flex flex-wrap gap-1">
             <button
               onClick={() => setActiveTab('stock')}
               className={`px-3 py-1.5 rounded-lg text-[13px] font-bold transition-all ${
@@ -281,10 +286,11 @@ export const KardexScreen: React.FC = () => {
             >
               Movimientos Kardex ({filteredMovements.length})
             </button>
+            <button onClick={() => setActiveTab('transformaciones')} className={`px-3 py-2 rounded-lg text-[13px] font-bold ${activeTab === 'transformaciones' ? 'bg-surface-brand-solid text-ink-on-brand' : 'text-ink-muted-3'}`}><span aria-hidden="true" className="material-symbols-outlined align-middle !text-[18px]">conversion_path</span> Transformaciones</button>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 w-full md:w-auto flex-wrap">
+        <div className={activeTab === 'transformaciones' ? 'hidden' : 'flex items-center gap-3 w-full md:w-auto flex-wrap'}>
           {/* Search bar */}
           <div className="relative flex-1 md:w-64">
             <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-ink-muted text-[18px]">
@@ -322,12 +328,12 @@ export const KardexScreen: React.FC = () => {
       {pending.length > 0 && <p className="mx-6 my-2 text-sm text-ink-warning">{pending.length} cambio(s) de insumos pendiente(s). Las eliminaciones se vuelven a validar al sincronizar.</p>}
       {dependencies.map((op) => <div key={op.clientOpId} className="mx-6 my-2 text-sm text-ink-warning">Operación vinculada pendiente: {op.error} <button className="underline" onClick={() => { setDependency(op); setDiscardDependency(false); setActionError(''); }}>Revisar operación</button></div>)}
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-4 md:px-6 custom-scrollbar">
-        {activeTab === 'stock' ? (
-          <div className="bg-panel-23 rounded-2xl border border-edge-outline-3 overflow-hidden shadow-lg">
-            <div className="overflow-x-auto">
+      <div className={`${activeTab === 'transformaciones' ? 'flex-none md:flex-1 md:min-h-0 md:overflow-y-auto' : 'kardex-table-content flex-1 min-h-0'} p-4 md:px-6 custom-scrollbar`}>
+        {activeTab === 'transformaciones' ? <TransformationsPanel key={activeCompanyId} /> : activeTab === 'stock' ? (
+          <div className="bg-panel-23 rounded-2xl border border-edge-outline-3 overflow-hidden shadow-lg h-full">
+            <div role="region" aria-label="Tabla de existencias físicas" tabIndex={0} className="h-full overflow-auto custom-scrollbar focus-visible:outline focus-visible:outline-2 focus-visible:outline-edge-brand">
               <table className="w-full text-left text-[13px]">
-                <thead className="bg-panel-24 text-ink-muted-2 font-bold border-b border-edge-outline-2">
+                <thead className="sticky top-0 z-10 bg-panel-24 text-ink-muted-2 font-bold shadow-[0_1px_0_var(--color-edge-outline-2)]">
                   <tr>
                     <th className="p-3.5 pl-4">Código</th>
                     <th className="p-3.5">Insumo</th>
@@ -437,10 +443,10 @@ export const KardexScreen: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="bg-panel-23 rounded-2xl border border-edge-outline-3 overflow-hidden shadow-lg">
-            <div className="overflow-x-auto">
+          <div className="bg-panel-23 rounded-2xl border border-edge-outline-3 overflow-hidden shadow-lg h-full">
+            <div role="region" aria-label="Tabla de movimientos de kardex" tabIndex={0} className="h-full overflow-auto custom-scrollbar focus-visible:outline focus-visible:outline-2 focus-visible:outline-edge-brand">
               <table className="w-full text-left text-[13px]">
-                <thead className="bg-panel-24 text-ink-muted-2 font-bold border-b border-edge-outline-2">
+                <thead className="sticky top-0 z-10 bg-panel-24 text-ink-muted-2 font-bold shadow-[0_1px_0_var(--color-edge-outline-2)]">
                   <tr>
                     <th className="p-3.5 pl-4">Hora</th>
                     <th className="p-3.5">Insumo</th>
@@ -487,7 +493,7 @@ export const KardexScreen: React.FC = () => {
                               ? 'Salida Venta POS'
                               : mov.type === 'AJUSTE_MERMA'
                               ? 'Ajuste / Merma'
-                              : 'Inventario Inicial'}
+                              : mov.type === 'TRANSFORMACION_SALIDA' ? 'Salida transformación' : mov.type === 'TRANSFORMACION_ENTRADA' ? 'Entrada transformación' : 'Inventario Inicial'}
                           </span>
                         </td>
                         <td className="p-3 text-ink-muted-6 text-[12px] font-medium">
@@ -589,7 +595,7 @@ export const KardexScreen: React.FC = () => {
                   <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                     Cantidad
                   </label>
-                  <input
+                  <NumericInput
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -637,16 +643,16 @@ export const KardexScreen: React.FC = () => {
       )}
 
       {isAddInsumoModalOpen && <InsumoFormModal original={editing} onClose={() => setIsAddInsumoModalOpen(false)} onSaved={setNotice} />}
-      {deleting && <div className="fixed inset-0 bg-surface-scrim z-50 flex items-center justify-center p-4"><section role="dialog" aria-modal="true" aria-label="Eliminar insumo" className="bg-panel-14 border border-edge-outline rounded-2xl p-5 w-full max-w-lg space-y-4">
-        <h3 className="text-lg font-bold text-ink-brand">Eliminar {deleting.name}</h3>
+      {deleting && <div className="fixed inset-0 bg-surface-scrim z-50 flex items-center justify-center p-4"><section ref={deleteDialogRef} role="dialog" aria-modal="true" aria-label="Eliminar insumo" className="bg-panel-14 border border-edge-outline rounded-2xl p-5 w-full max-w-lg space-y-4">
+        <h3 className="text-lg font-bold text-ink-brand flex items-center gap-3"><span aria-hidden="true" className="material-symbols-outlined">delete</span>Eliminar {deleting.name}</h3>
         <p>Este insumo dejará de estar disponible para nuevas operaciones. Su historial se conservará.</p>
-        <p>Stock actual: {deleting.currentStock} {deleting.unit}</p>
-        {deleting.currentStock !== 0 && <p className="text-ink-warning">Debe registrar el ajuste correspondiente antes de eliminar.</p>}
+        <div className="rounded-xl border border-edge-outline-2 bg-panel-19 p-4"><p className="text-xs text-ink-muted-3">Stock actual</p><p className="text-xl font-bold mt-1">{deleting.currentStock} {deleting.unit}</p></div>
+        {deleting.currentStock !== 0 && <p className="text-ink-warning rounded-xl border border-edge-warning p-3 flex gap-2"><span aria-hidden="true" className="material-symbols-outlined">info</span>No se puede eliminar mientras tenga stock. Revisa las existencias y registra un ajuste solo si corresponde.</p>}
         {!!deleting.activeRecipes?.length && <div className="text-ink-warning"><p>Está vinculado a fichas activas:</p><ul>{deleting.activeRecipes.map((r) => <li key={r.id}>{r.name}</li>)}</ul><button className="underline" onClick={() => { setDeleting(null); setCurrentScreen('recetas'); }}>Ir a Fichas & Recetas</button></div>}
         {actionError && <p role="alert" className="text-ink-danger-2">{actionError}</p>}
-        <div className="flex flex-wrap justify-end gap-3"><button autoFocus disabled={actionBusy} onClick={() => setDeleting(null)}>Cancelar</button>
-          {deleting.currentStock !== 0 && <button onClick={() => { setAdjustInsumoId(deleting.id); setDeleting(null); setIsAdjustModalOpen(true); }}>Ir a Ajuste / Merma</button>}
-          <button disabled={actionBusy || deleting.currentStock !== 0 || !!deleting.activeRecipes?.length} className="bg-surface-danger-solid text-ink-on-danger-solid rounded-xl px-4 py-2 disabled:opacity-40" onClick={() => void confirmDelete()}>{actionBusy ? 'Validando…' : 'Eliminar insumo'}</button></div>
+        <div className="flex flex-wrap justify-end gap-3"><button className={inventoryButton} autoFocus disabled={actionBusy} onClick={() => setDeleting(null)}>Cancelar</button>
+          {deleting.currentStock !== 0 && <button className={inventoryButton} onClick={() => { setAdjustInsumoId(deleting.id); setDeleting(null); setIsAdjustModalOpen(true); }}>Ir a Ajuste / Merma</button>}
+          <button disabled={actionBusy || deleting.currentStock !== 0 || !!deleting.activeRecipes?.length} className={inventoryButton.replace('text-ink-strong', '') + " bg-surface-danger-solid text-ink-on-danger-solid disabled:opacity-40"} onClick={() => void confirmDelete()}>{actionBusy ? 'Validando…' : 'Eliminar insumo'}</button></div>
       </section></div>}
       {dependency && <div className="fixed inset-0 bg-surface-scrim z-50 flex items-center justify-center p-4"><section role="dialog" aria-modal="true" aria-label="Operación de inventario pendiente" className="bg-panel-14 p-5 rounded-2xl border border-edge-outline max-w-lg space-y-4">
         <h3 className="text-lg font-bold text-ink-brand">Operación pendiente de revisión</h3>

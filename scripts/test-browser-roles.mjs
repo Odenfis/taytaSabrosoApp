@@ -151,6 +151,107 @@ try {
   const stale = await call(root.token, 'PATCH', '/users/' + waiter.user.id, { name: waiter.user.name, role: waiter.role, companyId: 'el-tayta', isActive: true, expectedVersion: waiter.user.version }); assert.equal(stale.status, 409);
   console.log('PASS: user HTTP validation, audit, version conflict, revoked HTTP session and live socket; waiter does not receive cash events.');
 
+  for (const [name,category] of [['Plin BBVA','Billetera Digital'],['POS Niubiz','Tarjeta'],['Transferencia BCP','Transferencia Bancaria'],['Yape BCP','Billetera Digital']]) {
+    await prisma.customPaymentMethod.create({data:{id:randomUUID(),companyId:'el-tayta',name,category,icon:'payments'}});
+  }
+  // Persistent Chrome profiles: pending close survives a complete browser restart.
+  const opts = { executablePath: process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, viewport: { width: 1440, height: 1000 } };
+  async function captureCashRoles(stage) {
+    for (const account of [admin, manager, cashier]) {
+      const dir=await mkdtemp(path.join(tmpdir(),'tayta-cash-view-'));
+      const browser=await chromium.launchPersistentContext(dir,opts);
+      try {
+        const tab=browser.pages()[0]; await tab.goto(base);
+        await tab.getByPlaceholder('Ingresa tu PIN').fill(account.pin); await tab.locator('#btn-login-submit').click();
+        await tab.locator('#btn-logout').waitFor();
+        if(account === admin) await tab.locator('#btn-switch-tayta').click();
+        await tab.getByRole('button',{name:/Libro de Caja/}).click();
+        await tab.getByText(account === admin ? 'Ingresos acumulados' : 'Ingresos del turno',{exact:true}).waitFor();
+        await tab.getByRole('heading',{name:'Cobros por medio de pago',exact:true}).waitFor();
+        await tab.getByRole('heading',{name:'Plin BBVA',exact:true}).waitFor();
+        await tab.waitForTimeout(800);
+        await tab.screenshot({path:'/tmp/tayta-caja-'+account.role.replaceAll(' ','-')+'-'+stage+'.png'});
+        if(stage==='despues') {
+          const panel=tab.getByRole('region',{name:'Cobros por medio de pago'});
+          const search=tab.getByPlaceholder('Buscar (banco, ref, detalle)...');
+          await search.fill('yape');
+          await tab.getByRole('button',{name:'Ingresos',exact:true}).click();
+          await search.focus();
+          let release; let started; let finished;
+          const requestFinished=new Promise(resolve=>{finished=resolve});
+          const gate=new Promise(resolve=>{release=resolve});
+          const requestStarted=new Promise(resolve=>{started=resolve});
+          await tab.route('**/api/operations/payment-summary*',async route=>{started();await gate;await route.continue();finished();});
+          const positions=async()=>({cards:await panel.locator('article').first().boundingBox(),table:await tab.getByText('Movimientos Registrados',{exact:true}).boundingBox()});
+          const before=await positions();
+          await Promise.race([requestStarted,new Promise((_,reject)=>setTimeout(()=>reject(new Error('No llegó refresco automático')),22000))]);
+          try {
+            await tab.waitForTimeout(350);
+            assert.deepEqual(await positions(),before,'El refresco no desplaza tarjetas ni tabla');
+            assert.equal(await search.inputValue(),'yape');
+            assert.equal(await search.evaluate(el=>el===document.activeElement),true);
+            assert.equal(await panel.getByText('Actualizando resumen…',{exact:true}).count(),0);
+          } finally {release();await requestFinished;}
+          await tab.unroute('**/api/operations/payment-summary*');
+          await search.fill('');
+          await tab.getByRole('button',{name:'Todos',exact:true}).click();
+          console.log('PASS: refresco demorado sin salto ni pérdida de foco/filtro para '+account.role);
+        }
+        if(stage==='despues' && account===admin) {
+          await tab.evaluate(() => document.documentElement.setAttribute('data-theme','light'));
+          await tab.screenshot({path:'/tmp/tayta-payment-summary-light.png'});
+          const summaryPanel=tab.getByRole('region',{name:'Cobros por medio de pago'});
+          const priorAmounts=await summaryPanel.locator('article').allTextContents();
+          await tab.route('**/api/operations/payment-summary*',route=>route.abort());
+          await summaryPanel.getByText('No se pudo actualizar el resumen.',{exact:false}).waitFor({timeout:25000});
+          assert.deepEqual(await summaryPanel.locator('article').allTextContents(),priorAmounts);
+          await tab.unroute('**/api/operations/payment-summary*');
+          await summaryPanel.getByRole('button',{name:'Reintentar'}).click();
+          await summaryPanel.getByRole('button',{name:'Reintentar'}).waitFor({state:'hidden'});
+          await tab.setViewportSize({width:390,height:844});
+          await tab.waitForTimeout(700);
+          await summaryPanel.scrollIntoViewIfNeeded();
+          const bounds=await summaryPanel.boundingBox();
+          assert.ok(bounds && bounds.x>=0 && bounds.x+bounds.width<=391);
+          await summaryPanel.screenshot({path:'/tmp/tayta-payment-summary-mobile-panel.png'});
+          await tab.screenshot({path:'/tmp/tayta-payment-summary-mobile.png',fullPage:true});
+        }
+        if(stage==='despues' && account!==admin) {
+          const metric=tab.locator('div').filter({has:tab.getByText('Ingresos del turno',{exact:true})});
+          assert.ok((await tab.locator('body').innerText()).includes('S/ 0.00'));
+        }
+      } finally {await browser.close();}
+    }
+  }
+  await captureCashRoles('antes');
+  const closeProfile = await mkdtemp(path.join(tmpdir(), 'tayta-close-'));
+  let pendingBrowser = await chromium.launchPersistentContext(closeProfile, opts);
+  let pendingPage = pendingBrowser.pages()[0];
+  await pendingPage.goto(base);
+  await pendingPage.getByPlaceholder('Ingresa tu PIN').fill(cashier.pin);
+  await pendingPage.locator('#btn-login-submit').click();
+  await pendingPage.locator('#btn-logout').waitFor();
+  await pendingPage.getByRole('button', {name:/Libro de Caja/}).click();
+  const beforeState = await prisma.companyShift.findUniqueOrThrow({where:{companyId:'el-tayta'}});
+  const beforeCount = await prisma.shiftRecord.count({where:{companyId:'el-tayta'}});
+  await pendingPage.route('**/api/operations/shifts/switch', route => route.abort());
+  await pendingPage.getByRole('button',{name:/Cerrar \/ Cambiar Turno/}).click();
+  await pendingPage.getByRole('button',{name:/Confirmar Cierre/}).click();
+  await pendingPage.waitForFunction(() => JSON.parse(localStorage.getItem('ts_pending_queue_v2') || '[]').some(op => op.op === 'switchShift'));
+  assert.equal((await prisma.companyShift.findUniqueOrThrow({where:{companyId:'el-tayta'}})).currentShift,beforeState.currentShift);
+  await pendingPage.screenshot({path:'/tmp/tayta-cierre-pendiente.png'});
+  await pendingBrowser.close();
+  pendingBrowser = await chromium.launchPersistentContext(closeProfile, opts);
+  pendingPage = pendingBrowser.pages()[0];
+  await pendingPage.goto(base);
+  await pendingPage.waitForFunction(() => !JSON.parse(localStorage.getItem('ts_pending_queue_v2') || '[]').some(op => op.op === 'switchShift'),null,{timeout:30000});
+  await pendingPage.getByRole('button',{name:/Libro de Caja/}).click();
+  assert.equal(await prisma.shiftRecord.count({where:{companyId:'el-tayta'}}),beforeCount+1);
+  assert.notEqual((await prisma.companyShift.findUniqueOrThrow({where:{companyId:'el-tayta'}})).currentShift,beforeState.currentShift);
+  await pendingPage.screenshot({path:'/tmp/tayta-cierre-recuperado.png'});
+  await pendingBrowser.close();
+  await captureCashRoles('despues');
+  console.log('PASS: cierre pendiente conserva turno; reinicio completo de Chrome recupera y confirma una sola vez.');
   context = await chromium.launchPersistentContext(profile, { executablePath: process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, viewport: { width: 1440, height: 1000 } });
   const page = context.pages()[0]; const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));

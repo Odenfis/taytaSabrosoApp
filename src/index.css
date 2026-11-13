@@ -827,3 +827,27 @@
 /* Papel de los tickets internos: mantiene contraste en ambos temas. */
 .diner-ticket-paper { background: #fff; color: #18181b; border-color: #d4d4d8; }
 .diner-ticket-paper .border-dashed, .diner-ticket-paper .border-t { border-color: #a1a1aa; }
+
+/* Foco único en los formularios de inventario, compatible con ambos temas. */
+:root :is(input, select, textarea).inventory-field:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+/* Aviso de revisión de gastos: superficie ámbar suave en modo claro. */
+:root[data-theme="light"] .expense-review-badge {
+  background-color: #fff3cd;
+  color: #6b4900;
+  border: 1px solid #b58a26;
+  padding: 2px 7px;
+  letter-spacing: .025em;
+  line-height: 1.2;
+}
+
+/* En pantallas bajas se puede desplazar el encabezado general sin perder
+   el espacio necesario para recorrer cada tabla y su encabezado fijo. */
+@media (max-height: 700px), (max-width: 767px) {
+  .kardex-tables-screen { overflow-y: auto; }
+  .kardex-table-content { flex: none; height: 55vh; min-height: 240px; }
+}

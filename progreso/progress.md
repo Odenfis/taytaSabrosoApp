@@ -1,3 +1,133 @@
+## 2026-11-13 — Preparación de actualización de prueba para el cliente
+
+Actualizador de Windows modificado para exigir un commit completo validado y construir una imagen con etiqueta propia, revisar roles y migraciones, solicitar respaldo/restauración y sincronización verificados y aplicar migraciones sin inicializador. Las conciliaciones de stock y mesas quedaron fuera del actualizador. Se documentaron recuperación, mantenimiento de APP_VERSION y URL, y lista de aceptación en terminales. Compose fuerza deshabilitadas las funciones fiscales de prueba y envío beta. El script requiere validación en Windows; todavía no se conoce la versión ni el estado de migraciones de la instalación del cliente.
+
+Se corrigieron cuatro alertas de dependencias del servidor con actualizaciones compatibles; npm audit informó cero vulnerabilidades. Pasaron TypeScript, compilaciones, 83 pruebas frontend, 87 servidor, 18 escenarios de inventario, 33 de pedidos y suite de Transformaciones en SQL temporal y Chrome. Las bases temporales se eliminaron. Se construyó imagen local linux/amd64 y se comprobó la presencia de aplicación, migración 0018 y comprobador de roles. La configuración Compose mostró ambas opciones fiscales en false. El arranque y la ausencia de controles fiscales en la instalación del cliente siguen pendientes de verificación.
+
+No se ha publicado una versión ni accedido al equipo o base del cliente. Antes de instalar: identificar su versión y migraciones, preservar una imagen anterior, sincronizar colas, respaldar y restaurar en una base separada, ensayar migraciones y completar las pruebas supervisadas de `deploy/client/ACEPTACION-PRUEBAS.md`. Las confirmaciones de Transformaciones alteran stock y no disponen de reversión ordinaria.
+
+## 2026-11-13 — Registro de avance de Transformaciones y base de desarrollo
+
+La interfaz de Transformaciones se compactó para aprovechar mejor la altura en laptops y monitores: métricas de Kardex más compactas en esta pestaña, escala tipográfica coherente, navegación interna y captura de resultados reorganizadas, y revisión adaptable. El usuario confirmó que la mejora visual quedó validada.
+
+Las fichas ahora admiten porcentajes de rendimiento por resultado y muestran la merma prevista; la suma debe ser mayor que cero y no superar 100 %. En la ejecución se proponen cantidades según el consumo y las unidades, con posibilidad de corregirlas. Se alerta y bloquea el cálculo cuando el consumo supera el stock conocido; el servidor vuelve a verificar existencias. Los costos se reparten por cantidades reales en unidades equivalentes, con la merma absorbida en los resultados útiles. Las fichas antiguas requieren conversión explícita; pueden desactivarse o eliminarse lógicamente con auditoría, conservando ejecuciones y kardex. Se mantienen la vista previa, las protecciones transaccionales y la recuperación de respuestas perdidas.
+
+Validación realizada durante la implementación: TypeScript, compilaciones, 83 pruebas frontend y 87 pruebas servidor; suite de Transformaciones en SQL temporal y Chrome con migraciones, conversión de ficha antigua, eliminación y conservación de historial, costos, concurrencia, auditoría, recuperación de respuesta perdida, historial y temas. La base temporal se eliminó. Los errores de auditoría provocados durante la prueba de rollback fueron deliberados.
+
+La API de desarrollo informó `Invalid column name 'is_deleted'` porque faltaba la migración `0018_transformation_template_delete`. Tras confirmar que se trataba de la base de desarrollo, se aplicó con `prisma migrate deploy`: Prisma informó que las 18 migraciones estaban al día y una consulta de solo lectura encontró 2 fichas accesibles. La migración agrega la columna con valor predeterminado; no se aplicó a la base operativa ni se actualizó la instalación del cliente. La comprobación posterior en la interfaz de desarrollo no fue confirmada en la conversación.
+
+## 2026-11-12 — Fichas de transformación por porcentajes
+
+Las fichas definen rendimientos porcentuales y merma prevista; las cantidades propuestas pueden corregirse antes de revisar. El servidor reparte el costo por cantidad equivalente y valida la suma y el stock. Las fichas antiguas requieren conversión explícita; la eliminación lógica auditada conserva el historial. La migración 0018 se probó solo en SQL temporal, sin aplicarla a la instalación operativa.
+
+Validación: compilación y TypeScript; 87 pruebas del servidor; suite de Transformaciones con migración en SQL temporal y Chrome, recuperación de respuesta perdida, historial y temas. La base temporal se eliminó. Las pruebas con fallo de auditoría producen errores deliberados en el log.
+
+## 2026-11-12 — Encabezados fijos en Inventario y Kardex
+
+Las tablas de Existencias Físicas y Movimientos Kardex comparten ahora un área de desplazamiento horizontal y vertical, con encabezados fijos y accesibles por teclado. En móviles y pantallas de poca altura, la pantalla puede desplazarse para llegar a la tabla; Transformaciones conserva su comportamiento. Sin cambios de API, datos ni reglas.
+
+Validados TypeScript, compilación y 83 pruebas frontend. En SQL temporal y Chrome pasaron 18 escenarios de inventario y el recorrido de alta, edición y baja; se comprobó la posición y alineación de ambos encabezados con filas de prueba, en temas claro y oscuro, tamaños de escritorio, tableta y móvil, incluido 390 × 600. Se revisaron capturas móviles. La base temporal fue eliminada y no se actualizó al cliente. Registro: /tmp/kardex-sticky-test.log.
+
+## 2026-11-11 — Costos sincronizados tras Transformaciones
+
+Corregida la actualización del catálogo compartido utilizado por Existencias Físicas y Recetas. La confirmación y recuperación de una transformación ahora consultan insumos completos y kardex mediante refreshInventory, conservando la protección por generación de sesión y la superposición de pendientes. Los eventos de kardex agrupan la consulta REST durante 150 ms; ya no aplican únicamente stock ni confunden el costo del movimiento con el promedio del insumo. La reconexión conserva la recarga existente del catálogo completo.
+
+Una consulta fallida después de confirmar muestra un aviso específico y «Reintentar actualización»: consulta nuevamente sin reenviar la transformación ni recuperar su estado pendiente. No se modificaron API, esquema, cálculos, recetas históricas ni autoría offline.
+
+Validaciones aprobadas: TypeScript, build, 83 pruebas frontend, 86 pruebas servidor y 18 escenarios SQL/API/realtime de inventario. Suite de Transformaciones en SQL temporal y Chrome ampliada: persistencia del costo promedio con existencias previas; costos y valorizado en Existencias y selector de Recetas sin recarga y sin realtime; fallo de consulta y reintento sin duplicar; segunda terminal mediante Socket.IO; desconexión/reconexión con una transformación intermedia; respuesta perdida y recuperación; historial y móvil de 390 px en ambos temas. Bases temporales eliminadas. Logs: /tmp/transform-sync-sql.log, /tmp/transform-sync-insumos.log, /tmp/transform-sync-unit.log, /tmp/transform-sync-server-unit.log y /tmp/transform-sync-build.log. No se actualizó la instalación del cliente ni se alteraron sus registros.
+
+## 2026-11-11 — Edición de campos numéricos sin cero inicial retenido
+
+Componente compartido NumericInput aplicado a los campos type=number de compras, insumos, recetas, productos, Transformaciones, caja, bancos, cobros, turnos y panel fiscal de prueba. Mantiene texto provisional separado del valor convertido por los formularios: permite borrar sin reinsertar cero, selecciona valores cero al enfocar y retira ceros iniciales sobrantes al perder foco sin redondear. Conserva restricciones nativas, handlers de cálculo y semántica de campos opcionales; PIN, RUC e identificadores no fueron modificados.
+
+Validado con TypeScript, build y 83 pruebas frontend. Chrome + SQL temporal: escribir 4.8 sobre cero, vacío persistente durante edición, 000.2500 → 0.2500 y 04.8 → 4.8; alta, edición y baja en SQL. 18 escenarios de inventario aprobados. Suite de Transformaciones SQL/HTTP/Chrome aprobada, incluida confirmación y respuesta perdida. Bases temporales eliminadas; no se modificó API ni esquema ni se actualizó al cliente. Logs: /tmp/numeric-browser.log, /tmp/numeric-transform.log, /tmp/numeric-unit.log.
+
+## 2026-11-11 — Indicador REV en modo claro
+
+Ajustado únicamente el indicador de revisión de Control de Gastos en tema claro: fondo ámbar suave, texto marrón oscuro, borde fino y espaciado más legible. Conserva «REV», añade la ayuda «Gastos por revisar» y mantiene intactos los umbrales, permisos y estados del módulo. Modo oscuro sin cambios. TypeScript, compilación y pruebas existentes de tema aprobados; sin cambios de datos ni despliegue al cliente.
+
+## 2026-11-11 — Rediseño visual de insumos y Transformaciones
+
+Formularios de alta/edición separados en identificación, unidad/costo y existencias; controles táctiles, columnas adaptables y botones secundarios consistentes. Foco único en campos, confinamiento de Tab en diálogos y retorno de foco. Confirmación de eliminación con bloque de stock, aviso explicativo y acciones diferenciadas; se conservan los bloqueos por existencias y recetas.
+
+Transformaciones: navegación con iconos y selección visible; fichas con base, número de resultados, versión y estado; ejecución separada en consumo, resultados y revisión; métricas y tabla de costos en escritorio, tarjetas en móvil. Historial destaca consumo, rendimiento y costo. Las cargas fallidas ya no mantienen «Cargando» indefinidamente ni muestran listas vacías ficticias; Actualizar recupera la consulta. No se modificaron API, esquema, permisos, cálculos ni autoría offline.
+
+Validación: TypeScript, build y 83 pruebas frontend aprobados. SQL temporal: 18 escenarios de insumos y suite de transformaciones con costos, concurrencia, idempotencia, auditoría y rollback. Chrome confirmó alta/edición/baja, eliminación bloqueada con stock, navegación por Tab dentro del diálogo, temas claro/oscuro en 390 y 768 px, creación de ficha, cálculo, confirmación, historial y recuperación tras respuesta perdida. También se provocó un error inicial de carga de fichas y se recuperó con Actualizar. Capturas inspeccionadas de formularios, confirmación y Transformaciones en escritorio/móvil. Logs: `/tmp/tayta-ui-insumos.log`, `/tmp/tayta-ui-transform.log`, `/tmp/tayta-ui-unit.log`. Bases temporales eliminadas; sin migraciones ni actualización del cliente.
+
+## 2026-11-11 — Corrección de firma al crear insumos
+
+El envío inmediato recibía una copia anterior al guardado de la cola, sin autor, empresa ni terminal; la operación persistida sí contenía estos datos. El despachador recupera la operación persistida cuando recibe esa copia incompleta, por lo que la firma utiliza su identidad original. También cubre los recorridos de catálogo que emplean el mismo despachador. No se asigna identidad ni firma retroactiva a pendientes históricos sin prueba verificable. Se distingue la falta de soporte de firma y la indisponibilidad de la clave local cuando puede identificarse.
+
+Validado: 83 pruebas frontend y TypeScript; 18 escenarios SQL/API/realtime de insumos; Chrome con alta al primer intento, edición y baja comprobadas en SQL. Regresión adicional aprobada: 33 escenarios SQL/API, 164 rechazos por perfil, revisión de autoría y recuperación tras reinicio de Chrome. Bases temporales eliminadas. El pendiente antiguo afectado requiere revisión; esta corrección no lo convierte en una operación firmada. No se actualizó la instalación del cliente ni se modificó la base operativa.
+
+## 2026-11-10 — Transformaciones: integración SQL, API y pantalla completada y validada
+
+Disponible en código **Kardex & Stock → Transformaciones**, con fichas versionadas, ejecución con vista previa e historial inmutable. Se conectó el cálculo a stock, costo promedio, entradas/salidas de kardex y auditoría atómica. API protegida por permisos de inventario y empresa; UUID/huella, bloqueos SQL y recuperación de respuestas perdidas evitan duplicar ejecuciones. Una vista previa desactualizada exige recalcular. Operación exclusivamente online, sin modificar la cola existente.
+
+Migración `0017_transformations` validada en SQL temporal, con relaciones a empresa, insumo base, ficha y kardex. Los cortes pueden utilizarse en recetas y solo ellos se descuentan al despachar. Chrome comprobó crear ficha, calcular, confirmar con respuesta perdida, recargar y recuperar una sola ejecución, además de consultar el historial. Se inspeccionaron las capturas de escritorio y móvil claro/oscuro; se corrigió el desplazamiento móvil de esta pestaña porque el encabezado dejaba el formulario sin alto útil.
+
+Pruebas aprobadas: transformación 4 kg y merma, costos/promedios, kg/g y L/ml, compartidos, validaciones, aislamiento de empresas, versiones e instantáneas, reintentos simultáneos y concurrencia, rollback ante fallo de auditoría, receta y permisos HTTP. Regresión: **86 servidor, 82 frontend, 33 escenarios SQL/API/realtime**, TypeScript y ambas compilaciones. Base temporal eliminada. Detalles, comandos y límites en `progreso/transformaciones.md`; log de aceptación `/tmp/tayta-transformations-sql.log`.
+
+**No se migró la base operativa ni se actualizó al cliente.** Antes de usar el módulo en una instalación debe aplicarse la migración mediante el procedimiento habitual con respaldo. Las ejecuciones confirmadas no admiten edición, borrado ni reversión ordinaria; el flujo de reversión sigue reservado para una entrega explícita posterior. Esta entrada sustituye los pendientes de integración de la etapa inicial que sigue debajo.
+
+## 2026-11-10 — Transformaciones: cálculo inicial, integración pendiente
+
+Añadido `server/src/lib/transformation-cost.ts`: cálculo decimal de consumo, rendimiento, merma y reparto de costo por cantidad obtenida × valor relativo por unidad. Conversión kg/g y L/ml; valida cantidades, dimensiones, duplicados y aprovechamiento. Distribuye los céntimos restantes de forma determinista para conservar el costo total y calcula costo unitario con cuatro decimales. La merma se absorbe en los resultados útiles.
+
+Pruebas nuevas: 4 kg con 0,5 kg de merma y distribución relativa, conversión a gramos y redondeo, rechazos de datos inválidos. Compilación del servidor y 86 pruebas aprobadas. El cálculo aún no se invoca desde operaciones ni interfaz: no se ha modificado stock, aplicado migración ni desplegado al cliente.
+
+Pendiente de implementación: modelos y migración de fichas/ejecuciones, validaciones SQL bajo bloqueo, entradas/salidas kardex y costo promedio, auditoría/idempotencia/consulta de recuperación, permisos/rutas, pantalla de fichas/ejecución/historial, integración con recetas y pruebas SQL y navegador. El módulo no está disponible ni debe considerarse terminado.
+
+## 2026-11-10 — Refresco del resumen sin salto visual
+
+PaymentSummary distingue la carga inicial de las consultas en segundo plano. Cuando ya hay datos, el refresco no introduce texto en la fila de estado ni cambia su altura. La hora usa ancho reservado, cifras tabulares y formato de 24 horas. Se conservan el intervalo de 15 segundos, los datos confirmados, mensajes de error/desconexión y Reintentar; no se cambiaron cálculos, API ni base de datos.
+
+Chrome con respuesta demorada: administrador, jefe y cajera mantienen exactamente las posiciones de tarjetas y encabezado de movimientos, el texto del buscador y el foco. La suite conserva las pruebas de fallo de consulta, importes intactos y recuperación mediante Reintentar; capturas claro/oscuro y móvil generadas, panel móvil inspeccionado. TypeScript y compilación aprobados; 33 escenarios SQL y 152 rechazos HTTP, recorridos de roles y cierre offline aprobados. Log temporal: `/tmp/tayta-summary-no-jump2.log`. Base de prueba eliminada, cliente sin actualizar.
+
+## 2026-11-10 — Validación del resumen de cobros completada localmente
+
+Cerradas las comprobaciones pendientes de la entrada anterior. Chrome a 390 × 844: tras esperar la transición de la barra lateral y desplazar el panel a la vista, las tarjetas quedan completas en una columna, dentro del ancho disponible, con Cuentas Activas debajo. Se inspeccionaron `/tmp/tayta-payment-summary-mobile-panel.png` y `/tmp/tayta-payment-summary-mobile.png`. La superposición de la captura anterior correspondía al momento de la transición; esta comprobación no requirió cambiar el diseño.
+
+Prueba de fallo real de la consulta: se aborta `/operations/payment-summary`, aparece el error y las tarjetas conservan exactamente su contenido; al retirar el fallo y pulsar Reintentar se recupera la consulta. SQL confirma que dos medios con el mismo nombre e identificadores distintos conservan importes separados (1001 y 7). El recorrido de corrección autorizada de un abono de efectivo a Yape verifica que el resumen de Yape aumenta exactamente 10 y no incorpora una tarjeta de efectivo.
+
+Suite terminada correctamente: 33 escenarios SQL, 152 comprobaciones de rechazo HTTP y recorridos de roles/navegador, incluido reinicio de Chrome con cierre pendiente. Base temporal eliminada. Log local: `/tmp/tayta-summary-acceptance.log`. Pruebas conservadas en `server/tests/orders.sql.ts` y `scripts/test-browser-roles.mjs`; capturas y log son temporales. No se actualizó al cliente ni se migró su base. La validación de instalación en sus terminales corresponde al despliegue supervisado.
+
+## 2026-11-10 — Resumen por medio de pago en Libro de Caja
+
+Tarjetas principales compactadas y nueva sección de cobros por medio antes de Cuentas Activas. Cuadrícula adaptable, medios activos con cero, medios históricos con cobros y grupo sin identificar; efectivo excluido. Endpoint `/operations/payment-summary` protegido por cash.read y empresa, con alcance acumulado para administrador y turno vigente para jefe/cajera. Agregación SQL sin límite de 1000 filas, sin saldos bancarios en la respuesta. Interfaz conserva último resultado confirmado ante error/desconexión y permite reintentar; refresca con movimientos y periódicamente.
+
+Pruebas: TypeScript y compilaciones, 82 frontend, 33 escenarios SQL y 152 denegaciones HTTP; recorrido de roles y reinicio de cierre pendiente aprobados. Prueba específica de 1001 abonos, ajustes excluidos, efectivo excluido, medios en cero e históricos y corte por turno. Capturas de escritorio en claro/oscuro inspeccionadas; la captura móvil quedó cubierta por la barra lateral y no acredita aceptación visual móvil completa. No se hicieron migraciones ni despliegue al cliente. Quedan por ampliar las pruebas específicas de fallos de consulta, homónimos y correcciones para este endpoint.
+
+## 2026-11-09 — Aceptación local de caja: comprobaciones pendientes cerradas
+
+Probado en Chrome persistente y SQL temporal: se bloquea el envío de cierre, la cola conserva la operación y el turno SQL permanece igual; se cierra completamente Chrome y se abre el mismo perfil, recuperando el envío y registrando exactamente un cierre. Capturas de pendiente y recuperación inspeccionadas.
+
+Comparación visual antes/después para administrador, jefe y cajera con El Tayta: administrador conserva ingresos 354 y egresos 848, bancos 180; efectivo pasa de 1 al fondo 350. Jefe y cajera pasan de ingreso 1, egreso 0 y efectivo 1 a ingreso 0, egreso 0 y fondo 350, sin movimientos anteriores. Capturas en `/tmp/tayta-caja-<perfil>-antes.png` y `-despues.png`; datos exclusivamente de prueba. Las pruebas están incorporadas a `scripts/test-browser-roles.mjs`.
+
+Regresión completa aprobada: 32 escenarios SQL, 151 denegaciones HTTP y recorridos de roles/navegador; base temporal eliminada. Esto cierra las dos comprobaciones locales pendientes de la entrada anterior. No se actualizó la instalación del cliente; la aceptación de sus terminales sigue siendo parte del despliegue supervisado.
+
+## 2026-11-09 — Caja por rol: confirmación del cierre
+
+El cliente deja de crear un cierre, fondo o ajuste provisional antes de la confirmación SQL. Un cierre encolado muestra aviso de pendiente; al completar el envío o replay se consulta `/auth/me` para recuperar turno, apertura y fondo confirmados, además de los movimientos. Los eventos de transacciones son invalidaciones sin importes; los de turno no incluyen el arqueo histórico. La vista histórica del modal se restringe también al renderizar para perfiles limitados.
+
+Compilaciones y regresión general SQL/roles/navegador aprobadas (31 escenarios SQL y 151 denegaciones HTTP). Falta una prueba dedicada de cierre offline con interrupción/reinicio y operaciones de otro turno, verificación de caché histórica tras actualizar una sesión limitada y comparación visual de indicadores entre tres roles. No se da por concluida la aceptación específica ni se actualiza al cliente.
+
+## 2026-11-04 — Continuación fiscal: notas, entrega y confirmación de cobro
+
+Actualiza los pendientes fiscales de las entradas anteriores. Implementadas notas de prueba 07/01 y 08/02, validaciones del subconjunto de catálogos soportado y solicitud auditada de revisión de baja (sin envío de baja). En beta se observaron códigos 0 para factura, boleta, nota de crédito y nota de débito de ambos RUC el 3 de noviembre; el HTTP 401 inicial de boletas no se reprodujo.
+
+Comprobado en Chrome con SQL temporal: error de guardado sin perder datos, cobro único, mesa libre, preparación fiscal, visor PDF, compartir con descarga alternativa y documento de cuenta desde caja. Corregida la espera de confirmación SQL del cobro para no dejar bloqueada la preparación cuando el ticket se abre antes de finalizar el pago. Regresión: 31 escenarios SQL/API/realtime y 151 rechazos por permisos, recorridos de roles, usuarios y caja aprobados. Unitarias: 83 servidor y 81 frontend.
+
+No se migró la base operativa ni se actualizó al cliente. Producción bloqueada. Resúmenes/bajas SUNAT pendientes, al igual que confirmaciones del contador y pruebas en terminales reales. Detalles, alcance de notas y evidencia en [facturacion-pruebas.md](facturacion-pruebas.md).
+
+## 2026-11-03 — Integración fiscal en modo de prueba
+
+Se conectaron datos fiscales previos al cobro, preparación/descargas desde tickets y caja, firma+XSD, transporte beta, CDR, recuperación y conciliación auditada. Migraciones 0015/0016 probadas en SQL temporal y copia restaurada; base operativa sin migrar. Regresión: 31 escenarios SQL y 142 rechazos por permisos. Facturas ficticias de ambos RUC devolvieron código 0 beta; boletas devolvieron HTTP 401. Producción, notas y bajas siguen bloqueadas. Estado y límites completos en [facturacion-pruebas.md](facturacion-pruebas.md).
+
+## 2026-11-03 — Laboratorio fiscal: persistencia, descargas y firma local
+
+Avance parcial documentado en [facturacion-pruebas.md](facturacion-pruebas.md). Nueva migración 0015 probada únicamente en SQL temporal. Preparación por venta/cuenta, tasa por empresa, snapshot, numeración de prueba, PDF/XML y firma local. Módulo deshabilitado por defecto; envío beta/producción bloqueado. No dar por terminada la integración SUNAT ni actualizar al cliente como si estuviera lista.
+
 ## 2026-11-02 — Paso 4 y fase de roles cerrados en entorno local
 
 Aceptación integral aprobada: 81 pruebas frontend, 74 backend, 31 escenarios de pedidos SQL/API, 13 de productos, 18 de insumos, suite SQL de usuarios, 112 denegaciones HTTP por perfil y recorridos Chrome/offline. Se añadió jornada con usuarios limitados en ambas empresas, pagos directos/divididos, reintentos, auditoría y cierre. Migración 0008→0014 ensayada; respaldo local restaurado con CHECKDB y preservación de 31 tablas. Base operativa consultada sin modificar: 14 migraciones, administrador global válido y sin roles por revisar.
@@ -2038,3 +2168,12 @@ reconectar → cola 0 + F5-con-cola E4-b + persistencia F5 de catálogos E5).
   (rooms por empresa + resync al reconectar + punto en vivo en el Header). Pendiente:
   cocina/barra en vivo y catálogos en vivo.
 - Repo con git (`main` + `origin/main`); verificar `git status` limpio antes de cada sesión.
+## 2026-11-10 — Estado consolidado: Libro de Caja y turnos
+
+La mejora quedó implementada y verificada localmente. El administrador conserva ingresos y egresos acumulados y acceso al historial; el jefe y la cajera consultan los movimientos y totales del turno vigente de sus empresas. El efectivo del nuevo turno parte del fondo indicado al cierre y los saldos bancarios se conservan. Se ajustó el cálculo del arqueo para incluir ingresos y reclasificaciones de efectivo, excluir movimientos bancarios y delimitar el turno por su apertura.
+
+La API restringe el historial de cierres y filtra los movimientos de perfiles limitados. La interfaz distingue acumulados y turno vigente; la caché limitada no restaura movimientos ni cierres históricos. Los eventos de caja notifican cambios sin difundir importes, y el cambio de turno comunica la apertura confirmada. Un cierre pendiente no cambia visualmente el turno ni el fondo hasta su confirmación; al reconectar se recupera el estado desde el servidor.
+
+Validación local: 32 escenarios SQL, 151 rechazos HTTP por permisos y recorridos de roles en Chrome con base temporal. Se comprobó visualmente la vista de administrador, jefe y cajera antes y después de cerrar. Con el envío del cierre bloqueado, se cerró y reabrió completamente Chrome usando el mismo perfil; la operación pendiente se recuperó y SQL confirmó un solo cierre. La prueba se conserva en `scripts/test-browser-roles.mjs`; las capturas en `/tmp` son temporales. La base temporal se eliminó. Esta evidencia no equivale a una prueba específica de todas las combinaciones de operaciones pendientes de turnos anteriores.
+
+No se actualizó la instalación del cliente. Antes de utilizar esta versión allí, validar en sus terminales reales las sesiones por rol, HTTPS, sincronización y cierre supervisado. Los cambios fiscales descritos más abajo siguen en modo de prueba y no están habilitados para emisión en producción.

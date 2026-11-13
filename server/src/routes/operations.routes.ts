@@ -1,3 +1,4 @@
+import { paymentSummary } from '../services/payment-summary.service.js';
 import { orderView } from '../lib/order-view.js';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -39,7 +40,7 @@ import { operationActor } from '../lib/operation-audit.js';
 import { verifyOfflineAuthorship } from '../lib/offline-authorship.js';
 
 const router = Router();
-router.use(requireAuth, enforceRoutePermission('operations'), verifyOfflineAuthorship('operations'), scopeCompanyQueries(['/orders/active', '/purchases', '/kardex', '/shifts/records', '/transactions']), scopeOperationResources);
+router.use(requireAuth, enforceRoutePermission('operations'), verifyOfflineAuthorship('operations'), scopeCompanyQueries(['/orders/active', '/purchases', '/kardex', '/shifts/records', '/transactions', '/payment-summary']), scopeOperationResources);
 
 // Ledger de operaciones (operaciones_cliente): APPLIED tras el servicio, FAILED_* en fallos.
 function oplog(req: Request, entity: OpEntity, operation: string) {
@@ -414,6 +415,7 @@ router.post('/kardex/adjustments', async (req, res, next) => {
 // ============ SHIFTS ============
 router.get('/shifts/records', async (req, res, next) => {
   try {
+    if (req.auth!.user.role !== 'Administrador') throw new AppError('El historial de turnos está reservado al administrador.', 403, 'FORBIDDEN');
     const q = z.object({ companyId: z.string().optional() }).parse(req.query);
     res.json(await listShiftRecords(q.companyId));
   } catch (err) {
@@ -447,10 +449,14 @@ router.post('/shifts/switch', async (req, res, next) => {
 });
 
 // ============ TRANSACTIONS (Libro de Caja) ============
+router.get('/payment-summary', async (req, res, next) => {
+  try { const q=z.object({companyId:z.string().optional()}).parse(req.query); res.json(await paymentSummary(q.companyId,req.auth!.user.role !== 'Administrador')); } catch(error) {next(error);}
+});
+
 router.get('/transactions', async (req, res, next) => {
   try {
     const q = z.object({ companyId: z.string().optional() }).parse(req.query);
-    res.json(await listTransactions(q.companyId, !(req.auth!.user.companyId || req.auth!.user.assignedCompanyId)));
+    res.json(await listTransactions(q.companyId, !(req.auth!.user.companyId || req.auth!.user.assignedCompanyId), req.auth!.user.role !== 'Administrador'));
   } catch (err) {
     next(err);
   }

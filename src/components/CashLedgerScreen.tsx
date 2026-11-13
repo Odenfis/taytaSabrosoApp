@@ -1,5 +1,8 @@
+import { NumericInput } from './NumericInput';
+import { PaymentSummary } from './PaymentSummary';
+import { FiscalDocumentActions } from './FiscalDocumentActions';
 import { usePermission } from '../lib/usePermission';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { usePOS } from '../context/POSContext';
 import { Transaction, TransactionType } from '../types';
 import { apiClient } from '../lib/api';
@@ -7,6 +10,8 @@ import { DinerReceiptModal } from './DinerReceiptModal';
 
 export const CashLedgerScreen: React.FC = () => {
   const can = usePermission();
+  const [fiscalEnabled,setFiscalEnabled]=useState(false);
+  useEffect(()=>{let active=true;void apiClient.get<{enabled:boolean}>('/fiscal/status').then(s=>{if(active)setFiscalEnabled(s.enabled)}).catch(()=>{});return()=>{active=false}},[]);
   const {
     transactions,
     filteredTransactions: contextFilteredTx,
@@ -16,6 +21,9 @@ export const CashLedgerScreen: React.FC = () => {
     activeShift,
     activeCompanyId,
     activeCompany,
+    currentUser,
+    companyShifts,
+    companyShiftOpenedUtc,
     companies,
     bankAccounts,
     filteredBankAccounts,
@@ -28,6 +36,7 @@ export const CashLedgerScreen: React.FC = () => {
 
   const [correcting, setCorrecting] = useState<Transaction | null>(null);
   const [historicalBill, setHistoricalBill] = useState<{ companyId?: string; tableNumber?: string; ticketNumber: string; order?: { ticketNumber: string }; label: string; documentType: string; recipientName?: string | null; recipientId?: string | null; total: number; items: { quantity: number; orderItem: { name: string; price: number } }[]; transactions: { id: string; amount: number; paymentMethod: string; contributorName?: string | null }[] } | null>(null);
+  const [fiscalTransaction,setFiscalTransaction]=useState<Transaction|null>(null);
   const [ticketError, setTicketError] = useState('');
   const openDinerTicket = async (tx: Transaction) => {
     if (!tx.orderId || !tx.dinerBillId) return;
@@ -96,6 +105,7 @@ export const CashLedgerScreen: React.FC = () => {
 
   const filteredTransactions = useMemo(() => {
     return contextFilteredTx.filter((tx) => {
+      if (currentUser?.role !== 'Administrador' && (!tx.companyId || tx.timestamp < companyShiftOpenedUtc[tx.companyId] || (tx.shift && tx.shift !== companyShifts[tx.companyId]))) return false;
       const matchSearch =
         searchQuery === '' ||
         tx.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -118,7 +128,7 @@ export const CashLedgerScreen: React.FC = () => {
 
       return matchSearch && matchType && matchAccount;
     });
-  }, [contextFilteredTx, searchQuery, typeFilter, accountFilter]);
+  }, [contextFilteredTx, searchQuery, typeFilter, accountFilter, currentUser?.role, companyShiftOpenedUtc, companyShifts]);
 
   // Total balance in bank accounts for active company
   const totalBankBalance = useMemo(() => {
@@ -202,16 +212,16 @@ export const CashLedgerScreen: React.FC = () => {
       </div>
 
       {/* Metric Cards Grid (including Bank Balances) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${can('banks.manage') ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3`}>
         {/* Ingresos Totales */}
-        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-sm">
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-3 sm:p-3.5 flex flex-col justify-between shadow-sm">
           <div className="flex justify-between items-start">
-            <span className="text-[12px] font-semibold text-ink-muted-2">Ingresos del Turno</span>
-            <div className="w-9 h-9 rounded-xl bg-surface-info-3 text-ink-info flex items-center justify-center border border-edge-info-3">
+            <span className="text-[12px] font-semibold text-ink-muted-2">{currentUser?.role === 'Administrador' ? 'Ingresos acumulados' : 'Ingresos del turno'}</span>
+            <div className="w-8 h-8 rounded-xl bg-surface-info-3 text-ink-info flex items-center justify-center border border-edge-info-3">
               <span className="material-symbols-outlined text-[20px]">trending_up</span>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-1">
             <h3 className="text-[24px] font-black text-ink-info tracking-tight">
               S/ {totalIngresos.toFixed(2)}
             </h3>
@@ -222,14 +232,14 @@ export const CashLedgerScreen: React.FC = () => {
         </div>
 
         {/* Egresos Totales */}
-        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-sm">
+        <div className="bg-panel border border-edge-outline-2 rounded-2xl p-3 sm:p-3.5 flex flex-col justify-between shadow-sm">
           <div className="flex justify-between items-start">
-            <span className="text-[12px] font-semibold text-ink-muted-2">Egresos / Pagos</span>
-            <div className="w-9 h-9 rounded-xl bg-surface-danger-3 text-ink-danger flex items-center justify-center border border-edge-danger-4">
+            <span className="text-[12px] font-semibold text-ink-muted-2">{currentUser?.role === 'Administrador' ? 'Egresos acumulados' : 'Egresos del turno'}</span>
+            <div className="w-8 h-8 rounded-xl bg-surface-danger-3 text-ink-danger flex items-center justify-center border border-edge-danger-4">
               <span className="material-symbols-outlined text-[20px]">trending_down</span>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-1">
             <h3 className="text-[24px] font-black text-ink-danger tracking-tight">
               S/ {totalEgresos.toFixed(2)}
             </h3>
@@ -240,14 +250,14 @@ export const CashLedgerScreen: React.FC = () => {
         </div>
 
         {/* Saldo en Caja Física */}
-        <div className="bg-panel border border-edge-gold-5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-ui-11">
+        <div className="bg-panel border border-edge-gold-5 rounded-2xl p-3 sm:p-3.5 flex flex-col justify-between shadow-ui-11">
           <div className="flex justify-between items-start">
             <span className="text-[12px] font-semibold text-ink-muted-2">Efectivo en Caja</span>
-            <div className="w-9 h-9 rounded-xl bg-surface-gold-5 text-ink-gold flex items-center justify-center border border-edge-gold-5">
+            <div className="w-8 h-8 rounded-xl bg-surface-gold-5 text-ink-gold flex items-center justify-center border border-edge-gold-5">
               <span className="material-symbols-outlined text-[20px]">point_of_sale</span>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-1">
             <h3 className="text-[24px] font-black text-ink-gold tracking-tight">
               S/ {saldoActual.toFixed(2)}
             </h3>
@@ -258,14 +268,14 @@ export const CashLedgerScreen: React.FC = () => {
         </div>
 
         {/* Saldo en Bancos */}
-{can('banks.manage') && (        <div className="bg-panel border border-edge-success rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-ui-12">
+{can('banks.manage') && (        <div className="bg-panel border border-edge-success rounded-2xl p-3 sm:p-3.5 flex flex-col justify-between shadow-ui-12">
           <div className="flex justify-between items-start">
             <span className="text-[12px] font-semibold text-ink-muted-2">Saldo en Bancos</span>
-            <div className="w-9 h-9 rounded-xl bg-surface-success-strong-6 text-ink-success flex items-center justify-center border border-edge-success">
+            <div className="w-8 h-8 rounded-xl bg-surface-success-strong-6 text-ink-success flex items-center justify-center border border-edge-success">
               <span className="material-symbols-outlined text-[20px]">account_balance</span>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-1">
             <h3 className="text-[24px] font-black text-ink-success tracking-tight">
               S/ {totalBankBalance.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
             </h3>
@@ -275,6 +285,8 @@ export const CashLedgerScreen: React.FC = () => {
           </div>
         </div>)}
       </div>
+
+      <PaymentSummary key={`${currentUser?.id}:${currentUser?.version}:${activeCompanyId}`} companyId={activeCompanyId} online={offlineState.isOnline && !offlineState.isSimulatedOffline} revision={transactions} />
 
       {/* Mini Bank Accounts Ribbon */}
       {can('banks.manage') && (filteredBankAccounts || []).length > 0 && (
@@ -457,6 +469,7 @@ export const CashLedgerScreen: React.FC = () => {
                           className="rounded-lg border border-edge-outline-2 px-2 py-1 text-xs text-ink-brand hover:bg-panel-3 disabled:opacity-50"
                           title="Requiere conexión y PIN de administrador">Corregir medio de pago</button>
                       )}
+                      {fiscalEnabled && tx.orderId && <button type="button" className="ml-2 rounded-lg border px-2 py-1 text-xs" onClick={()=>setFiscalTransaction(tx)}>Documento de prueba</button>}
                       {tx.dinerBillId && <button type="button" onClick={() => void openDinerTicket(tx)} className="ml-2 rounded-lg border border-edge-outline-2 px-2 py-1 text-xs text-ink-brand hover:bg-panel-3">Ver ticket</button>}
                     </td>
                   </tr>
@@ -468,6 +481,7 @@ export const CashLedgerScreen: React.FC = () => {
       </div>
 
       {ticketError && <p role="alert" className="p-3 text-ink-danger">{ticketError}</p>}
+      {fiscalTransaction?.orderId && <div role="dialog" aria-modal="true" aria-label="Documento de prueba" className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim p-4"><div className="bg-panel text-ink-body rounded-xl p-4 max-w-lg w-full max-h-[90vh] overflow-auto"><button type="button" className="min-h-11 mb-3 px-3 border rounded-lg" onClick={()=>setFiscalTransaction(null)}>Cerrar</button><FiscalDocumentActions companyId={fiscalTransaction.companyId} orderId={fiscalTransaction.orderId} billId={fiscalTransaction.dinerBillId??undefined} paid /></div></div>}
       {historicalBill && <DinerReceiptModal bill={historicalBill} company={companies.find((company) => company.id === historicalBill.companyId)} tableNumber={historicalBill.tableNumber} orderNumber={historicalBill.order?.ticketNumber} onClose={() => setHistoricalBill(null)} />}
 
 
@@ -613,7 +627,7 @@ export const CashLedgerScreen: React.FC = () => {
                   <span className="absolute left-3 top-2 text-ink-muted-2 font-bold text-[14px]">
                     S/
                   </span>
-                  <input
+                  <NumericInput
                     type="number"
                     step="0.10"
                     min="0.10"

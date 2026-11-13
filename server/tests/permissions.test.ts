@@ -49,7 +49,7 @@ test('el middleware usa el rol de la sesión autenticada y no el rol enviado por
 test('cada ruta autenticada declarada tiene permiso explícito, sin duplicados', async () => {
   const { readFile } = await import('node:fs/promises');
   const { ROUTE_PERMISSIONS, permissionForDeclaredRoute } = await import('../src/lib/route-permissions.js');
-  const groups = ['catalogs', 'operations', 'reports', 'sync', 'users'] as const;
+  const groups = ['catalogs', 'operations', 'reports', 'sync', 'users', 'fiscal', 'transformations'] as const;
   const seen = new Set<string>();
   for (const entry of ROUTE_PERMISSIONS) {
     const key = `${entry.group}:${entry.method}:${entry.path}`;

@@ -1,3 +1,4 @@
+import { NumericInput } from './NumericInput';
 import { insumoSelectable } from '../lib/insumoCatalog';
 import React, { useState, useMemo } from 'react';
 import { usePOS } from '../context/POSContext';
@@ -593,13 +594,13 @@ export const PurchasesScreen: React.FC = () => {
                       }}><option value="">Insumo...</option>{insumos.filter((ins) => insumoSelectable(ins) && (ins.companyId === selectedPurchaseToRegularize.companyId || ins.companyId === 'ambas')).map((ins) => <option key={ins.id} value={ins.id}>{ins.name} ({ins.unit})</option>)}</select>
                       </label>
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`reg-cantidad-${idx}`}>Cantidad
-                        <input id={`reg-cantidad-${idx}`} disabled={selectedPurchaseToRegularize.items.length > 0} type="number" min="0.01" step="0.01" value={item.quantity} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong disabled:opacity-70" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, quantity: Number(e.target.value), totalCost: lineTotal({ ...row, quantity: Number(e.target.value) }) } : row))} />
+                        <NumericInput id={`reg-cantidad-${idx}`} disabled={selectedPurchaseToRegularize.items.length > 0} type="number" min="0.01" step="0.01" value={item.quantity} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong disabled:opacity-70" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, quantity: Number(e.target.value), totalCost: lineTotal({ ...row, quantity: Number(e.target.value) }) } : row))} />
                       </label>
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`reg-precio-${idx}`}>Precio unitario (S/)
-                        <input id={`reg-precio-${idx}`} type="number" min="0" step="0.01" value={item.unitCost} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, unitCost: Number(e.target.value), totalCost: lineTotal({ ...row, unitCost: Number(e.target.value) }) } : row))} />
+                        <NumericInput id={`reg-precio-${idx}`} type="number" min="0" step="0.01" value={item.unitCost} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, unitCost: Number(e.target.value), totalCost: lineTotal({ ...row, unitCost: Number(e.target.value) }) } : row))} />
                       </label>
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`reg-descuento-${idx}`}>Descuento (S/)
-                        <input id={`reg-descuento-${idx}`} type="number" min="0" step="0.01" value={item.discount ?? 0} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, discount: Number(e.target.value), totalCost: lineTotal({ ...row, discount: Number(e.target.value) }) } : row))} />
+                        <NumericInput id={`reg-descuento-${idx}`} type="number" min="0" step="0.01" value={item.discount ?? 0} className="mt-1 w-full min-w-0 bg-panel-30 border border-edge-outline rounded-lg px-2.5 py-2 text-[12px] text-ink-strong" onChange={(e) => setRegItems((prev) => prev.map((row, index) => index === idx ? { ...row, discount: Number(e.target.value), totalCost: lineTotal({ ...row, discount: Number(e.target.value) }) } : row))} />
                       </label>
                       <div className="min-w-0 text-[11px] font-bold text-ink-muted-3">Total neto (S/)
                         <div className="mt-1 min-h-9 flex items-center justify-end rounded-lg px-2.5 bg-panel-30 border border-edge-outline text-[13px] font-bold text-ink-gold">S/ {item.totalCost.toFixed(2)}</div>
@@ -960,7 +961,7 @@ export const PurchasesScreen: React.FC = () => {
                       </label>
 
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`purchase-cantidad-${idx}`}>Cantidad
-                        <input
+                        <NumericInput
                           id={`purchase-cantidad-${idx}`}
                           type="number"
                           step="0.1"
@@ -973,7 +974,7 @@ export const PurchasesScreen: React.FC = () => {
                       </label>
 
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`purchase-precio-${idx}`}>Precio unitario (S/)
-                        <input
+                        <NumericInput
                           id={`purchase-precio-${idx}`}
                           type="number"
                           step="0.01"
@@ -986,7 +987,7 @@ export const PurchasesScreen: React.FC = () => {
                       </label>
 
                       <label className="min-w-0 text-[11px] font-bold text-ink-muted-3" htmlFor={`purchase-descuento-${idx}`}>Descuento (S/)
-                        <input
+                        <NumericInput
                           id={`purchase-descuento-${idx}`}
                           type="number"
                           step="0.01"
@@ -1025,7 +1026,7 @@ export const PurchasesScreen: React.FC = () => {
                 <div>Total con IGV <strong className="block text-ink-success">S/ {draftTotal.toFixed(2)}</strong></div>
               </div>}
               {emptyProvisional && <label className="block text-[12px] font-bold text-ink-strong">Monto total del vale (S/)
-                <input type="number" min="0.01" step="0.01" required value={manualTotal} onChange={(e) => setManualTotal(e.target.value)} className="mt-1 w-full bg-panel-30 border border-edge-outline rounded-xl px-3 py-2 text-[14px] text-ink-strong" />
+                <NumericInput type="number" min="0.01" step="0.01" required value={manualTotal} onChange={(e) => setManualTotal(e.target.value)} className="mt-1 w-full bg-panel-30 border border-edge-outline rounded-xl px-3 py-2 text-[14px] text-ink-strong" />
               </label>}
               <div className="bg-panel-29 p-3.5 rounded-xl border border-edge-outline-2 flex flex-wrap items-center justify-between gap-2 text-[13px]">
                 <span className="text-ink-muted-5 font-bold">{emptyProvisional ? 'Total del vale (Kardex pendiente):' : 'Total a Registrar en Kardex y Contabilidad:'}</span>

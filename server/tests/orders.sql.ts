@@ -401,6 +401,8 @@ await check('cinco cuentas y pagos mixtos conservan tickets y liberan mesa solo 
   await prisma.user.create({ data: { id: operatorId, name: 'Cajero reparto', pinHash: bcrypt.hashSync('9876', 4), role: 'Cajero', terminal: 'Pruebas', companyId } });
   await prisma.user.create({ data: { id: id(), name: 'Administrador reparto', pinHash: bcrypt.hashSync('4321', 4), role: 'Administrador', terminal: 'Pruebas', companyId } });
   const { correctPayment } = await import('../src/services/payment-correction.service.js');
+  const { paymentSummary } = await import('../src/services/payment-summary.service.js');
+  const beforeSummary = await paymentSummary(companyId,false);
   const failedCorrectionId = id();
   await assert.rejects(correctPayment({ transactionId: first.transaction.id, correctionId: failedCorrectionId, operatorId, supervisorPin: '4321', expectedMethodId: cash.id,
     expectedBankAccountId: null, expectedReference: null, newMethodId: yape.id, referenceNumber: 'CORR-FAIL', reason: 'Medio registrado por error' }, { userId: 'x'.repeat(100), deviceId: 'terminal-prueba' }));
@@ -412,6 +414,9 @@ await check('cinco cuentas y pagos mixtos conservan tickets y liberan mesa solo 
   assert.equal(await prisma.operationAudit.count({ where: { actorUserId: operatorId, action: 'corregir_medio_pago' } }), 1);
   const corrected = await prisma.transaction.findUniqueOrThrow({ where: { id: first.transaction.id } });
   assert.equal(corrected.customPaymentMethodId, yape.id);
+  const afterSummary = await paymentSummary(companyId,false);
+  assert.equal(afterSummary.rows.find(r=>r.id===yape.id)!.amount - beforeSummary.rows.find(r=>r.id===yape.id)!.amount,10);
+  assert.ok(!afterSummary.rows.some(r=>r.id===cash.id));
   assert.equal(Number(corrected.amountReceived), 10);
   assert.equal(Number(corrected.change), 0);
   assert.equal(Number((await prisma.bankAccount.findUniqueOrThrow({ where: { id: bank.id } })).currentBalance), 80);
@@ -775,6 +780,48 @@ try {
     for (const event of received.slice(2)) assert.equal(event.currentOrderId, null);
     const active = await fetch(url + '/api/operations/orders/active', { headers }); assert.ok(!(await active.json()).some((o: any) => o.id === order.id));
     assert.equal((await fetch(url + '/api/operations/orders/' + order.id, { headers })).status, 404);
+  });
+  await check('caja por turno preserva acumulados y reintenta el cierre sin repetirlo', async () => {
+    const shifts = await import('../src/services/shift.service.js');
+    const cid = id();
+    await prisma.company.create({data:{id:cid,name:'Turnos',tradeName:'Turnos',ruc:'20999999999',specialty:'',themeColor:'',accentColor:'',badgeText:'',address:''}});
+    await prisma.companyShift.create({data:{companyId:cid,currentShift:'Día',openedAt:'Prueba',openedBy:'Prueba',initialCash:100,openedUtc:new Date(0)}});
+    await shifts.createManualTransaction({companyId:cid,type:'Ingreso Extra',description:'Inicial',amount:30,isIncome:true});
+    const request={companyId:cid,targetShift:'Noche',reportedCash:130,initialCashForNext:40,clientOpId:id()};
+    const first=await shifts.switchCompanyShift(request);
+    assert.equal(first.systemCashExpected,130);
+    assert.equal((await shifts.listTransactions(cid,false,true)).length,0);
+    assert.equal((await shifts.listTransactions(cid,false)).length,1);
+    await shifts.createManualTransaction({companyId:cid,type:'Ingreso Extra',description:'Nuevo turno',amount:12,isIncome:true});
+    assert.equal((await shifts.listTransactions(cid,false,true)).length,1);
+    assert.equal((await shifts.listTransactions(cid,false)).length,2);
+    await shifts.switchCompanyShift(request);
+    assert.equal((await shifts.listShiftRecords(cid)).length,1);
+    assert.equal((await shifts.currentShiftForCompany(cid))?.initialCash,40);
+    assert.equal((await shifts.listTransactions(cid,false,true)).length,1);
+  });
+  await check('resumen por medio supera 1000 abonos, excluye ajustes y respeta el turno', async () => {
+    const {paymentSummary}=await import('../src/services/payment-summary.service.js');
+    const cid=id();
+    await prisma.company.create({data:{id:cid,name:'Resumen',tradeName:'Resumen',ruc:'20888888888',specialty:'',themeColor:'',accentColor:'',badgeText:'',address:''}});
+    const method=await prisma.customPaymentMethod.create({data:{id:id(),companyId:cid,name:'Yape BCP',category:'Billetera Digital',icon:'payments'}});
+    const zero=await prisma.customPaymentMethod.create({data:{id:id(),companyId:cid,name:'POS Niubiz',category:'Tarjeta',icon:'credit_card'}});
+    const cash=await prisma.customPaymentMethod.create({data:{id:id(),companyId:cid,name:'Caja',category:'Efectivo',icon:'payments'}});
+    for(let batch=0;batch<11;batch++) await prisma.transaction.createMany({data:Array.from({length:batch===10?1:100},()=>({id:id(),clientOpId:id(),companyId:cid,time:'10:00',date:'Hoy',timestamp:new Date(1000),type:'Venta (Mesa)',description:'Abono',amount:1,isIncome:true,customPaymentMethodId:method.id,paymentMethod:method.name,shift:'Día'}))});
+    await prisma.transaction.createMany({data:[{id:id(),clientOpId:id(),companyId:cid,time:'10:00',date:'Hoy',timestamp:new Date(1000),type:'Reclasificación de Pago',description:'Ajuste',amount:500,isIncome:true,customPaymentMethodId:method.id},{id:id(),clientOpId:id(),companyId:cid,time:'10:00',date:'Hoy',timestamp:new Date(1000),type:'Venta (Mesa)',description:'Efectivo',amount:50,isIncome:true,customPaymentMethodId:cash.id}]});
+    const twin=await prisma.customPaymentMethod.create({data:{id:id(),companyId:cid,name:method.name,category:'Billetera Digital',icon:'payments'}});
+    await prisma.transaction.create({data:{id:id(),clientOpId:id(),companyId:cid,time:'10:00',date:'Hoy',timestamp:new Date(1000),type:'Venta (Mesa)',description:'Homónimo',amount:7,isIncome:true,customPaymentMethodId:twin.id}});
+    const summary=await paymentSummary(cid,false);
+    assert.equal(summary.rows.filter(r=>r.name===method.name).length,2);
+    assert.equal(summary.rows.find(r=>r.id===twin.id)?.amount,7);
+    assert.equal(summary.rows.find(r=>r.id===method.id)?.amount,1001);
+    assert.equal(summary.rows.find(r=>r.id===zero.id)?.amount,0);
+    assert.ok(!summary.rows.some(r=>r.id===cash.id));
+    await prisma.companyShift.create({data:{companyId:cid,currentShift:'Noche',openedAt:'Hoy',openedBy:'Prueba',initialCash:20}});
+    assert.equal((await paymentSummary(cid,true)).rows.find(r=>r.id===method.id)?.amount,0);
+    await prisma.customPaymentMethod.update({where:{id:method.id},data:{isActive:false}});
+    assert.equal((await paymentSummary(cid,false)).rows.find(r=>r.id===method.id)?.historical,true);
+    assert.ok(!(await paymentSummary(cid,true)).rows.some(r=>r.id===method.id));
   });
   console.log(passed + ' escenarios de pedidos SQL/API/realtime aprobados.');
   if (process.argv.includes('--roles')) {

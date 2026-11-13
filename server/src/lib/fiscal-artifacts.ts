@@ -1,0 +1,38 @@
+import PDFDocument from 'pdfkit';
+import type { FiscalCalculation } from './fiscal-document.js';
+import type { FiscalProfileInput } from '../services/fiscal.service.js';
+export type FiscalSnapshot = { mode:'test'; date:string; number:string; documentType:'01'|'03'|'07'|'08'; reference?:{id:string;number:string;documentType:'01'|'03';reasonCode:string;reason:string}; emitter:FiscalProfileInput; recipient:{name:string;id:string;address:string}; calculation:FiscalCalculation; source:{orderId:string;billId:string|null;ticketNumber:string};profileVersion:number };
+export function xmlEscape(value: string): string { return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!)); }
+const money=(cents:number)=>(cents/100).toFixed(2);
+export function fiscalUnsignedXml(s: FiscalSnapshot):string {
+  if(s.documentType==='07'||s.documentType==='08'){
+    if(!s.reference)throw new Error('La nota requiere un documento original.');
+    const credit=s.documentType==='07',root=credit?'CreditNote':'DebitNote';
+    let xml=fiscalUnsignedXml({...s,documentType:s.reference.documentType,reference:undefined});
+    xml=xml.replace(/Invoice-2/g,root+'-2').replace('<Invoice ',`<${root} `).replace('</Invoice>',`</${root}>`)
+      .replace(/<cbc:InvoiceTypeCode[^>]*>.*?<\/cbc:InvoiceTypeCode>/,'')
+      .replace(/<cac:PaymentTerms>.*?<\/cac:PaymentTerms>/,'')
+      .replace(/InvoiceLine/g,root+'Line').replace(/InvoicedQuantity/g,credit?'CreditedQuantity':'DebitedQuantity');
+    if(!credit)xml=xml.replace(/LegalMonetaryTotal/g,'RequestedMonetaryTotal');
+    const r=s.reference;
+    return xml.replace('<cac:Signature>',`<cac:DiscrepancyResponse><cbc:ReferenceID>${xmlEscape(r.number)}</cbc:ReferenceID><cbc:ResponseCode>${r.reasonCode}</cbc:ResponseCode><cbc:Description>${xmlEscape(r.reason)}</cbc:Description></cac:DiscrepancyResponse><cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${xmlEscape(r.number)}</cbc:ID><cbc:DocumentTypeCode>${r.documentType}</cbc:DocumentTypeCode></cac:InvoiceDocumentReference></cac:BillingReference><cac:Signature>`);
+  }
+  const x=xmlEscape;
+  const party=(id:string,name:string,address:string,supplier:boolean)=>`<cac:Party><cac:PartyIdentification><cbc:ID schemeID="${id.length===11?'6':'1'}">${x(id)}</cbc:ID></cac:PartyIdentification><cac:PartyLegalEntity><cbc:RegistrationName>${x(name)}</cbc:RegistrationName>${supplier?`<cac:RegistrationAddress><cbc:ID>${s.emitter.ubigeo}</cbc:ID><cbc:AddressTypeCode>${s.emitter.establishment}</cbc:AddressTypeCode><cac:AddressLine><cbc:Line>${x(address)}</cbc:Line></cac:AddressLine><cac:Country><cbc:IdentificationCode>PE</cbc:IdentificationCode></cac:Country></cac:RegistrationAddress>`:''}</cac:PartyLegalEntity></cac:Party>`;
+  const tax=(base:number,amount:number,line=false)=>`<cac:TaxTotal><cbc:TaxAmount currencyID="PEN">${money(amount)}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxableAmount currencyID="PEN">${money(base)}</cbc:TaxableAmount><cbc:TaxAmount currencyID="PEN">${money(amount)}</cbc:TaxAmount><cac:TaxCategory>${line?`<cbc:Percent>${(s.calculation.rateBasisPoints/100).toFixed(2)}</cbc:Percent><cbc:TaxExemptionReasonCode>10</cbc:TaxExemptionReasonCode>`:''}<cac:TaxScheme><cbc:ID>1000</cbc:ID><cbc:Name>IGV</cbc:Name><cbc:TaxTypeCode>VAT</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"><ext:UBLExtensions><ext:UBLExtension><ext:ExtensionContent/></ext:UBLExtension></ext:UBLExtensions><cbc:UBLVersionID>2.1</cbc:UBLVersionID><cbc:CustomizationID>2.0</cbc:CustomizationID><cbc:ID>${x(s.number)}</cbc:ID><cbc:IssueDate>${s.date}</cbc:IssueDate><cbc:InvoiceTypeCode listID="0101">${s.documentType}</cbc:InvoiceTypeCode><cbc:Note>DOCUMENTO DE PRUEBA SIN VALIDEZ TRIBUTARIA</cbc:Note><cbc:DocumentCurrencyCode>PEN</cbc:DocumentCurrencyCode><cac:Signature><cbc:ID>SignatureSP</cbc:ID><cac:SignatoryParty><cac:PartyIdentification><cbc:ID>${s.emitter.ruc}</cbc:ID></cac:PartyIdentification><cac:PartyName><cbc:Name>${x(s.emitter.name)}</cbc:Name></cac:PartyName></cac:SignatoryParty><cac:DigitalSignatureAttachment><cac:ExternalReference><cbc:URI>#SignatureSP</cbc:URI></cac:ExternalReference></cac:DigitalSignatureAttachment></cac:Signature><cac:AccountingSupplierParty>${party(s.emitter.ruc,s.emitter.name,s.emitter.address,true)}</cac:AccountingSupplierParty><cac:AccountingCustomerParty>${party(s.recipient.id,s.recipient.name,s.recipient.address,false)}</cac:AccountingCustomerParty><cac:PaymentTerms><cbc:ID>FormaPago</cbc:ID><cbc:PaymentMeansID>Contado</cbc:PaymentMeansID></cac:PaymentTerms>${tax(s.calculation.baseCents,s.calculation.taxCents)}<cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="PEN">${money(s.calculation.baseCents)}</cbc:LineExtensionAmount><cbc:TaxInclusiveAmount currencyID="PEN">${money(s.calculation.totalCents)}</cbc:TaxInclusiveAmount><cbc:PayableAmount currencyID="PEN">${money(s.calculation.totalCents)}</cbc:PayableAmount></cac:LegalMonetaryTotal>${s.calculation.lines.map((l,i)=>`<cac:InvoiceLine><cbc:ID>${i+1}</cbc:ID><cbc:InvoicedQuantity unitCode="NIU">${l.quantity}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="PEN">${money(l.baseCents)}</cbc:LineExtensionAmount><cac:PricingReference><cac:AlternativeConditionPrice><cbc:PriceAmount currencyID="PEN">${money(l.unitPriceCents)}</cbc:PriceAmount><cbc:PriceTypeCode>01</cbc:PriceTypeCode></cac:AlternativeConditionPrice></cac:PricingReference>${tax(l.baseCents,l.taxCents,true)}<cac:Item><cbc:Description>${x(l.description)}</cbc:Description></cac:Item><cac:Price><cbc:PriceAmount currencyID="PEN">${(l.baseCents/100/l.quantity).toFixed(10)}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join('')}</Invoice>`;
+}
+export async function fiscalTestPdf(s: FiscalSnapshot, state:string):Promise<Buffer> {
+  return new Promise((resolve,reject)=>{
+    const doc=new PDFDocument({size:'A4',margin:45}); const chunks:Buffer[]=[];
+    doc.on('data',chunk=>chunks.push(chunk));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
+    doc.fontSize(16).text('PRUEBA - SIN VALIDEZ TRIBUTARIA',{align:'center'}).moveDown();
+    doc.fontSize(13).text(s.emitter.name).fontSize(10).text(`RUC ${s.emitter.ruc}`).text(s.emitter.address).moveDown();
+    doc.fontSize(14).text(`${s.documentType==='01'?'Factura':s.documentType==='03'?'Boleta':s.documentType==='07'?'Nota de crédito':'Nota de débito'} de prueba ${s.number}`);
+    doc.fontSize(10).text(`Fecha: ${s.date} | Estado de prueba: ${state}`).text(`Ticket interno: ${s.source.ticketNumber}`).text(`Receptor: ${s.recipient.name} - ${s.recipient.id}`).text(s.recipient.address).moveDown();
+    if(s.reference)doc.text(`Modifica ${s.reference.number} · Causal ${s.reference.reasonCode}: ${s.reference.reason}`).moveDown();
+    for(const line of s.calculation.lines) doc.text(`${line.quantity} x ${line.description}    S/ ${money(line.totalCents)}`).moveDown(0.4);
+    doc.moveDown().text(`Base: S/ ${money(s.calculation.baseCents)}`).text(`Impuesto incluido (${s.calculation.rateBasisPoints/100}%): S/ ${money(s.calculation.taxCents)}`).fontSize(14).text(`Total: S/ ${money(s.calculation.totalCents)}`);
+    doc.moveDown().fontSize(9).text('Preparación técnica. Este archivo no acredita emisión ni aceptación de SUNAT.');doc.end();
+  });
+}

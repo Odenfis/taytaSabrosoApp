@@ -1,3 +1,5 @@
+import { NumericInput } from './NumericInput';
+import { FiscalDocumentActions } from './FiscalDocumentActions';
 import { orderNeedsOfflineReview } from '../lib/offlineAuthorization';
 import { loadQueue } from '../lib/offlineQueue';
 import { readSessionCache } from '../lib/sessionCache';
@@ -334,7 +336,7 @@ export const PaymentScreen: React.FC = () => {
                     <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-ink-muted-2 font-bold text-[16px]">
                       S/
                     </span>
-                    <input
+                    <NumericInput
                       type="number"
                       step="any"
                       placeholder={total.toFixed(2)}
@@ -408,6 +410,7 @@ export const PaymentScreen: React.FC = () => {
             </div>
           </div>
 
+          <FiscalDocumentActions companyId={currentOrder.companyId} orderId={currentOrder.id} paid={false} />
           {/* Confirm Payment Button */}
           <div className="pt-4 border-t border-edge-outline-2">
             {pendingReview && <p role="alert" className="text-sm text-ink-warning-2">Esta mesa tiene operaciones pendientes que requieren conciliación antes de otro cobro.</p>}{details.error && <p id="payment-validation" role="status" className="mb-3 text-[12px] text-ink-danger">{details.error}</p>}

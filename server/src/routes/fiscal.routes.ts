@@ -1,0 +1,43 @@
+import {fiscalAdjustmentSchema,prepareFiscalAdjustment,fiscalVoidRequestSchema,requestFiscalVoidReview} from '../services/fiscal-adjustments.service.js';
+import { enforceRoutePermission } from '../lib/route-permissions.js';
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth, requirePermission } from '../lib/auth.js';
+import { canAccessCompany } from '../lib/permissions.js';
+import { prisma } from '../lib/prisma.js';
+import { AppError } from '../lib/utils.js';
+import { operationActor } from '../lib/operation-audit.js';
+import { fiscalProfileSchema, fiscalPrepareSchema, saveFiscalProfile, prepareFiscalDocument, signPreparedTestDocument, requireFiscalTestMode, fiscalSource, saveFiscalIntent, fiscalIntentSchema } from '../services/fiscal.service.js';
+import { fiscalTestPdf, fiscalUnsignedXml, type FiscalSnapshot } from '../lib/fiscal-artifacts.js';
+import { deliverFiscalTest, recoverFiscalTest, reconcileFiscalTest } from '../services/fiscal-delivery.service.js';
+const router=Router();
+router.use(requireAuth,enforceRoutePermission('fiscal'));
+router.get('/status',(_req,res)=>res.json({enabled:process.env.FISCAL_TEST_ENABLED==='true',mode:'test',productionEnabled:false}));
+router.use((req,_res,next)=>{try{requireFiscalTestMode();const companyId=z.string().min(1).max(36).parse(req.query.companyId);if(!canAccessCompany(req.auth!.user,companyId))throw new AppError('Empresa no autorizada.',403,'FORBIDDEN');next();}catch(e){next(e)}});
+router.get('/profile',async(req,res,next)=>{try{const row=await prisma.fiscalProfile.findUnique({where:{companyId:String(req.query.companyId)}});res.json(row?{...JSON.parse(row.configuration),version:row.version}:null)}catch(e){next(e)}});
+router.patch('/profile',requirePermission('security.manage'),async(req,res,next)=>{try{const body=z.object({profile:fiscalProfileSchema,expectedVersion:z.number().int().nonnegative()}).strict().parse(req.body);res.json(await saveFiscalProfile(String(req.query.companyId),body.profile,body.expectedVersion,operationActor(req)))}catch(e){next(e)}});
+router.get('/source',async(req,res,next)=>{try{const q=z.object({orderId:z.string().min(1).max(36),billId:z.string().min(1).max(36).optional()}).parse(req.query);res.json(await fiscalSource(String(req.query.companyId),q.orderId,q.billId))}catch(e){next(e)}});
+router.patch('/intent',requirePermission('payments.collect'),async(req,res,next)=>{try{res.json(await saveFiscalIntent(String(req.query.companyId),fiscalIntentSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.get('/sources',async(req,res,next)=>{try{
+ const companyId=String(req.query.companyId);
+ const [orders,bills]=await Promise.all([prisma.order.findMany({where:{companyId,status:'cobrado',isDeleted:false,dinerBills:{none:{}}},select:{id:true,ticketNumber:true,total:true},orderBy:{createdUtc:'desc'},take:100}),prisma.dinerBill.findMany({where:{companyId,status:'pagada'},select:{id:true,orderId:true,ticketNumber:true,label:true,total:true},orderBy:{createdUtc:'desc'},take:100})]);
+ res.json([...orders.map(o=>({orderId:o.id,label:`Venta ${o.ticketNumber}`,total:Number(o.total)})),...bills.map(b=>({orderId:b.orderId,billId:b.id,label:`Cuenta ${b.ticketNumber} - ${b.label}`,total:Number(b.total)}))]);
+}catch(e){next(e)}});
+router.get('/documents',async(req,res,next)=>{try{res.json(await prisma.fiscalTestDocument.findMany({where:{companyId:String(req.query.companyId)},select:{id:true,orderId:true,billId:true,number:true,documentType:true,state:true,createdAt:true,responseCode:true,responseMessage:true},orderBy:{createdAt:'desc'},take:200}))}catch(e){next(e)}});
+router.post('/documents',requirePermission('payments.collect'),async(req,res,next)=>{try{res.status(201).json(await prepareFiscalDocument(String(req.query.companyId),fiscalPrepareSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.get('/void-requests',requirePermission('security.manage'),async(req,res,next)=>{try{const rows=await prisma.fiscalTestIntent.findMany({where:{companyId:String(req.query.companyId),sourceKey:{startsWith:'void:'}},orderBy:{updatedAt:'desc'},take:200});res.json(rows.map(row=>JSON.parse(row.data)))}catch(e){next(e)}});
+router.post('/documents/:id/void-request',requirePermission('security.manage'),async(req,res,next)=>{try{res.status(201).json(await requestFiscalVoidReview(String(req.query.companyId),String(req.params.id),fiscalVoidRequestSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.post('/documents/:id/adjustments',requirePermission('security.manage'),async(req,res,next)=>{try{res.status(201).json(await prepareFiscalAdjustment(String(req.query.companyId),String(req.params.id),fiscalAdjustmentSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.post('/documents/:id/sign',requirePermission('security.manage'),async(req,res,next)=>{try{res.json(await signPreparedTestDocument(String(req.query.companyId),String(req.params.id),operationActor(req)))}catch(e){next(e)}});
+router.get('/documents/:id/file',async(req,res,next)=>{try{
+ const format=z.enum(['xml','pdf','cdr']).parse(req.query.format);const row=await prisma.fiscalTestDocument.findFirst({where:{id:String(req.params.id),companyId:String(req.query.companyId)}});if(!row)throw new AppError('Documento no encontrado.',404,'NOT_FOUND');
+ if(format==='cdr'&&!row.cdr)throw new AppError('Aún no existe CDR.',409,'FISCAL_CDR_MISSING');
+ const snapshot=JSON.parse(row.snapshot) as FiscalSnapshot;const file=format==='cdr'?Buffer.from(row.cdr!):format==='xml'?Buffer.from(row.signedXml??fiscalUnsignedXml(snapshot)):await fiscalTestPdf(snapshot,row.state);
+ res.json({filename:`PRUEBA-${row.number}.${format==='cdr'?'zip':format}`,mime:format==='cdr'?'application/zip':format==='xml'?'application/xml':'application/pdf',base64:file.toString('base64'),signed:!!row.signedXml});
+}catch(e){next(e)}});
+// Hasta validar el canal, firma y reglas, ninguna petición puede enviar a producción.
+router.post('/documents/:id/send',requirePermission('payments.collect'),async(req,res,next)=>{try{res.json(await deliverFiscalTest(String(req.query.companyId),String(req.params.id),operationActor(req)))}catch(e){next(e)}});
+router.post('/documents/:id/recover',requirePermission('security.manage'),async(req,res,next)=>{try{res.json(await recoverFiscalTest(String(req.query.companyId),String(req.params.id),operationActor(req)))}catch(e){next(e)}});
+router.post('/documents/:id/reconcile',requirePermission('security.manage'),async(req,res,next)=>{try{const body=z.object({soapResponse:z.string().min(1).max(2000000),acknowledgeTestOnly:z.literal(true)}).strict().parse(req.body);res.json(await reconcileFiscalTest(String(req.query.companyId),String(req.params.id),body.soapResponse,operationActor(req)))}catch(e){next(e)}});
+router.post('/documents/:id/cancel',requirePermission('security.manage'),(_req,_res,next)=>next(new AppError('Notas y bajas requieren validar las reglas aplicables. No se anuló el documento ni la venta.',409,'FISCAL_CANCELLATION_NOT_READY')));
+export default router;

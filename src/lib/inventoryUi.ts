@@ -1,0 +1,2 @@
+export const inventoryButton = 'min-h-11 rounded-xl border border-edge-outline-2 px-4 py-2 text-ink-strong text-sm font-semibold transition-colors hover:bg-panel-19 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-edge-brand';
+export const inventoryPrimary = inventoryButton.replace('hover:bg-panel-19', '').replace('text-ink-strong', '') + ' bg-surface-brand-solid text-ink-on-brand hover:bg-surface-brand-hover-bright';

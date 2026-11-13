@@ -217,6 +217,13 @@ async function signingKey(): Promise<StoredSigningKey | null> {
   return key;
 }
 
+/** Solo diagnostica una clave faltante para una operación nueva del autor local. */
+export async function localSigningKeyUnavailable(op: PendingOp): Promise<boolean> {
+  if (!canAcquireFirstProof(op.clientOpId) || !identity ||
+      identity.userId !== op.authorId || identity.deviceId !== op.deviceId) return false;
+  try { return !(await signingKey()); } catch { return true; }
+}
+
 /** Firma el contenido exacto de la operación encolada. La terminal firmada es
  * la que originó la operación; no se reasigna al sincronizar. Se firma una
  * prueba por cada variante de ruta que la operación puede ejecutar. */

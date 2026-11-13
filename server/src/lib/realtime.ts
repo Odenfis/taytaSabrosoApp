@@ -123,7 +123,8 @@ export interface TransactionChangedPayload {
 
 export function emitTransactionChanged(companyId: string, payload: TransactionChangedPayload): void {
   try {
-    io?.to(permissionRoom(companyId, 'cash.read')).emit('transaction:changed', { ...payload, bankAccountId: null, bankAccountAlias: null });
+    // Invalidación únicamente: los importes se recuperan por REST con el alcance del rol/turno.
+    io?.to(permissionRoom(companyId, 'cash.read')).emit('transaction:changed', { companyId, updatedAt: payload.updatedAt });
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }
@@ -133,6 +134,7 @@ export function emitTransactionChanged(companyId: string, payload: TransactionCh
 // para que las otras terminales no queden con la gaveta desfasada.
 export interface ShiftChangedPayload {
   companyId: string;
+  openedUtc?: string;
   closedShift: string;
   newShift: string;
   initialCash: number;
@@ -144,7 +146,7 @@ export interface ShiftChangedPayload {
 
 export function emitShiftChanged(companyId: string, payload: ShiftChangedPayload): void {
   try {
-    io?.to(permissionRoom(companyId, 'cash.read')).emit('shift:changed', payload);
+    io?.to(permissionRoom(companyId, 'cash.read')).emit('shift:changed', { ...payload, reportedCash: null, systemCashExpected: null, difference: null });
   } catch {
     /* realtime best-effort: nunca romper la operación */
   }

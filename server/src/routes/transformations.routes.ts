@@ -1,0 +1,24 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { requireAuth } from '../lib/auth.js';
+import { enforceRoutePermission } from '../lib/route-permissions.js';
+import { canAccessCompany } from '../lib/permissions.js';
+import { operationActor } from '../lib/operation-audit.js';
+import { AppError } from '../lib/utils.js';
+import { templateSchema, executionSchema, saveTransformation, previewTransformation, executeTransformation, listTransformations, listExecutions, getExecution, deleteTransformation } from '../services/transformations.service.js';
+const router=Router();
+router.use(requireAuth,enforceRoutePermission('transformations'));
+router.use((req,_res,next)=>{try{
+  if(req.get('x-offline-replay')==='1' || req.body?.__proof) throw new AppError('Las transformaciones requieren conexión; no admiten replay offline.',409,'TRANSFORMATION_ONLINE_ONLY');
+  const companyId=z.string().min(1).max(36).parse(req.query.companyId);
+  if(!canAccessCompany(req.auth!.user,companyId))throw new AppError('Empresa no autorizada.',403,'FORBIDDEN');
+  next();
+}catch(error){next(error)}});
+router.get('/templates',async(req,res,next)=>{try{res.json(await listTransformations(String(req.query.companyId)))}catch(e){next(e)}});
+router.post('/templates',async(req,res,next)=>{try{res.json(await saveTransformation(String(req.query.companyId),templateSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.post('/templates/:id/delete',async(req,res,next)=>{try{await deleteTransformation(String(req.query.companyId),z.uuid().parse(req.params.id),z.object({expectedVersion:z.number().int().positive()}).strict().parse(req.body).expectedVersion,operationActor(req));res.json({ok:true})}catch(e){next(e)}});
+router.post('/preview',async(req,res,next)=>{try{res.json(await previewTransformation(String(req.query.companyId),executionSchema.parse(req.body)))}catch(e){next(e)}});
+router.post('/executions',async(req,res,next)=>{try{res.json(await executeTransformation(String(req.query.companyId),executionSchema.parse(req.body),operationActor(req)))}catch(e){next(e)}});
+router.get('/executions',async(req,res,next)=>{try{const skip=z.coerce.number().int().min(0).max(1000000).default(0).parse(req.query.skip);res.json(await listExecutions(String(req.query.companyId),skip))}catch(e){next(e)}});
+router.get('/executions/:id',async(req,res,next)=>{try{res.json(await getExecution(String(req.query.companyId),z.uuid().parse(req.params.id)))}catch(e){next(e)}});
+export default router;

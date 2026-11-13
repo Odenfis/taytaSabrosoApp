@@ -12,3 +12,5 @@ const result = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 cpSync(path.join(root, 'public'), path.join(root, 'dist/public'), { recursive: true });
+
+cpSync(path.join(root, "resources"), path.join(root, "dist/resources"), { recursive: true });

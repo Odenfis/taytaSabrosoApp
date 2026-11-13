@@ -22,7 +22,7 @@ try {
   created = true;
   console.log('Base aislada creada: ' + database);
   await run(['node_modules/prisma/build/index.js', 'db', 'push', '--skip-generate']);
-  await run(['--import', 'tsx', 'tests/insumos.sql.ts', ...(process.argv.includes('--browser') ? ['--browser'] : [])]);
+  await run(['--import', 'tsx', 'tests/insumos.sql.ts', ...(process.argv.includes('--browser-auto') ? ['--browser-auto'] : process.argv.includes('--browser') ? ['--browser'] : [])]);
 } finally {
   if (created) {
     await admin.$executeRawUnsafe('ALTER DATABASE [' + database + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE');

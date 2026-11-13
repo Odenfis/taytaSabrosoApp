@@ -420,6 +420,8 @@ export interface Purchase {
 
 // Kardex (Movimientos físicos y valorados)
 export type KardexMovementType =
+  | 'TRANSFORMACION_SALIDA'
+  | 'TRANSFORMACION_ENTRADA'
   | 'ENTRADA_COMPRA'
   | 'SALIDA_VENTA_POS'
   | 'AJUSTE_MERMA'

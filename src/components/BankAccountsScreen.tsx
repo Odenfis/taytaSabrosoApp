@@ -1,3 +1,4 @@
+import { NumericInput } from './NumericInput';
 import React, { useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { BankAccount, CustomPaymentMethod, CompanyId, PaymentCategory } from '../types';
@@ -538,7 +539,7 @@ export const BankAccountsScreen: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">Saldo Inicial / Actual (S/)</label>
-                  <input
+                  <NumericInput
                     type="number"
                     step="0.10"
                     required
@@ -671,7 +672,7 @@ export const BankAccountsScreen: React.FC = () => {
                   <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                     Comisión de Pasarela (%)
                   </label>
-                  <input
+                  <NumericInput
                     type="number"
                     step="0.1"
                     min="0"

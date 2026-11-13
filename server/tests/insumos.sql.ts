@@ -158,6 +158,78 @@ try {
     const removed = listen('delete'); const deletion = await fetch(`${url}/api/catalogs/insumos/${row.id}?expectedVersion=${updated.version}`, { method: 'DELETE', headers }); assert.equal(deletion.status, 200); assert.equal((await deletion.json()).isDeleted, true); await removed;
   });
   console.log(passed + ' escenarios SQL/API/realtime de insumos aprobados.');
+  if (process.argv.includes('--browser-auto')) {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(url); await page.getByPlaceholder('Ingresa tu PIN').fill('9876'); await page.locator('#btn-login-submit').click(); await page.locator('#btn-logout').waitFor();
+      await page.getByRole('button', {name: /Kardex/}).first().click();
+      await page.getByRole('button', {name: 'Nuevo Insumo'}).click();
+      let dialog = page.getByRole('dialog', {name: 'Nuevo insumo'});
+      await dialog.getByLabel('Nombre del insumo').fill('Lomo prueba firma');
+      const costInput=dialog.getByLabel('Costo inicial por unidad (S/)');
+      await costInput.focus();await costInput.pressSequentially('4.8');assert.equal(await costInput.inputValue(),'4.8');
+      await costInput.fill('');assert.equal(await costInput.inputValue(),'');await dialog.getByLabel('Nombre del insumo').focus();assert.equal(await costInput.inputValue(),'');
+      await costInput.fill('000.2500');await dialog.getByLabel('Nombre del insumo').focus();assert.equal(await costInput.inputValue(),'0.2500');
+      await costInput.fill('04.8');await dialog.getByLabel('Nombre del insumo').focus();assert.equal(await costInput.inputValue(),'4.8');
+      await costInput.fill('20');
+      await page.screenshot({path:'/tmp/tayta-insumo-modal.png'});
+      for(const theme of ['light','dark']){
+        await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);await page.waitForTimeout(500);
+        for(const width of [390,768]){await page.setViewportSize({width,height:900});await page.screenshot({path:`/tmp/tayta-insumo-${theme}-${width}.png`});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}
+      }
+      for(let n=0;n<15;n++){await page.keyboard.press('Tab');assert.ok(await dialog.evaluate(el=>el.contains(document.activeElement)));}
+      await page.setViewportSize({width:1440,height:1000});
+      await dialog.getByRole('button', {name: 'Guardar insumo'}).click();
+      await dialog.waitFor({state:'hidden'});
+      await page.getByText('Lomo prueba firma', {exact:true}).first().waitFor();
+      // Ampliar solo el DOM de prueba para verificar encabezados con muchas filas;
+      // se retiran las copias antes de continuar con los flujos de inventario.
+      for (const [tab, label] of [['Existencias Físicas', 'Tabla de existencias físicas'], ['Movimientos Kardex', 'Tabla de movimientos de kardex']]) {
+        await page.getByRole('button', {name: new RegExp(tab)}).click();
+        const region = page.getByRole('region', {name: label});
+        await region.evaluate(el => { const body = el.querySelector('tbody')!; let row = body.querySelector('tr'); if (!row) { row = document.createElement('tr'); for (const header of el.querySelectorAll('th')) { const cell = document.createElement('td'); cell.textContent = header.textContent + ' de prueba'; row.appendChild(cell); } } for (let i=0;i<30;i++) { const clone = row.cloneNode(true) as HTMLElement; clone.dataset.testClone='true'; body.appendChild(clone); } });
+        for (const theme of ['light','dark']) for (const viewport of [{width:1440,height:900},{width:768,height:900},{width:390,height:844},{width:390,height:600}]) {
+          await page.evaluate(t => document.documentElement.setAttribute('data-theme', t), theme);
+          await page.setViewportSize(viewport);
+          await region.scrollIntoViewIfNeeded();
+          const result = await region.evaluate(el => {
+            const header = el.querySelector('thead')!; const th = el.querySelector('th')!; const td = el.querySelector('tbody td')!;
+            el.scrollTop=0; el.scrollLeft=0;
+            const initialHeader=header.getBoundingClientRect().top;
+            const initialDelta=th.getBoundingClientRect().left-td.getBoundingClientRect().left;
+            el.scrollTop=200; el.scrollLeft=100;
+            return {top:header.getBoundingClientRect().top, initialHeader, scrollTop:el.scrollTop, delta:th.getBoundingClientRect().left-td.getBoundingClientRect().left, initialDelta, opaque:getComputedStyle(header).backgroundColor};
+          });
+          assert.ok(result.scrollTop > 0); assert.ok(Math.abs(result.top-result.initialHeader)<2); assert.ok(Math.abs(result.delta-result.initialDelta)<2); assert.notEqual(result.opaque,'rgba(0, 0, 0, 0)');
+          assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth), true);
+          await page.screenshot({path:`/tmp/kardex-sticky-${tab === 'Existencias Físicas' ? 'stock' : 'movimientos'}-${theme}-${viewport.width}-${viewport.height}.png`});
+        }
+        await region.focus(); await page.keyboard.press('ArrowDown');
+        await region.evaluate(el => el.querySelectorAll('[data-test-clone]').forEach(row=>row.remove()));
+      }
+      await page.setViewportSize({width:1440,height:1000});
+      await page.getByRole('button', {name: /Existencias Físicas/}).click();
+      console.log('PASS Chrome: encabezados fijos y alineados en dos tablas, temas y tamaños.');
+      let row = await prisma.insumo.findFirstOrThrow({where:{name:'Lomo prueba firma',isDeleted:false}});
+      await page.getByRole('button', {name:'Acciones de Lomo prueba firma'}).click(); await page.getByRole('menuitem', {name:'Editar insumo'}).click();
+      dialog = page.getByRole('dialog', {name:'Editar insumo'}); await dialog.getByLabel('Stock mínimo').fill('3'); await dialog.getByRole('button', {name:'Guardar insumo'}).click(); await dialog.waitFor({state:'hidden'});
+      row = await prisma.insumo.findUniqueOrThrow({where:{id:row.id}}); assert.equal(Number(row.minStock),3);
+      await prisma.insumo.update({where:{id:row.id},data:{currentStock:4}});
+      await page.reload();await page.locator('#btn-logout').waitFor();await page.getByRole('button',{name:/Kardex/}).first().click();
+      await page.getByRole('button',{name:'Acciones de Lomo prueba firma'}).click();await page.getByRole('menuitem',{name:'Eliminar insumo'}).click();
+      const blocked=page.getByRole('dialog',{name:'Eliminar insumo'});assert.ok(await blocked.getByRole('button',{name:'Eliminar insumo'}).isDisabled());await blocked.getByText('No se puede eliminar mientras tenga stock.',{exact:false}).waitFor();
+      await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));await page.waitForTimeout(500);await page.screenshot({path:'/tmp/tayta-insumo-eliminar-stock.png'});await blocked.getByRole('button',{name:'Cancelar',exact:true}).click();
+      await prisma.insumo.update({where:{id:row.id},data:{currentStock:0}});
+      await page.reload();await page.locator('#btn-logout').waitFor();await page.getByRole('button',{name:/Kardex/}).first().click();
+      await page.getByRole('button', {name:'Acciones de Lomo prueba firma'}).click(); await page.getByRole('menuitem', {name:'Eliminar insumo'}).click();
+      await page.getByRole('dialog',{name:'Eliminar insumo'}).getByRole('button',{name:'Eliminar insumo'}).click();
+      await page.getByRole('dialog',{name:'Eliminar insumo'}).waitFor({state:'hidden'});
+      assert.equal((await prisma.insumo.findUniqueOrThrow({where:{id:row.id}})).isDeleted,true);
+      console.log('PASS Chrome: alta inmediata firmada, edición y baja confirmadas en SQL.');
+    } catch(e) {const page=browser.contexts()[0]?.pages()[0];if(page){console.log(await page.locator('body').innerText());await page.screenshot({path:'/tmp/tayta-insumo-ui-failure.png'});}throw e;} finally { await browser.close(); }
+  }
   if (process.argv.includes('--browser')) {
     console.log('POS aislado: ' + url + ' · PIN 9876 · fin y Enter para cerrar.');
     await new Promise<void>((resolve) => { process.stdin.resume(); process.stdin.once('data', () => { process.stdin.pause(); resolve(); }); });

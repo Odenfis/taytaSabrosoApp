@@ -129,7 +129,7 @@ export async function switchCompanyShift(input: {
     });
 
     // Cambiar turno vigente
-    await tx.companyShift.upsert({
+    const nextShift = await tx.companyShift.upsert({
       where: { companyId: input.companyId },
       create: {
         companyId: input.companyId,
@@ -141,6 +141,7 @@ export async function switchCompanyShift(input: {
       update: {
         currentShift: input.targetShift,
         openedAt: `Hoy ${time}`,
+        openedUtc: new Date(),
         openedBy: operator,
         initialCash: input.initialCashForNext,
       },
@@ -175,6 +176,7 @@ export async function switchCompanyShift(input: {
       systemCashExpected,
       reportedCash: input.reportedCash,
       difference,
+      openedUtc: nextShift.openedUtc.toISOString(),
     };
     if (receiptId) await tx.orderOperationResult.create({ data: { id: receiptId, result: JSON.stringify({ companyId: input.companyId, targetShift: input.targetShift, reportedCash: input.reportedCash, initialCashForNext: input.initialCashForNext, notes: input.notes ?? null, result: value }) } });
     return { value, replay: false };
@@ -183,6 +185,7 @@ export async function switchCompanyShift(input: {
     companyId: input.companyId, closedShift: String(result.value.closedShift), newShift: input.targetShift,
     initialCash: input.initialCashForNext, reportedCash: input.reportedCash,
     systemCashExpected: Number(result.value.systemCashExpected), difference: Number(result.value.difference), updatedAt: new Date().toISOString(),
+    openedUtc: String(result.value.openedUtc),
   });
   return plain(result.value);
 }
@@ -195,12 +198,18 @@ export async function listShiftRecords(companyId?: string) {
   return plain(records);
 }
 
-export async function listTransactions(companyId?: string, includeUnassigned = true) {
+export async function listTransactions(companyId?: string, includeUnassigned = true, currentShiftOnly = false) {
+  const shifts = currentShiftOnly ? await prisma.companyShift.findMany({ where: companyId ? { companyId } : {} }) : [];
+  const companies = currentShiftOnly ? await prisma.company.findMany({ where: companyId ? { id: companyId } : {}, select: { id: true } }) : [];
+  const currentScope = companies.map(({ id }) => {
+    const shift = shifts.find((s) => s.companyId === id);
+    return { companyId: id, ...(shift ? { timestamp: { gte: shift.openedUtc }, OR: [{ shift: null }, { shift: shift.currentShift }] } : { OR: [{ shift: null }, { shift: 'Día' }] }) };
+  });
   const transactions = await prisma.transaction.findMany({
     where: {
       isDeleted: false,
       // Sin companyId = compartida (legacy): visible en todas las empresas.
-      ...(companyId ? includeUnassigned ? { OR: [{ companyId }, { companyId: null }] } : { companyId } : {}),
+      ...(currentShiftOnly ? { OR: currentScope } : companyId ? includeUnassigned ? { OR: [{ companyId }, { companyId: null }] } : { companyId } : {}),
     },
     orderBy: { timestamp: 'desc' },
     take: 1000,

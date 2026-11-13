@@ -1,8 +1,9 @@
+import { FiscalDocumentActions } from './FiscalDocumentActions';
 import React from 'react';
 import type { Company } from '../types';
 
 export type DinerReceiptBill = {
-  ticketNumber: string; label: string; total: number; recipientName?: string | null; recipientId?: string | null;
+  id?: string; orderId?: string; documentType?: string; ticketNumber: string; label: string; total: number; recipientName?: string | null; recipientId?: string | null;
   items: { orderItemId?: string; quantity: number; orderItem?: { name: string; price: number } }[];
   transactions: { id: string; amount: number; paymentMethod: string | null; contributorName?: string | null; referenceNumber?: string | null; amountReceived?: number | null; change?: number | null }[];
 };
@@ -36,6 +37,7 @@ export function DinerReceiptModal({ bill, company, tableNumber, orderNumber, onC
         <div className="border-t border-dashed pt-3 text-center text-[11px]"><p className="font-bold">{syncPending ? 'PENDIENTE DE SINCRONIZACIÓN' : remaining ? `PENDIENTE: S/ ${(remaining / 100).toFixed(2)}` : 'PAGO REGISTRADO'}</p><p>Ticket interno. No es comprobante electrónico.</p></div>
       </div>
       {shareMessage && <p role="status" className="text-sm text-ink-muted-2">{shareMessage}</p>}
+      {!remaining && !syncPending && bill.id && bill.orderId && company && <FiscalDocumentActions companyId={company.id} orderId={bill.orderId} billId={bill.id} paid recipientName={bill.recipientName} recipientId={bill.recipientId} documentType={bill.documentType} />}
       <div className="flex gap-2"><button type="button" onClick={() => window.print()} className="flex-1 bg-panel-3 border border-edge-outline rounded-xl p-3 font-bold text-ink-body">Imprimir</button><button type="button" onClick={() => void share()} className="flex-1 bg-surface-success-solid text-ink-on-accent-2 rounded-xl p-3 font-bold">Compartir</button><button type="button" onClick={onClose} className="flex-1 bg-surface-brand-solid text-ink-on-brand rounded-xl p-3 font-bold">Cerrar</button></div>
     </div>
   </div>;

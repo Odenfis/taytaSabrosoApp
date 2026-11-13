@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { beforeEach, afterEach, mock, test } from 'node:test';
 import { stageInsumo, stageInsumoDelete, overlayInsumos, insumoPending, markInsumoIssue, insumoIsSending, type InsumoDraft } from '../src/lib/insumoCatalog';
-import { loadQueue } from '../src/lib/offlineQueue';
+import { loadQueue, setQueueIdentity } from '../src/lib/offlineQueue';
+import { seedOfflineSigningForTests } from '../src/lib/offlineSigning';
 import { replayCall } from '../src/lib/replayQueue';
 import { storeAuthToken } from '../src/lib/api';
 import { signReplay } from './replayFixtures';
@@ -67,4 +68,24 @@ test('401 conserva el alta y doble envío comparte una sola petición', async ()
   const a = replayCall(op, op.payload as any); const b = replayCall(op, op.payload as any);
   assert.equal(insumoIsSending(String((op.payload as any).id)), true);
   assert.equal((await a).disposition, 'retry'); await b; assert.equal(calls, 1); assert.equal(loadQueue().length, 1);
+});
+
+test('alta inmediata firma usando la identidad persistida y conserva el pendiente ante error', async () => {
+  await seedOfflineSigningForTests('test-author', 'test-device');
+  setQueueIdentity({authorId:'test-author',deviceId:'test-device',companyFor:()=> 'el-tayta'});
+  try {
+    const op = stageInsumo(draft);
+    assert.equal(op.authorId, undefined);
+    assert.equal(loadQueue()[0].authorId, 'test-author');
+    let body: any;
+    mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+      body=JSON.parse(init.body as string);
+      return new Response(JSON.stringify({error:{code:'UNAUTHORIZED',message:'Reingresa'}}),{status:401});
+    });
+    const result=await replayCall(op,op.payload as any);
+    assert.equal(result.disposition,'retry');
+    assert.equal(typeof body.__proof.document,'string');
+    assert.equal(JSON.parse(body.__proof.document).authorId,'test-author');
+    assert.equal(loadQueue().length,1);
+  } finally {setQueueIdentity(null)}
 });

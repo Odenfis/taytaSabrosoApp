@@ -1,3 +1,5 @@
+import { NumericInput } from './NumericInput';
+import { FiscalTestPanel } from './FiscalTestPanel';
 import { SigningKeyManagement } from './SigningKeyManagement';
 import { ThemeSelector } from './ThemeSelector';
 import React, { useState } from 'react';
@@ -36,7 +38,7 @@ export const SettingsScreen: React.FC = () => {
   const handleUpdatePrinter = updatePrinter || updateThermalPrinter;
   const handleDeletePrinter = deletePrinter || deleteThermalPrinter;
 
-  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia' | 'seguridad' | 'usuarios'>('impresoras');
+  const [activeTab, setActiveTab] = useState<'empresa' | 'impresoras' | 'offline' | 'mantenimiento' | 'apariencia' | 'seguridad' | 'usuarios' | 'fiscal'>('impresoras');
   const [isSaved, setIsSaved] = useState(false);
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -230,8 +232,11 @@ export const SettingsScreen: React.FC = () => {
         <button type="button" onClick={() => setActiveTab('apariencia')} aria-pressed={activeTab === 'apariencia'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'apariencia' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">palette</span>Apariencia</button>
         {currentUser?.role === 'Administrador' && <button type="button" onClick={() => setActiveTab('seguridad')} aria-pressed={activeTab === 'seguridad'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'seguridad' ? 'bg-primary-container text-on-primary-fixed' : 'text-on-surface-variant hover:bg-surface-container'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">lock</span>Seguridad</button>}
         {currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <button type="button" onClick={() => setActiveTab('usuarios')} aria-pressed={activeTab === 'usuarios'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${activeTab === 'usuarios' ? 'bg-surface-brand-solid text-ink-on-brand shadow-sm' : 'text-ink-muted-3 hover:text-ink-strong hover:bg-panel-38'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">group</span>Usuarios</button>}
+        {currentUser?.role === 'Administrador' && <button type="button" onClick={() => setActiveTab('fiscal')} aria-pressed={activeTab === 'fiscal'} className={`px-4 py-2 rounded-xl text-[13px] font-bold flex items-center gap-2 ${activeTab === 'fiscal' ? 'bg-surface-brand-solid text-ink-on-brand shadow-sm' : 'text-ink-muted-3 hover:text-ink-strong hover:bg-panel-38'}`}><span aria-hidden="true" className="material-symbols-outlined text-[18px]">receipt_long</span>Preparación fiscal (prueba)</button>}
       </div>
 
+
+      {activeTab === 'fiscal' && currentUser?.role === 'Administrador' && <FiscalTestPanel />}
       {activeTab === 'usuarios' && currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <UserManagement />}
       {activeTab === 'seguridad' && currentUser?.role === 'Administrador' && !currentUser.companyId && !currentUser.assignedCompanyId && <SigningKeyManagement />}
       {activeTab === 'seguridad' && currentUser?.role === 'Administrador' && <section className="rounded-2xl border border-outline-variant bg-surface-container-low p-5 space-y-4 max-w-lg">
@@ -638,7 +643,7 @@ export const SettingsScreen: React.FC = () => {
                     <label className="block text-[11px] font-bold uppercase text-ink-muted-3 mb-1">
                       Puerto (Default 9100)
                     </label>
-                    <input
+                    <NumericInput
                       type="number"
                       value={printerFormData.port}
                       onChange={(e) =>

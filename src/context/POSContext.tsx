@@ -209,6 +209,7 @@ interface POSContextType {
   // Turnos (Día y Noche)
   companyShifts: Record<CompanyId, ShiftType>;
   companyShiftCash: Record<CompanyId, number>;
+  companyShiftOpenedUtc: Record<CompanyId, number>;
   activeShift: ShiftType;
   shiftRecords: ShiftRecord[];
   switchCompanyShift: (
@@ -241,6 +242,7 @@ interface POSContextType {
     referenceNumber?: string
   ) => Order | null;
   refreshOperations: () => Promise<void>;
+  refreshInventory: () => Promise<void>;
   releasePaidTable: (tableId: string, orderId: string) => void;
   addManualTransaction: (
     type: TransactionType,
@@ -588,7 +590,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCompanyShiftOpenedUtc({ 'el-tayta': 0, 'el-sabroso': 0 });
     setTables(readSessionCache(scope, STORAGE_KEYS.TABLES, []));
     setOrders(readSessionCache(scope, STORAGE_KEYS.ORDERS, {}));
-    setTransactions(readSessionCache(scope, STORAGE_KEYS.TRANSACTIONS, []));
+    setTransactions(user?.role === 'Administrador' ? readSessionCache(scope, STORAGE_KEYS.TRANSACTIONS, []) : []);
     setProducts(readSessionCache(scope, STORAGE_KEYS.PRODUCTS, []));
     setInsumos(readSessionCache(scope, STORAGE_KEYS.INSUMOS, []));
     setRecipes(readSessionCache(scope, STORAGE_KEYS.RECIPES, []));
@@ -596,7 +598,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setKardexMovements(readSessionCache(scope, STORAGE_KEYS.KARDEX, []));
     setBankAccounts(readSessionCache(scope, STORAGE_KEYS.BANK_ACCOUNTS, []));
     setPaymentMethods(readSessionCache(scope, STORAGE_KEYS.PAYMENT_METHODS, []));
-    setShiftRecords(readSessionCache(scope, STORAGE_KEYS.SHIFT_RECORDS, []));
+    setShiftRecords(user?.role === 'Administrador' ? readSessionCache(scope, STORAGE_KEYS.SHIFT_RECORDS, []) : []);
     setPrinters(readSessionCache(scope, STORAGE_KEYS.PRINTERS, []));
     setCatalogSyncMeta(readSessionCache(scope, STORAGE_KEYS.CATALOG_META, {}));
     setSelectedTableId(null);
@@ -860,6 +862,33 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       /* conservar lo local */
     }
   };
+  // Una consulta explícita debe informar el fallo al flujo que ya confirmó la escritura.
+  const refreshInventory = async (): Promise<void> => {
+    const generation = sessionGeneration.current;
+    const [ingredients, movements] = await Promise.all([
+      permittedRead<InsumoDTO[]>('inventory.read', '/catalogs/insumos'),
+      permittedRead<KardexMovementDTO[]>('inventory.read', '/operations/kardex'),
+    ]);
+    if (generation !== sessionGeneration.current) return;
+    setInsumos(prev => overlayInsumos(ingredients.map(mapInsumo), prev));
+    setKardexMovements(movements.map(mapKardexMovement));
+  };
+  const inventoryRefreshRef = useRef(refreshInventory);
+  inventoryRefreshRef.current = refreshInventory;
+  const inventoryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleInventoryRefresh = () => {
+    if (inventoryTimer.current) clearTimeout(inventoryTimer.current);
+    const generation = sessionGeneration.current;
+    inventoryTimer.current = setTimeout(() => {
+      inventoryTimer.current = null;
+      if (generation === sessionGeneration.current) {
+        void inventoryRefreshRef.current().catch(() => undefined);
+      }
+    }, 150);
+  };
+  useEffect(() => () => {
+    if (inventoryTimer.current) clearTimeout(inventoryTimer.current);
+  }, []);
   const refreshTransactions = async (): Promise<void> => {
     const ownerGeneration = sessionGeneration.current;
     try {
@@ -881,6 +910,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
   const refreshShiftRecords = async (): Promise<void> => {
+    if (currentUser?.role !== 'Administrador') { setShiftRecords([]); return; }
     const ownerGeneration = sessionGeneration.current;
     try {
       const dtos = await permittedRead<ShiftRecordDTO[]>('cash.read', '/operations/shifts/records');
@@ -896,11 +926,18 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const loadOperations = async (): Promise<void> => {
     const ownerGeneration = sessionGeneration.current;
     setIsOperationsLoading(true);
+    try {
+      const state = await apiClient.get<MeResponse>('/auth/me');
+      if (ownerGeneration !== sessionGeneration.current) return;
+      setCompanyShifts(mapCompanyShifts(state.companyShifts));
+      setCompanyShiftCash(mapCompanyShiftCash(state.companyShifts));
+      setCompanyShiftOpenedUtc(mapCompanyShiftOpened(state.companyShifts));
+    } catch { /* Conservar el último turno confirmado si no hay conexión. */ }
     const results = await Promise.allSettled([
       permittedRead<OrderDTO[]>('orders.read', '/operations/orders/active'),
       permittedRead<PurchaseDTO[]>('purchases.read', '/operations/purchases'),
       permittedRead<KardexMovementDTO[]>('inventory.read', '/operations/kardex'),
-      permittedRead<ShiftRecordDTO[]>('cash.read', '/operations/shifts/records'),
+      currentUser?.role === 'Administrador' ? permittedRead<ShiftRecordDTO[]>('cash.read', '/operations/shifts/records') : Promise.resolve([] as ShiftRecordDTO[]),
       permittedRead<TransactionDTO[]>('cash.read', '/operations/transactions'),
     ]);
     if (ownerGeneration !== sessionGeneration.current) return;
@@ -1594,10 +1631,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (exists) return prev;
       return [movement, ...prev];
     });
-    // Refleja el nuevo saldo del insumo afectado.
-    setInsumos((prev) =>
-      prev.map((ins) => (ins.id === e.insumoId ? { ...ins, currentStock: e.stockAfter } : ins))
-    );
+    // El costo del movimiento no es necesariamente el costo promedio del insumo.
+    // Consultar la fila completa también evita aplicar saldos de eventos tardíos.
+    scheduleInventoryRefresh();
   };
 
   // Replica compras/facturas en tiempo real: alta de compra o regularización de vale.
@@ -1734,11 +1770,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   shiftRealtimeHandlerRef.current = (e) => {
     if (!e || !e.companyId) return;
     if (offlineState.isSimulatedOffline) return;
+    setCompanyShifts((prev) => ({ ...prev, [toCompanyId(e.companyId)]: e.newShift as ShiftType }));
     setCompanyShiftCash((prev) => ({
       ...prev,
       [toCompanyId(e.companyId)]: e.initialCash,
     }));
-    setCompanyShiftOpenedUtc((prev) => ({ ...prev, [toCompanyId(e.companyId)]: Date.parse(e.updatedAt) || Date.now() }));
+    setCompanyShiftOpenedUtc((prev) => ({ ...prev, [toCompanyId(e.companyId)]: Date.parse(e.openedUtc || e.updatedAt) || Date.now() }));
     void Promise.all([refreshShiftRecords(), refreshTransactions()]);
   };
 
@@ -3609,134 +3646,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     notes?: string
   ) => {
     if (!allowAction('cash.close')) return;
-    const currentShift = companyShifts[companyId];
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-    const compTxs = transactions.filter(
-      (t) => t.companyId === companyId && t.timestamp >= companyShiftOpenedUtc[companyId] && (!t.shift || t.shift === currentShift)
-    );
-
-    const cashSales = compTxs
-      .filter((t) => t.isIncome && t.type.startsWith('Venta (') && isCashMovement(t))
-      .reduce((sum, t) => sum + t.amount, 0);
-    const cashIncome = compTxs
-      .filter((t) => t.isIncome && t.type !== 'Reclasificación de Pago' && isCashMovement(t))
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const cardSales = compTxs
-      .filter(
-        (t) =>
-          t.isIncome &&
-          (t.paymentMethod === 'Tarjeta' ||
-            (t.description && t.description.toLowerCase().includes('tarjeta')))
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const walletSales = compTxs
-      .filter(
-        (t) =>
-          t.isIncome &&
-          (t.paymentMethod === 'Billetera Digital' ||
-            (t.description &&
-              (t.description.toLowerCase().includes('yape') ||
-                t.description.toLowerCase().includes('plin'))))
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const totalSales = cashSales + cardSales + walletSales;
-
-    const totalExpenses = compTxs
-      .filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago')
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    // Regla de gaveta: solo los egresos SIN cuenta bancaria salen de la caja
-    // efectivo (los pagados desde banco no tocan la gaveta).
-    const cashExpenses = compTxs
-      .filter((t) => !t.isIncome && t.type !== 'Reclasificación de Pago' && isCashMovement(t))
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    // Gap #6 fix: caja inicial desde el último arqueo local (el server usa su
-    // companyShift.initialCash como verdad y el refresh post-write la impone).
-    // Además se calcula bankTransferSales en vez de dejarlo en 0.
-    const lastRecord = shiftRecords.find((r) => r.companyId === companyId);
-    const initialCash = companyShiftCash[companyId] ?? (lastRecord ? lastRecord.initialCash : 350.0);
-    const bankTransferSales = compTxs
-      .filter(
-        (t) =>
-          t.isIncome &&
-          !!t.bankAccountId &&
-          t.paymentMethod !== 'Efectivo' &&
-          t.paymentMethod !== 'Tarjeta' &&
-          t.paymentMethod !== 'Billetera Digital' &&
-          t.paymentMethod !== 'Yape / Plin'
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-    const reclassificationCash = compTxs.filter((t) => t.type === 'Reclasificación de Pago' && isCashMovement(t))
-      .reduce((sum, t) => sum + (t.isIncome ? t.amount : -t.amount), 0);
-    const systemCashExpected = +(initialCash + cashIncome - cashExpenses + reclassificationCash).toFixed(2);
-    const difference = +(reportedCash - systemCashExpected).toFixed(2);
-
-    const newRecord: ShiftRecord = {
-      id: `shift-${Date.now()}`,
-      companyId,
-      shift: currentShift,
-      openedAt: `Hoy ${currentShift === 'Día' ? '07:30 AM' : '03:00 PM'}`,
-      closedAt: `Hoy ${timeStr}`,
-      openedBy: currentUser?.name || 'Carlos M.',
-      closedBy: currentUser?.name || 'Carlos M.',
-      initialCash,
-      systemCashExpected,
-      finalCashReported: reportedCash,
-      cashDifference: difference,
-      totalSales: +totalSales.toFixed(2),
-      totalExpenses: +totalExpenses.toFixed(2),
-      cardSales: +cardSales.toFixed(2),
-      digitalWalletSales: +walletSales.toFixed(2),
-      bankTransferSales: +bankTransferSales.toFixed(2),
-      notes: notes || `Cierre de turno ${currentShift} realizado.`,
-      status: 'cerrado',
-    };
-
-    setShiftRecords((prev) => [newRecord, ...prev]);
-
-    setCompanyShifts((prev) => ({
-      ...prev,
-      [companyId]: targetShift,
-    }));
-
-    // El fondo inicial del turno nuevo pasa a ser la caja vigente de la gaveta.
-    setCompanyShiftCash((prev) => ({
-      ...prev,
-      [companyId]: initialCashForNext,
-    }));
-    setCompanyShiftOpenedUtc((prev) => ({ ...prev, [companyId]: now.getTime() }));
-
-    if (difference !== 0) {
-      const diffTx: Transaction = {
-        id: `tx-diff-${Date.now()}`,
-        companyId,
-        time: timeStr,
-        date: 'Hoy',
-        timestamp: Date.now(),
-        type: 'Ajuste de Saldo',
-        description: `Diferencia arqueo ${currentShift} (${difference > 0 ? 'Sobrante' : 'Faltante'})`,
-        amount: Math.abs(difference),
-        isIncome: difference > 0,
-        shift: currentShift,
-      };
-      setTransactions((prev) => [diffTx, ...prev]);
-    }
-
-    addNotification(
-      'Turno Cerrado y Arqueado',
-      `${companyId === 'el-tayta' ? 'El Tayta' : 'El Sabroso'}: Turno ${currentShift} cerrado. Pasó a Turno ${targetShift} con fondo inicial S/ ${initialCashForNext.toFixed(2)}.`,
-      difference === 0 ? 'success' : 'warning'
-    );
-
     // Write-through (Fase E3): registra el arqueo real + ajuste de saldo idempotente.
     const clientOpId = newUuid();
-    attemptMutation({
+    void attemptMutation({
       clientOpId,
       entity: 'shift',
       op: 'switchShift',
@@ -3757,8 +3669,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           notes: notes || undefined,
           clientOpId,
         });
-        await Promise.all([refreshShiftRecords(), refreshTransactions()]);
+        await loadOperations();
+        addNotification('Turno confirmado', 'El servidor confirmó el cierre de caja.', 'success');
       },
+    }).then((result) => {
+      if (result === 'queued') addNotification('Cierre pendiente', 'El turno no cambiará hasta confirmar el cierre con el servidor.', 'warning');
     });
   };
 
@@ -4522,12 +4437,13 @@ Doble Alto: PEDIDO EXPRESS #8841
 
     filteredTransactions.forEach((tx) => {
       const isReclassification = tx.type === 'Reclasificación de Pago';
-      const inCurrentShift = !tx.companyId || tx.timestamp >= companyShiftOpenedUtc[tx.companyId];
+      const inCurrentShift = !!tx.companyId && tx.timestamp >= companyShiftOpenedUtc[tx.companyId] && (!tx.shift || tx.shift === companyShifts[tx.companyId]);
+      const includeTotals = currentUser?.role === 'Administrador' || inCurrentShift;
       if (tx.isIncome) {
-        if (!isReclassification) ingresos += tx.amount;
+        if (includeTotals && !isReclassification) ingresos += tx.amount;
         if (inCurrentShift && isCashMovement(tx)) cashIngresos += tx.amount;
       } else {
-        if (!isReclassification) egresos += tx.amount;
+        if (includeTotals && !isReclassification) egresos += tx.amount;
         if (inCurrentShift && isCashMovement(tx)) cashEgresos += tx.amount;
       }
     });
@@ -4544,7 +4460,7 @@ Doble Alto: PEDIDO EXPRESS #8841
       totalEgresos: +egresos.toFixed(2),
       saldoActual: +(initialCash + cashIngresos - cashEgresos).toFixed(2),
     };
-  }, [filteredTransactions, activeCompanyId, companyShiftCash, companyShiftOpenedUtc]);
+  }, [filteredTransactions, activeCompanyId, companyShiftCash, companyShiftOpenedUtc, companyShifts, currentUser?.role]);
 
   // FINANCIAL RATIOS & EXPENSE RATIOS ENGINE ("¿Se está pasando de gastos?")
   const getCompanyAnalysis = (cid: CompanyId | 'todas'): ExpenseRatioAnalysis => {
@@ -4713,6 +4629,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         // Turnos (Día y Noche)
         companyShifts,
         companyShiftCash,
+        companyShiftOpenedUtc,
         activeShift,
         shiftRecords,
         switchCompanyShift,
@@ -4733,6 +4650,7 @@ Doble Alto: PEDIDO EXPRESS #8841
         pendingKitchenConfirm,
         completePayment,
         refreshOperations: loadOperations,
+        refreshInventory,
         releasePaidTable: (tableId, orderId) => setTables((prev) => prev.map((t) => t.id === tableId ? releaseOrderTable(t, orderId) : t).filter((t) => !(t.id === tableId && ['Delivery', 'Llevar'].includes(t.zone) && t.status === 'libre' && !t.currentOrderId))),
         addManualTransaction,
         correctSalePayment,

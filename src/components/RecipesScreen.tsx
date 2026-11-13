@@ -1,3 +1,4 @@
+import { NumericInput } from './NumericInput';
 import { insumoSelectable } from '../lib/insumoCatalog';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { usePOS } from '../context/POSContext';
@@ -590,7 +591,7 @@ export const RecipesScreen: React.FC = () => {
                   <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                     Precio de Venta con IGV incluido (S/)
                   </label>
-                  <input
+                  <NumericInput
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -606,7 +607,7 @@ export const RecipesScreen: React.FC = () => {
                   <label className="block text-[12px] font-bold text-ink-muted-2 mb-1">
                     Porciones por Preparación
                   </label>
-                  <input
+                  <NumericInput
                     type="number"
                     min="1"
                     required
@@ -659,7 +660,7 @@ export const RecipesScreen: React.FC = () => {
                       </div>
 
                       <div className="w-20">
-                        <input
+                        <NumericInput
                           type="number"
                           step="0.01"
                           min="0.01"

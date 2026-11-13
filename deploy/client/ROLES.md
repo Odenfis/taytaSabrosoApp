@@ -12,7 +12,7 @@ La fase local está validada; este procedimiento se ejecuta en una ventana super
 
 ## Actualización
 
-El archivo `actualizar-cliente.bat` incorpora una comprobación de roles antes de detener app/web. No transforma usuarios. Conserva sus comprobaciones y procedimientos existentes de stock y mesas; revise sus informes y no confirme una corrección que no corresponda.
+El archivo `actualizar-cliente.bat` incorpora una comprobación de roles antes de detener app/web. No transforma usuarios. La conciliación de stock y la configuración de mesas son operaciones separadas y no se ejecutan durante esta actualización.
 
 Con app/web detenidos, aplicar exclusivamente `prisma migrate deploy` y verificar `prisma migrate status`. Nunca ejecutar el inicializador de instalación nueva. Registrar commit, imagen, migraciones e informes. Iniciar y verificar `/health`, login y lectura SQL. Recargar cada terminal con la misma URL y revisar su cola antes de operar.
 

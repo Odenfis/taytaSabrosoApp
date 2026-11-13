@@ -4,10 +4,35 @@ import { hasPermission } from './permissions.js';
 import { AppError } from './utils.js';
 
 /** Inventario explícito para las rutas autenticadas. No activa middleware por sí solo. */
-type RouteGroup = 'catalogs' | 'operations' | 'reports' | 'sync' | 'users';
+type RouteGroup = 'catalogs' | 'operations' | 'reports' | 'sync' | 'users' | 'fiscal' | 'transformations';
 export type RoutePermission = { group: RouteGroup; method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; permission: PosPermission };
 const route = (group: RouteGroup, method: RoutePermission['method'], path: string, permission: PosPermission): RoutePermission => ({ group, method, path, permission });
 export const ROUTE_PERMISSIONS: readonly RoutePermission[] = [
+  route('transformations', 'GET', '/templates', 'inventory.read'),
+  route('transformations', 'POST', '/templates', 'inventory.manage'),
+  route('transformations', 'POST', '/templates/:id/delete', 'inventory.manage'),
+  route('transformations', 'POST', '/preview', 'inventory.manage'),
+  route('transformations', 'POST', '/executions', 'inventory.manage'),
+  route('transformations', 'GET', '/executions', 'inventory.read'),
+  route('transformations', 'GET', '/executions/:id', 'inventory.read'),
+
+  route('fiscal', 'GET', '/status', 'payments.read'),
+  route('fiscal', 'GET', '/profile', 'payments.read'),
+  route('fiscal', 'PATCH', '/profile', 'security.manage'),
+  route('fiscal', 'GET', '/source', 'payments.read'),
+  route('fiscal', 'PATCH', '/intent', 'payments.collect'),
+  route('fiscal', 'GET', '/sources', 'payments.read'),
+  route('fiscal', 'GET', '/documents', 'payments.read'),
+  route('fiscal', 'POST', '/documents', 'payments.collect'),
+  route('fiscal', 'GET', '/documents/:id/file', 'payments.read'),
+  route('fiscal', 'GET', '/void-requests', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/void-request', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/adjustments', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/sign', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/send', 'payments.collect'),
+  route('fiscal', 'POST', '/documents/:id/recover', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/reconcile', 'security.manage'),
+  route('fiscal', 'POST', '/documents/:id/cancel', 'security.manage'),
   route('catalogs', 'GET', '/companies', 'company.read'),
   route('catalogs', 'GET', '/tables', 'tables.read'),
   route('catalogs', 'POST', '/tables/physical', 'tables.manage'),
@@ -62,6 +87,7 @@ export const ROUTE_PERMISSIONS: readonly RoutePermission[] = [
   route('operations', 'GET', '/shifts/records', 'cash.read'),
   route('operations', 'POST', '/shifts/switch', 'cash.close'),
   route('operations', 'GET', '/transactions', 'cash.read'),
+  route('operations', 'GET', '/payment-summary', 'cash.read'),
   route('operations', 'GET', '/transactions/:id/corrections', 'payments.correct'),
   route('operations', 'POST', '/transactions/:id/corrections', 'payments.correct'),
   route('operations', 'POST', '/transactions', 'cash.manual'),

@@ -9,7 +9,7 @@ COPY server/src/lib/permissions.ts server/src/lib/offline-actions.ts ./server/sr
 RUN npm run build
 
 FROM node:22-bookworm-slim AS server-build
-RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssl libxml2-utils && rm -rf /var/lib/apt/lists/*
 WORKDIR /build/server
 COPY server/package*.json ./
 RUN npm ci
@@ -19,10 +19,11 @@ COPY server/tsconfig*.json ./
 COPY server/scripts ./scripts
 COPY server/public ./public
 COPY server/src ./src
+COPY server/resources ./resources
 RUN npm run build
 
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssl libxml2-utils && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production PORT=4000
 WORKDIR /app
 COPY --from=server-build /build/server/package*.json ./

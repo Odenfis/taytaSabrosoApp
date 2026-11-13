@@ -1,3 +1,4 @@
+import { FiscalDocumentActions } from './FiscalDocumentActions';
 import React, { useMemo, useState } from 'react';
 import { usePOS } from '../context/POSContext';
 import { shareVoucherImage, VoucherHeader } from '../lib/voucherImage';
@@ -204,6 +205,7 @@ export const ReceiptModal: React.FC = () => {
             <WhatsAppIcon />
             <span>Compartir por WhatsApp</span>
           </button>
+          {isPaid && <FiscalDocumentActions companyId={lastCompletedOrder.companyId} orderId={lastCompletedOrder.id} paid />}
           <div className="flex gap-3">
             <button
               type="button"
