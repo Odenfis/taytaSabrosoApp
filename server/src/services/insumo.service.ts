@@ -10,7 +10,7 @@ import { emitInsumoChanged, emitRecipeChanged } from '../lib/realtime.js';
 const amount = z.number().finite().nonnegative().max(99999999.9999).refine((v) => Math.abs(v * 10000 - Math.round(v * 10000)) < 1e-5, 'Use hasta cuatro decimales.');
 const fields = z.object({ name: z.string().trim().min(1).max(150),
   category: z.enum(['Carnes & Aves', 'Pescados & Mariscos', 'Verduras & Frutas', 'Abarrotes & Especias', 'Bebidas & Licores', 'Lácteos & Huevos']),
-  unit: z.enum(['kg', 'g', 'L', 'ml', 'un', 'bot']), minStock: amount, costPerUnit: amount });
+  unit: z.enum(['kg', 'g', 'L', 'ml', 'un', 'bot', 'Porción']), minStock: amount, costPerUnit: amount });
 export const createInsumoSchema = fields.extend({ id: z.uuid().optional(), companyId: z.string().min(1).max(36).nullable().optional(),
   currentStock: amount, minStock: amount.default(0), lastPurchaseDate: z.string().max(30).optional(), clientOpId: z.string().max(36).optional() });
 // Campos de existencias/empresa no se ignoran: una escritura directa debe rechazarse.

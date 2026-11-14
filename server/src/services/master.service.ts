@@ -1,3 +1,4 @@
+const roundPortion=(n:number)=>Math.round((n+Number.EPSILON)*10000)/10000;
 import { inventoryTransaction, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
@@ -170,8 +171,8 @@ async function ingredientData(tx: Prisma.TransactionClient, ingredients: Ingredi
     if (insumo && insumo.unit !== item.unit) throw new AppError('La unidad del ingrediente no coincide con el insumo.', 409, 'INSUMO_UNIT_MISMATCH');
   }
   return ingredients.map((i) => ({ id: randomUUID(), insumoId: i.insumoId && valid.has(i.insumoId) ? i.insumoId : null,
-    insumoName: insumos.find((ins) => ins.id === i.insumoId)?.name ?? i.insumoName, quantity: round2(i.quantity), unit: i.unit,
-    costPerUnit: round2(i.costPerUnit), subtotalCost: round2(i.subtotalCost) }));
+    insumoName: insumos.find((ins) => ins.id === i.insumoId)?.name ?? i.insumoName, quantity: i.unit==='Porción'?roundPortion(i.quantity):round2(i.quantity), unit: i.unit,
+    costPerUnit: i.unit==='Porción'?roundPortion(i.costPerUnit):round2(i.costPerUnit), subtotalCost: round2(i.subtotalCost) }));
 }
 
 async function resolveRecipeProduct(tx: Prisma.TransactionClient, data: {

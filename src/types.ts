@@ -338,7 +338,7 @@ export interface Insumo {
     | 'Abarrotes & Especias'
     | 'Bebidas & Licores'
     | 'Lácteos & Huevos';
-  unit: 'kg' | 'g' | 'L' | 'ml' | 'un' | 'bot';
+  unit: 'kg' | 'g' | 'L' | 'ml' | 'un' | 'bot' | 'Porción';
   currentStock: number;
   minStock: number;
   costPerUnit: number; // S/

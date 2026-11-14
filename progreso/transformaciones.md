@@ -1,45 +1,48 @@
-# Transformación y despiece de insumos
+# Transformaciones por porciones y registro de rendimiento
 
-Implementado el 10 de noviembre de 2026. Acceso: **Kardex & Stock → Transformaciones**, para administrador y jefe de restaurante. Se debe seleccionar una empresa.
+Actualizado el 14 de noviembre de 2026. Acceso: **Kardex & Stock → Transformaciones**, para administrador y jefe de restaurante, con una empresa seleccionada.
 
-## Uso
+## Uso y conversión de fichas
 
-1. Registrar el insumo comprado y los cortes o preparaciones como insumos normales, con su unidad correcta. Si un corte todavía no existe físicamente, crearlo con stock cero.
-2. En **Fichas**, crear una ficha con un insumo base y resultados distintos. Definir el porcentaje esperado de cada resultado. La suma no puede superar el 100 %; la diferencia representa la merma prevista. Las fichas antiguas deben convertirse indicando porcentajes antes de ejecutarse. Las unidades admitidas son kg/g o L/ml, sin mezclar dimensiones.
-3. En **Ejecutar**, seleccionar la ficha e indicar la cantidad consumida. Los resultados se proponen automáticamente y pueden corregirse según las cantidades reales. Un resultado puede tener cantidad cero si existe otro aprovechable.
-4. Revisar merma, rendimiento, costo asignado, costo unitario obtenido y costo promedio final. Confirmar solo después de revisar: se descuentan las existencias del insumo base y se incorporan los resultados.
-5. Consultar **Historial** para recuperar el detalle inmutable. Las recetas existentes pueden usar los insumos resultantes; su despacho consume el corte, no nuevamente la materia prima.
+1. Registrar la materia prima en kg/g o L/ml. Registrar cada resultado como un insumo con unidad **Porción**, inicialmente con stock cero cuando corresponda. No se convierte automáticamente la unidad de insumos existentes ni sus recetas.
+2. En **Fichas**, indicar el consumo de referencia y, por resultado, número de porciones y equivalencia física por cada porción. Ejemplo: 10 kg → 40 porciones × 200 g = 8 kg útiles y 2 kg de merma prevista. Se admiten fracciones de porción. No se mezclan peso y volumen ni se consumen porciones como base.
+3. Las fichas anteriores conservan sus datos e historial, pero deben convertirse explícitamente: indicar referencia, porciones y equivalencias y seleccionar nuevos insumos Porción cuando los anteriores usen otra unidad. No se infieren estos valores de porcentajes ni valores relativos. Las recetas antiguas mantienen sus referencias hasta editarlas.
+4. En **Ejecutar**, indicar consumo. Se escalan las porciones propuestas, conservando la equivalencia de referencia. Se pueden corregir ambos valores. Cambiar consumo o ficha pide confirmación antes de reemplazar correcciones.
+5. La merma automática se actualiza con los resultados. Si se edita, queda conservada y se muestra la diferencia de balance. **Restablecer merma calculada** vuelve al modo automático. No se confirma hasta que consumo = útiles equivalentes + merma; no se ajustan cantidades silenciosamente.
+6. Revisar stock, rendimiento, costos y unidades antes de confirmar. La salida descuenta la base en su unidad y cada entrada incrementa Porción. Las recetas pueden consumir porciones fraccionarias; compras y ajustes mantienen coincidencia de unidades, sin conversión implícita a kg.
+7. Consultar **Historial** para ver el detalle inmutable. Cada ejecución es un ingreso independiente, sin límite diario. Las ejecuciones confirmadas no tienen reversión ordinaria.
 
-La merma absorbe costo dentro de los resultados útiles. El reparto usa la cantidad obtenida en unidades equivalentes, distribuye céntimos restantes de manera determinista y conserva el costo total consumido. El promedio ponderado considera las existencias previas. No cambia las compras ni recalcula retrospectivamente las recetas o las ejecuciones anteriores.
+## Precisión y costos
+
+Los valores admiten hasta cuatro decimales. Las propuestas de porciones se truncan a esa precisión. El total físico de cada resultado se convierte y redondea a cuatro decimales de la unidad base; el balance usa esos mismos totales mostrados. La aritmética fija compartida y Decimal en servidor evitan validaciones basadas en aproximaciones binarias. Un resultado positivo no puede equivaler a cero tras normalizar; debe existir al menos un resultado útil.
+
+El costo consumido se distribuye por el peso/volumen útil equivalente, absorbiendo la merma. Se conserva el reparto determinista de céntimos y el costo total. El costo asignado dividido por las porciones reales determina el costo por porción; las existencias previas intervienen en el promedio ponderado. No se recalculan costos históricos.
 
 ## Persistencia y seguridad
 
-- Migraciones `0017_transformations` y `0018_transformation_template_delete`: fichas versionadas y eliminación lógica, ejecuciones con instantánea inmutable y vínculo opcional `transformacion_id` en kardex. Conserva todos los registros anteriores.
-- API `/api/transformations`: lectura con `inventory.read`; fichas, vista previa y ejecución con `inventory.manage`. Empresa validada en servidor, incluidos insumos compartidos según las reglas actuales del inventario.
-- Bloqueos transaccionales por ficha/solicitud y bloqueos ordenados de insumos. Stock, costos, movimientos y auditoría se confirman juntos. El actor y la terminal provienen de la sesión autenticada.
-- La vista previa incluye una huella del estado. Si cambian ficha, unidades, existencias o costos, la confirmación exige recalcular.
-- UUID de ejecución y huella del contenido permiten recuperar/reintentar sin duplicar. Un mismo identificador no puede reutilizarse con otro contenido o autor. Los movimientos de kardex tienen relación SQL con la ejecución.
-- Solo online. No se añade una acción a la cola offline ni se acepta su replay. El navegador conserva la solicitud pendiente, separada por origen, usuario, terminal y empresa, antes de enviarla. Tras pérdida de respuesta se consulta el resultado; un recálculo conserva la identidad hasta confirmar.
-- Las fichas pueden actualizarse, desactivarse o eliminarse lógicamente con auditoría, conservando su historial. Las ejecuciones no tienen rutas de modificación, borrado o reversión; una reversión futura necesita su propio proceso auditado.
+- Contratos de ficha y ejecución versión 3. Las instantáneas antiguas permanecen intactas, sin inventar porciones ni equivalencias.
+- Migración `0019_transformation_portions`: agrega `transformacion_rendimientos` y `transformacion_rendimiento_resultados`, vinculadas a la ejecución. Conserva empresa, ficha/versión/nombre, base y nombre, actor, fecha del servidor y fecha local de Lima, consumo, útiles, merma calculada/declarada, edición y rendimiento. Por resultado conserva nombre, porciones propuestas/reales, equivalencias de referencia/reales y costos.
+- El historial muestra el nuevo detalle desde la instantánea. El cuadro consolidado y la exportación quedan para una entrega posterior; las tablas permiten agrupar por fecha de Lima, base y resultado.
+- API `/api/transformations`: `inventory.read` para consultar, `inventory.manage` para modificar. Se conserva aislamiento por empresa, insumos activos, unidades, duplicados y versiones concurrentes.
+- Stock, costos, Kardex, ejecución, rendimiento y auditoría se escriben en una transacción. Se conservan bloqueos por ficha y solicitud, y bloqueos ordenados de insumos.
+- La huella de vista previa detecta cambios en ficha, unidades, stock o costos y exige recalcular. Desactivar o eliminar lógicamente una ficha invalida vistas previas sin borrar historial.
+- Operación exclusivamente online. La solicitud pendiente conserva identidad, contenido y autor; reintentar o recuperar una respuesta perdida no duplica ingresos. Las solicitudes antiguas confirmadas son recuperables. Las incompatibles no confirmadas muestran conflicto y se resuelven mediante el flujo existente antes de preparar otra.
 
-## Validación realizada
+## Validación del 14 de noviembre
 
-`npm run test:transformations:sql --prefix server -- --browser` utiliza una base SQL desechable. Ejecutarlo desde `server` con `npm run test:transformations:sql -- --browser` asegura que dotenv cargue la configuración local. Requiere SQL Server accesible y Chrome en la ruta configurada por el proyecto. Construir primero el frontend (`npm run build`) para no probar un dist anterior.
+Aprobados lint/TypeScript y compilaciones frontend/servidor; 83 pruebas frontend, 90 servidor, 18 escenarios SQL/API/realtime de inventario y 33 de pedidos/cobros. La suite de Transformaciones en SQL temporal y Chrome comprueba:
 
-Pruebas aprobadas:
+- Lotes completos/fraccionarios, kg/g y L/ml, varias salidas, equivalencias corregidas, merma manual y balance inválido, stock insuficiente y redondeos.
+- Costos por porción, conservación de céntimos, promedio previo, receta de 0,1255 porciones y consistencia con existencias/Kardex.
+- Dos ingresos diarios independientes y persistencia de detalles; conversión de fichas antiguas sin alterar instantáneas; recuperación de solicitudes antiguas confirmadas.
+- Permisos, aislamiento, eliminación lógica, concurrencia, idempotencia, respuesta perdida y rollback completo ante fallo de auditoría. Los errores `AUDIT TEST FAILURE` son deliberados.
+- Flujo de creación, captura, cálculo, confirmación, recuperación e historial. Aviso antes de sustituir correcciones y restablecimiento de merma.
+- Ambos temas en 1366 × 768, 1440 × 900, 1920 × 1080 y 390 × 844, sin desbordamiento horizontal de página. Capturas temporales `/tmp/portions-{light|dark}-{1366|1440|1920|390}.png`.
 
-- Migraciones completas, incluidas `0017` y `0018`, sobre SQL temporal.
-- 4 kg, merma de 0,5 kg, costos 80/40, promedio con stock previo; kg/g y L/ml; resultado con cantidad cero e insumos compartidos.
-- Stock insuficiente, rendimiento excesivo, resultados duplicados, insumo base repetido, dimensiones incompatibles, insumos eliminados y referencias de otra empresa.
-- Fichas versionadas, conservación de instantáneas, reintento simultáneo de la misma solicitud, competencia entre dos solicitudes y conflicto de contenido/autor.
-- Fallo SQL provocado al registrar auditoría: revierte ejecución, stock, kardex y cambios de ficha. Los errores `AUDIT TEST FAILURE` del log son deliberados.
-- Receta con corte resultante: descuenta el corte sin volver a consumir la materia prima.
-- HTTP: administrador/jefe autorizados; cajero/mozo rechazados en las seis rutas; aislamiento de empresa y rechazo del replay offline.
-- Chrome: creación de ficha, cálculo, confirmación con respuesta perdida, recarga y recuperación sin duplicación, historial y detalle. Inspección de escritorio y capturas móviles de claro/oscuro sin desbordamiento horizontal. Ajustado el desplazamiento móvil para que el encabezado no reduzca el formulario a una franja.
-- Regresión: 86 pruebas del servidor, 82 del frontend, TypeScript, ambas compilaciones y 33 escenarios existentes SQL/API/realtime de pedidos/cobros/inventario.
+Para repetir: construir frontend y ejecutar desde `server`: `npm run test:transformations:sql -- --browser`. Requiere SQL Server y Chrome configurados. Las pruebas usan bases temporales que se eliminan al terminar.
 
-Logs y capturas locales temporales: `/tmp/tayta-transformations-sql.log`, `/tmp/tayta-transformations-regression.log`, `/tmp/tayta-transformations-unit.log`, `/tmp/tayta-transformations-web-unit.log`, `/tmp/tayta-transformations-desktop.png`, `/tmp/tayta-transformations-mobile-light.png`, `/tmp/tayta-transformations-mobile-dark.png`.
+## Migración y entrega
 
-## Instalación
+Antes de aplicar 0019 a desarrollo se creó un respaldo COPY_ONLY con CHECKSUM, se restauró en una base separada, se ejecutó CHECKDB, se ensayó la migración y se comparó el contenido de las 36 tablas existentes, sin diferencias. Respaldo retenido en SQL Server: `/var/opt/mssql/data/tayta_backup_2726156b876a430daddf8639a6957465.bak`.
 
-La migración está probada, **no aplicada a la base operativa ni a la instalación del cliente**. Para habilitar el módulo en una instalación hay que respaldar su base, desplegar las migraciones pendientes con el procedimiento habitual y regenerar/compilar el cliente Prisma y la aplicación. No basta copiar solo el frontend. No usar `db push` ni reiniciar datos. La comprobación final en las terminales del cliente corresponde al despliegue supervisado.
+0019 quedó aplicada a **desarrollo**; Prisma confirma las 19 migraciones al día. La instalación y base del cliente no se modificaron. Antes de actualizarla, identificar su versión y migraciones pendientes y seguir respaldo/restauración y aceptación supervisada. No usar `db push`, reiniciar datos ni copiar únicamente el frontend. La facturación permanece deshabilitada en la entrega de prueba.

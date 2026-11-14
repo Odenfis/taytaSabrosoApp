@@ -54,7 +54,7 @@ export async function addKardexAdjustment(input: {
     const stockBefore = toNum(insumo.currentStock);
     const stockDelta =
       input.type === 'AJUSTE_MERMA' ? -Math.abs(input.quantity) : Math.abs(input.quantity);
-    const stockAfter = round2(stockBefore + stockDelta);
+    const stockAfter = insumo.unit==='Porción'?Math.round((stockBefore+stockDelta)*10000)/10000:round2(stockBefore + stockDelta);
     const unitCost = toNum(insumo.costPerUnit);
     const totalCost = round2(Math.abs(input.quantity) * unitCost);
 

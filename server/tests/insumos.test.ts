@@ -13,3 +13,8 @@ test('contrato valida precisión SQL, categorías y unidades', () => {
   const created = createInsumoSchema.parse({ companyId: null, name: '  Sal  ', category: 'Abarrotes & Especias', unit: 'kg', currentStock: 0, costPerUnit: 0 });
   assert.equal(created.name, 'Sal'); assert.equal(created.minStock, 0);
 });
+
+test('admite Porción con cantidades fraccionarias sin convertir unidades',()=>{
+ const p=createInsumoSchema.parse({name:'Corte porcionado',category:'Carnes & Aves',unit:'Porción',currentStock:.1255,costPerUnit:5});
+ assert.equal(p.unit,'Porción');assert.equal(p.currentStock,.1255);
+});

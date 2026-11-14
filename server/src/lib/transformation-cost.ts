@@ -1,3 +1,4 @@
+import { portionBalance, compatibleUnits } from './portion-math.js';
 import { Prisma } from '@prisma/client';
 import { AppError } from './utils.js';
 const D = Prisma.Decimal;
@@ -5,9 +6,9 @@ const units: Record<string, {dimension:string;factor:number}> = {
   kg:{dimension:'mass',factor:1000},g:{dimension:'mass',factor:1},
   L:{dimension:'volume',factor:1000},ml:{dimension:'volume',factor:1},
 };
-export interface TransformationOutput {insumoId:string;quantity:number;unit:string;relativeValue:number}
+export interface TransformationOutput {insumoId:string;quantity:number;unit:string;equivalentQuantity:number;equivalentUnit:string}
 /** Pure preview. The commit must supply authoritative units and input cost from locked SQL rows. */
-export function calculateTransformation(input:{quantity:number;unit:string;costPerUnit:number;outputs:TransformationOutput[]}) {
+export function calculateTransformation(input:{quantity:number;unit:string;costPerUnit:number;outputs:TransformationOutput[];waste?:{quantity:number;unit:string}}) {
   const fail=(message:string):never=>{throw new AppError(message,400,'INVALID_TRANSFORMATION');};
   const decimal=(value:number,positive=false)=>{
     if(!Number.isFinite(value) || value<0 || (positive && value===0)) fail('Cantidad o valor no válido.');
@@ -19,22 +20,26 @@ export function calculateTransformation(input:{quantity:number;unit:string;costP
   const ids=new Set<string>();
   const rows=input.outputs.map(row=>{
     if(!row.insumoId || ids.has(row.insumoId))fail('Los resultados deben identificar insumos distintos.');ids.add(row.insumoId);
-    const unit=units[row.unit];if(!unit || unit.dimension!==source.dimension)fail('Las unidades deben pertenecer a la misma dimensión.');
-    const qty=decimal(row.quantity), value=decimal(row.relativeValue,true);
-    return {row,qty,base:qty.mul(unit.factor),weight:qty.mul(unit.factor)};
+    if(row.unit!=='Porción' || !compatibleUnits(input.unit,row.equivalentUnit))fail('Los resultados deben usar Porción y una equivalencia compatible.');
+    const qty=decimal(row.quantity);decimal(row.equivalentQuantity,true);
+    return {row,qty};
   });
-  const consumed=quantity.mul(source.factor);
-  const useful=rows.reduce((sum,r)=>sum.add(r.base),new D(0));
+  let balance;try{balance=portionBalance(input.quantity,input.unit,input.outputs,input.waste);}catch(e){return fail((e as Error).message)}
+  if(balance.difference!==0)fail('El consumo debe coincidir con los resultados y la merma declarada.');
+  const consumed=quantity;
+  const useful=new D(balance.usefulQuantity);
+  const weighted=rows.map((r,i)=>({...r,base:new D(balance.totals[i]),weight:new D(balance.totals[i])}));
+  if(weighted.some(r=>r.qty.gt(0)&&r.base.isZero()))fail('La equivalencia es demasiado pequeña para la precisión de la unidad base.');
   if(useful.lte(0))fail('Debe existir al menos un resultado aprovechable.');
   if(useful.gt(consumed))fail('Los resultados superan la cantidad consumida.');
   const total=quantity.mul(cost).toDecimalPlaces(2,D.ROUND_HALF_UP);
   if(total.gt('9999999999.99'))fail('El costo total supera el límite permitido.');
-  const cents=total.mul(100), weight=rows.reduce((sum,r)=>sum.add(r.weight),new D(0));
-  const portions=rows.map((r,index)=>{const exact=cents.mul(r.weight).div(weight);return {index,cents:exact.floor(),remainder:exact.minus(exact.floor())};});
+  const cents=total.mul(100), weight=weighted.reduce((sum,r)=>sum.add(r.weight),new D(0));
+  const portions=weighted.map((r,index)=>{const exact=cents.mul(r.weight).div(weight);return {index,cents:exact.floor(),remainder:exact.minus(exact.floor())};});
   let left=cents.minus(portions.reduce((sum,r)=>sum.add(r.cents),new D(0))).toNumber();
   for(const part of [...portions].sort((a,b)=>b.remainder.comparedTo(a.remainder)||a.index-b.index)) {if(left--<=0)break;part.cents=part.cents.add(1);}
-  return {totalCost:total.toNumber(),wasteQuantity:consumed.minus(useful).div(source.factor).toNumber(),yieldPct:useful.div(consumed).mul(100).toDecimalPlaces(4).toNumber(),outputs:rows.map((r,i)=>{
+  return {totalCost:total.toNumber(),wasteQuantity:balance.wasteQuantity,calculatedWaste:balance.calculatedWaste,usefulQuantity:balance.usefulQuantity,wasteEdited:!!input.waste,declaredWaste:input.waste??null,yieldPct:useful.div(consumed).mul(100).toDecimalPlaces(4).toNumber(),outputs:weighted.map((r,i)=>{
     const assigned=portions[i].cents.div(100);
-    return {...r.row,totalCost:assigned.toNumber(),unitCost:r.qty.isZero()?0:assigned.div(r.qty).toDecimalPlaces(4,D.ROUND_HALF_UP).toNumber(),yieldPct:r.base.div(consumed).mul(100).toDecimalPlaces(4).toNumber()};
+    return {...r.row,equivalentTotal:r.base.toNumber(),totalCost:assigned.toNumber(),unitCost:r.qty.isZero()?0:assigned.div(r.qty).toDecimalPlaces(4,D.ROUND_HALF_UP).toNumber(),yieldPct:r.base.div(consumed).mul(100).toDecimalPlaces(4).toNumber()};
   })};
 }

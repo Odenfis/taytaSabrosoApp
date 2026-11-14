@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../lib/utils.js';
+import { proposePortions } from '../lib/portion-math.js';
 import { calculateTransformation } from '../lib/transformation-cost.js';
 import { inventoryTransaction, requireActiveInsumos, notifyInventoryAfterCommit } from '../lib/inventory.js';
 import { auditOperation, type OperationActor } from '../lib/operation-audit.js';
@@ -13,14 +14,20 @@ const amount = z.number().finite().min(0).max(99999999.9999).refine(n => new Pri
 export const templateSchema = z.object({
   id: z.uuid(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(150),
   sourceId: id, active: z.boolean(),
-  outputs: z.array(z.object({ insumoId: id, percentage: amount.max(100) }).strict()).min(1).max(100),
-  definitionVersion: z.literal(2),
+  outputs: z.array(z.object({ insumoId: id, portions: amount, equivalentQuantity: amount.refine(n=>n>0), equivalentUnit:z.enum(['kg','g','L','ml']) }).strict()).min(1).max(100),
+  definitionVersion: z.literal(3), referenceQuantity: amount.refine(n=>n>0),
 }).strict();
-export const executionSchema = z.object({
+const legacyExecutionSchema = z.object({
   id: z.uuid(), templateId: z.uuid(), quantity: amount.refine(n => n > 0),
   outputs: z.array(z.object({ insumoId: id, quantity: amount }).strict()).min(1).max(100),
   previewHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict();
+const portionExecutionSchema = legacyExecutionSchema.extend({
+  definitionVersion:z.literal(3),
+  outputs:z.array(z.object({insumoId:id,quantity:amount,equivalentQuantity:amount.refine(n=>n>0),equivalentUnit:z.enum(['kg','g','L','ml'])}).strict()).min(1).max(100),
+  waste:z.object({quantity:amount,unit:z.enum(['kg','g','L','ml'])}).strict().optional(),
+}).strict();
+export const executionSchema = z.union([portionExecutionSchema,legacyExecutionSchema]);
 type Template = z.infer<typeof templateSchema>;
 type Execution = z.infer<typeof executionSchema>;
 const hash = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
@@ -35,8 +42,8 @@ function checkRows(sourceId: string, outputs: {insumoId:string}[], rows: {id:str
   const source = rows.find(r => r.id === sourceId)!;
   if (outputs.some(o => o.insumoId === sourceId) || new Set(outputs.map(o => o.insumoId)).size !== outputs.length)
     conflict('El insumo base y los resultados deben ser distintos y no repetirse.');
-  if (!dimension(source.unit) || rows.some(r => dimension(r.unit) !== dimension(source.unit)))
-    conflict('Todos los insumos deben usar unidades compatibles de peso o volumen.');
+  if (!dimension(source.unit) || rows.some(r => r.id!==sourceId && r.unit!=='Porción'))
+    conflict('La base debe usar peso o volumen y todos los resultados deben usar Porción.');
 }
 function range(value: Prisma.Decimal) {
   if (value.lt(0) || value.gt('99999999.9999')) conflict('Las existencias o el costo exceden el rango permitido.');
@@ -44,8 +51,6 @@ function range(value: Prisma.Decimal) {
 }
 export async function saveTransformation(companyId: string, raw: Template, actor: OperationActor) {
   const input = templateSchema.parse(raw);
-  const totalPercentage = input.outputs.reduce((sum, o) => sum.add(o.percentage), new Prisma.Decimal(0));
-  if (totalPercentage.lte(0) || totalPercentage.gt(100)) conflict('Los porcentajes deben sumar más de 0 y no superar 100 %.');
   return inventoryTransaction(async tx => {
     await lock(tx, 'transformation:template:' + input.id);
     const old = await tx.transformationTemplate.findUnique({where:{id:input.id}});
@@ -53,7 +58,8 @@ export async function saveTransformation(companyId: string, raw: Template, actor
     const rows = await requireActiveInsumos(tx, [input.sourceId,...input.outputs.map(o=>o.insumoId)], companyId);
     if (!await tx.company.findUnique({where:{id:companyId}})) throw new AppError('Empresa no encontrada.',404,'NOT_FOUND');
     checkRows(input.sourceId,input.outputs,rows);
-    const definition = JSON.stringify({version:2,outputs:input.outputs.map(o=>({...o,unit:rows.find(r=>r.id===o.insumoId)!.unit}))});
+    calculateTransformation({quantity:input.referenceQuantity,unit:rows.find(r=>r.id===input.sourceId)!.unit,costPerUnit:0,outputs:input.outputs.map(o=>({...o,quantity:o.portions,unit:'Porción'}))});
+    const definition = JSON.stringify({version:3,referenceQuantity:input.referenceQuantity,sourceUnit:rows.find(r=>r.id===input.sourceId)!.unit,outputs:input.outputs.map(o=>({...o,unit:rows.find(r=>r.id===o.insumoId)!.unit}))});
     // Creación repetida tras perder respuesta: no genera otra ficha ni otra auditoría.
     if (old && input.expectedVersion===0 && old.version===1 && old.name===input.name && old.sourceId===input.sourceId && old.definition===definition && old.active===input.active) return old;
     if ((old?.version ?? 0) !== input.expectedVersion) conflict('La ficha cambió en otra terminal. Recargue antes de editar.');
@@ -65,30 +71,35 @@ export async function saveTransformation(companyId: string, raw: Template, actor
   });
 }
 async function calculate(tx: Prisma.TransactionClient, companyId: string, input: Execution) {
+  if (!('definitionVersion' in input) || input.definitionVersion!==3) conflict('Esta solicitud pertenece al modelo anterior. Revise la ficha y prepare una ejecución por porciones.');
+  const request=portionExecutionSchema.parse(input);
   await lock(tx,'transformation:template:'+input.templateId);
   const template = await tx.transformationTemplate.findFirst({where:{id:input.templateId,companyId}});
   if (!template || !template.active || template.isDeleted) conflict('La ficha no existe o está inactiva.');
   const definition = JSON.parse(template!.definition);
-  if (Array.isArray(definition) || definition.version !== 2 || !Array.isArray(definition.outputs)) conflict('Esta ficha necesita convertirse a porcentajes antes de ejecutarse.');
-  const outputs = definition.outputs as {insumoId:string;percentage:number;unit:string}[];
+  if (Array.isArray(definition) || definition.version !== 3 || !Array.isArray(definition.outputs)) conflict('Esta ficha necesita convertirse a porciones antes de ejecutarse.');
+  const outputs = definition.outputs as {insumoId:string;portions:number;equivalentQuantity:number;equivalentUnit:string;unit:string}[];
   if (new Set(input.outputs.map(o=>o.insumoId)).size!==outputs.length || input.outputs.length!==outputs.length || outputs.some(o=>!input.outputs.some(i=>i.insumoId===o.insumoId))) conflict('Los resultados no corresponden a la ficha vigente.');
   const rows = await requireActiveInsumos(tx,[template!.sourceId,...outputs.map(o=>o.insumoId)],companyId);
   checkRows(template!.sourceId,outputs,rows);
   const source = rows.find(r=>r.id===template!.sourceId)!;
   if (source.currentStock.lt(input.quantity)) conflict('Stock insuficiente del insumo base.');
   if (outputs.some(o=>o.unit!==rows.find(r=>r.id===o.insumoId)!.unit)) conflict('Cambió la unidad de un resultado. Revise y guarde la ficha.');
-  const calculation = calculateTransformation({quantity:input.quantity,unit:source.unit,costPerUnit:Number(source.costPerUnit),outputs:outputs.map(o=>({...o,relativeValue:1,quantity:input.outputs.find(i=>i.insumoId===o.insumoId)!.quantity}))});
+  if(definition.sourceUnit!==source.unit) conflict('Cambió la unidad base. Revise y guarde la ficha.');
+  const calculation = calculateTransformation({quantity:input.quantity,unit:source.unit,costPerUnit:Number(source.costPerUnit),waste:request.waste,outputs:outputs.map(o=>({...request.outputs.find(i=>i.insumoId===o.insumoId)!,unit:'Porción'}))});
   const result = {
-    templateId:template!.id,templateName:template!.name,templateVersion:template!.version,
+    definitionVersion:3,referenceQuantity:definition.referenceQuantity,templateId:template!.id,templateName:template!.name,templateVersion:template!.version,
     source:{id:source.id,name:source.name,unit:source.unit,quantity:input.quantity,unitCost:Number(source.costPerUnit),stockBefore:Number(source.currentStock),stockAfter:range(source.currentStock.minus(input.quantity))},
-    totalCost:calculation.totalCost,wasteQuantity:calculation.wasteQuantity,yieldPct:calculation.yieldPct,
+    usefulQuantity:calculation.usefulQuantity,calculatedWaste:calculation.calculatedWaste,wasteEdited:calculation.wasteEdited,declaredWaste:calculation.declaredWaste,totalCost:calculation.totalCost,wasteQuantity:calculation.wasteQuantity,yieldPct:calculation.yieldPct,
     outputs:calculation.outputs.map(o=>{
       const row=rows.find(r=>r.id===o.insumoId)!;
       if (row.currentStock.lt(0)) conflict('Regularice las existencias negativas antes de transformar.');
       const stockAfter=range(row.currentStock.add(o.quantity));
       const average=o.quantity===0?Number(row.costPerUnit):range(row.currentStock.mul(row.costPerUnit).add(o.totalCost).div(stockAfter));
       range(new Prisma.Decimal(o.unitCost));
-      return {...o,name:row.name,stockBefore:Number(row.currentStock),stockAfter,previousUnitCost:Number(row.costPerUnit),averageUnitCost:average};
+      const reference=outputs.find(r=>r.insumoId===o.insumoId)!;
+      let proposedQuantity:number;try{proposedQuantity=proposePortions(input.quantity,definition.referenceQuantity,reference.portions)}catch(e){return conflict((e as Error).message)}
+      return {...o,proposedQuantity,referenceEquivalentQuantity:reference.equivalentQuantity,referenceEquivalentUnit:reference.equivalentUnit,name:row.name,stockBefore:Number(row.currentStock),stockAfter,previousUnitCost:Number(row.costPerUnit),averageUnitCost:average};
     }),
   };
   return {...result,previewHash:hash({companyId,result,versions:rows.map(r=>[r.id,r.version]).sort()})};
@@ -112,6 +123,17 @@ export async function executeTransformation(companyId: string, raw: Execution, a
     const now=new Date();
     const snapshot={...preview,id:input.id,companyId,actorUserId:actor.userId,deviceId:actor.deviceId,createdAt:now.toISOString()};
     const execution=await tx.transformationExecution.create({data:{id:input.id,companyId,templateId:input.templateId,requestHash,snapshot:JSON.stringify(snapshot),actorUserId:actor.userId,deviceId:actor.deviceId}});
+    await tx.transformationYield.create({data:{
+      executionId:execution.id,companyId,templateId:preview.templateId,templateVersion:preview.templateVersion,templateName:preview.templateName,
+      sourceId:preview.source.id,sourceName:preview.source.name,sourceUnit:preview.source.unit,consumedQuantity:preview.source.quantity,
+      usefulQuantity:preview.usefulQuantity,calculatedWaste:preview.calculatedWaste,wasteQuantity:preview.wasteQuantity,wasteEdited:preview.wasteEdited,
+      declaredWasteQuantity:preview.declaredWaste?.quantity,declaredWasteUnit:preview.declaredWaste?.unit,yieldPct:preview.yieldPct,totalCost:preview.totalCost,
+      actorUserId:actor.userId,createdAt:now,localDate:now.toLocaleDateString('en-CA',{timeZone:'America/Lima'}),
+      outputs:{create:preview.outputs.map(o=>({insumoId:o.insumoId,name:o.name,proposedQuantity:o.proposedQuantity,quantity:o.quantity,
+        referenceEquivalentQuantity:o.referenceEquivalentQuantity,referenceEquivalentUnit:o.referenceEquivalentUnit,
+        equivalentQuantity:o.equivalentQuantity,equivalentUnit:o.equivalentUnit,equivalentTotal:o.equivalentTotal,
+        totalCost:o.totalCost,unitCost:o.unitCost,averageUnitCost:o.averageUnitCost}))}
+    }});
     const changes=[{insumoId:preview.source.id,name:preview.source.name,quantity:-input.quantity,unit:preview.source.unit,unitCost:preview.source.unitCost,totalCost:preview.totalCost,stockBefore:preview.source.stockBefore,stockAfter:preview.source.stockAfter,averageUnitCost:preview.source.unitCost,type:'TRANSFORMACION_SALIDA'},...preview.outputs.filter(o=>o.quantity>0).map(o=>({...o,type:'TRANSFORMACION_ENTRADA'}))];
     for(const c of changes){
       const movement=await tx.kardexMovement.create({data:{id:randomUUID(),transformationExecutionId:input.id,clientOpId:randomUUID(),companyId,insumoId:c.insumoId,insumoName:c.name,timestamp:now,date:now.toLocaleDateString('es-PE',{timeZone:'America/Lima'}),time:now.toLocaleTimeString('es-PE',{timeZone:'America/Lima'}),type:c.type,referenceDoc:`Transformación ${input.id}`,quantity:c.quantity,unit:c.unit,unitCost:c.unitCost,totalCost:c.totalCost,stockBefore:c.stockBefore,stockAfter:c.stockAfter,notes:preview.templateName}});

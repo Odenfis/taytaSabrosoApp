@@ -16,7 +16,7 @@ Por cada caso registrar resultado, terminal, empresa, perfil e incidencia o evid
 2. Certificado HTTPS confiable, contexto seguro y funcionamiento en dos terminales.
 3. Abrir y despachar pedido; cobro directo y dividido, caja, cierre y comprobantes físicos.
 4. Comprar insumo de prueba; comprobar existencias, costo, Kardex y refresco en otra terminal.
-5. Crear ficha con porcentajes, ejecutar con cantidades corregidas y verificar merma, costo, existencias, Kardex e historial. Una ejecución confirmada no se revierte de forma ordinaria.
+5. Crear ficha de lote con resultados en Porción y equivalencia por cada porción; ejecutar corrigiendo porciones/equivalencias, comprobar merma automática y manual, bloqueo por diferencia de balance, costo por porción, existencias, Kardex e historial. Probar consumo fraccionario desde recetas. Convertir explícitamente fichas anteriores sin cambiar la unidad de insumos históricos ni sus recetas. Una ejecución confirmada no se revierte de forma ordinaria.
 6. Desconectar y reconectar según el procedimiento de roles; conservar autor y pendientes sin duplicar pedidos o pagos. Transformaciones requiere conexión.
 7. Comprobar impresión física, restablecimiento y ausencia de acciones de facturación de prueba.
 

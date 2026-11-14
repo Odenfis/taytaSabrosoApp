@@ -5,7 +5,7 @@ RUN npm ci
 COPY index.html vite.config.ts tsconfig.json ./
 COPY public ./public
 COPY src ./src
-COPY server/src/lib/permissions.ts server/src/lib/offline-actions.ts ./server/src/lib/
+COPY server/src/lib/permissions.ts server/src/lib/offline-actions.ts server/src/lib/portion-math.ts ./server/src/lib/
 RUN npm run build
 
 FROM node:22-bookworm-slim AS server-build

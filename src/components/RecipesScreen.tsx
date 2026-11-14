@@ -111,7 +111,7 @@ export const RecipesScreen: React.FC = () => {
         if (found) {
           item.insumoName = found.name;
           item.unit = found.unit;
-          item.costPerUnit = +found.costPerUnit.toFixed(2);
+          item.costPerUnit = +found.costPerUnit.toFixed(found.unit==='Porción'?4:2);
         }
       }
 
@@ -160,8 +160,8 @@ export const RecipesScreen: React.FC = () => {
     const validIngredients = ingredients.filter((ing) => ing.insumoId && ing.quantity > 0);
     const price = +(parseFloat(salePrice) || 1).toFixed(2);
     const normalizedIngredients = validIngredients.map((ing) => {
-      const qty = +(parseFloat(ing.quantity as any) || 0).toFixed(2);
-      const cost = +(parseFloat(ing.costPerUnit as any) || 0).toFixed(2);
+      const qty = +(parseFloat(ing.quantity as any) || 0).toFixed(ing.unit==='Porción'?4:2);
+      const cost = +(parseFloat(ing.costPerUnit as any) || 0).toFixed(ing.unit==='Porción'?4:2);
       return { ...ing, quantity: qty, costPerUnit: cost, subtotalCost: +(qty * cost).toFixed(2) };
     });
     const totalCost = +normalizedIngredients.reduce((s, i) => s + i.subtotalCost, 0).toFixed(2);
@@ -458,7 +458,7 @@ export const RecipesScreen: React.FC = () => {
                               {ing.insumoName}
                             </td>
                             <td className="p-3 text-right font-mono font-bold">
-                              {Number(ing.quantity).toFixed(2)} {ing.unit}
+                              {ing.unit==='Porción'?Number(ing.quantity):Number(ing.quantity).toFixed(2)} {ing.unit}
                             </td>
                             <td className="p-3 text-right font-mono text-ink-muted-2">
                               S/ {ing.costPerUnit.toFixed(2)} / {ing.unit}
@@ -662,8 +662,8 @@ export const RecipesScreen: React.FC = () => {
                       <div className="w-20">
                         <NumericInput
                           type="number"
-                          step="0.01"
-                          min="0.01"
+                          step={ing.unit==='Porción'?"0.0001":"0.01"}
+                          min={ing.unit==='Porción'?"0.0001":"0.01"}
                           placeholder="Cant."
                           value={ing.quantity}
                           onChange={(e) => handleIngredientChange(idx, 'quantity', e.target.value)}

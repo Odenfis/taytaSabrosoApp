@@ -848,6 +848,7 @@ model TransformationTemplate {
   @@map("transformacion_fichas")
 }
 model TransformationExecution {
+  yieldRecord TransformationYield?
   movements KardexMovement[]
   id String @id @db.NVarChar(36)
   companyId String @db.NVarChar(36)
@@ -861,4 +862,50 @@ model TransformationExecution {
   company Company @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   template TransformationTemplate @relation(fields: [templateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@map("transformacion_ejecuciones")
+}
+
+model TransformationYield {
+  executionId String @id @db.NVarChar(36)
+  execution TransformationExecution @relation(fields:[executionId], references:[id], onDelete:NoAction, onUpdate:NoAction)
+  companyId String @db.NVarChar(36)
+  templateId String @db.NVarChar(36)
+  templateVersion Int
+  templateName String @db.NVarChar(150)
+  sourceId String @db.NVarChar(36)
+  sourceName String @db.NVarChar(150)
+  sourceUnit String @db.NVarChar(20)
+  consumedQuantity Decimal @db.Decimal(20,4)
+  usefulQuantity Decimal @db.Decimal(20,4)
+  calculatedWaste Decimal @db.Decimal(20,4)
+  wasteQuantity Decimal @db.Decimal(20,4)
+  wasteEdited Boolean
+  declaredWasteQuantity Decimal? @db.Decimal(20,4)
+  declaredWasteUnit String? @db.NVarChar(20)
+  yieldPct Decimal @db.Decimal(12,4)
+  totalCost Decimal @db.Decimal(12,2)
+  actorUserId String @db.NVarChar(36)
+  createdAt DateTime @db.DateTime2
+  localDate String @db.NVarChar(10)
+  outputs TransformationYieldOutput[]
+  @@index([companyId,localDate,sourceId])
+  @@map("transformacion_rendimientos")
+}
+model TransformationYieldOutput {
+  executionId String @db.NVarChar(36)
+  insumoId String @db.NVarChar(36)
+  name String @db.NVarChar(150)
+  proposedQuantity Decimal @db.Decimal(20,4)
+  quantity Decimal @db.Decimal(20,4)
+  referenceEquivalentQuantity Decimal @db.Decimal(20,4)
+  referenceEquivalentUnit String @db.NVarChar(20)
+  equivalentQuantity Decimal @db.Decimal(20,4)
+  equivalentUnit String @db.NVarChar(20)
+  equivalentTotal Decimal @db.Decimal(20,4)
+  totalCost Decimal @db.Decimal(12,2)
+  unitCost Decimal @db.Decimal(12,4)
+  averageUnitCost Decimal @db.Decimal(12,4)
+  yieldRecord TransformationYield @relation(fields:[executionId], references:[executionId], onDelete:NoAction, onUpdate:NoAction)
+  @@id([executionId,insumoId])
+  @@index([insumoId])
+  @@map("transformacion_rendimiento_resultados")
 }

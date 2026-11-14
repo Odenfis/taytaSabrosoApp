@@ -1,3 +1,4 @@
+const roundPortion=(n:number)=>Math.round((n+Number.EPSILON)*10000)/10000;
 import { lockInsumos, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
 import { matchingRecipe } from '../lib/recipeMatch.js';
@@ -506,7 +507,7 @@ async function reverseKitchenForItems(
   const movements: Prisma.KardexMovementCreateManyInput[] = [];
 
   for (const ing of recipe.ingredients) {
-    const qtyRev = round3(toNum(ing.quantity) * qtyToReverse);
+    const qtyRev = (ing.unit==='Porción'?roundPortion:round3)(toNum(ing.quantity) * qtyToReverse);
     if (ing.insumoId) {
       deductionByInsumo[ing.insumoId] = (deductionByInsumo[ing.insumoId] || 0) + qtyRev;
     }
@@ -530,7 +531,7 @@ async function reverseKitchenForItems(
       unitCost: cost,
       totalCost: round2(qtyRev * cost),
       stockBefore: currentStock,
-      stockAfter: round2(currentStock + qtyRev),
+      stockAfter: (ing.unit==='Porción'?roundPortion:round2)(currentStock + qtyRev),
       notes: `Devolución automática según Ficha Técnica (${recipe.productName})`,
       clientOpId: randomUUID(),
     });
@@ -561,7 +562,7 @@ async function reverseKitchenForItems(
       if (!insumo) continue;
       await tx.insumo.update({
         where: { id: insumoId },
-        data: { currentStock: round2(toNum(insumo.currentStock) + deductionByInsumo[insumoId]), version: { increment: 1 } },
+        data: { currentStock: (insumo.unit==='Porción'?roundPortion:round2)(toNum(insumo.currentStock) + deductionByInsumo[insumoId]), version: { increment: 1 } },
       });
     }
   }
@@ -696,7 +697,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
       if (!recipe || recipe.ingredients.length === 0) continue;
 
       for (const ing of recipe.ingredients) {
-        const qtyNeeded = round3(toNum(ing.quantity) * toNum(item.quantity));
+        const qtyNeeded = (ing.unit==='Porción'?roundPortion:round3)(toNum(ing.quantity) * toNum(item.quantity));
         if (ing.insumoId) {
           deductionByInsumo[ing.insumoId] = (deductionByInsumo[ing.insumoId] || 0) + qtyNeeded;
         }
@@ -722,7 +723,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
           unitCost: cost,
           totalCost: round2(qtyNeeded * cost),
           stockBefore: currentStock,
-          stockAfter: round2(currentStock - qtyNeeded),
+          stockAfter: (ing.unit==='Porción'?roundPortion:round2)(currentStock - qtyNeeded),
           notes: `Consumo automático según Ficha Técnica (${recipe.productName})`,
           clientOpId: randomUUID(),
         });
@@ -752,7 +753,7 @@ export async function sendToKitchen(orderId: string, input?: { clientOpId?: stri
       for (const insumoId of Object.keys(deductionByInsumo)) {
         const insumo = await tx.insumo.findUnique({ where: { id: insumoId } });
         if (!insumo) continue;
-        const newStock = round2(toNum(insumo.currentStock) - deductionByInsumo[insumoId]);
+        const newStock = (insumo.unit==='Porción'?roundPortion:round2)(toNum(insumo.currentStock) - deductionByInsumo[insumoId]);
         await tx.insumo.update({ where: { id: insumoId }, data: { currentStock: newStock, version: { increment: 1 } } });
       }
     }

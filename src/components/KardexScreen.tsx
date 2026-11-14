@@ -597,8 +597,8 @@ export const KardexScreen: React.FC = () => {
                   </label>
                   <NumericInput
                     type="number"
-                    step="0.01"
-                    min="0.01"
+                    step={insumos.find(i=>i.id===adjustInsumoId)?.unit==='Porción'?'0.0001':'0.01'}
+                    min={insumos.find(i=>i.id===adjustInsumoId)?.unit==='Porción'?'0.0001':'0.01'}
                     required
                     placeholder="Ej. 1.5"
                     value={adjustQty}

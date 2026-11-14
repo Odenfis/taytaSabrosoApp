@@ -1,3 +1,4 @@
+const roundPortion=(n:number)=>Math.round((n+Number.EPSILON)*10000)/10000;
 import { notifyInventoryAfterCommit, inventoryTransaction, requireActiveInsumos } from '../lib/inventory.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
@@ -117,7 +118,7 @@ export async function createPurchase(input: CreatePurchaseInput, actor?: Operati
 
       const stockBefore = existingInsumo ? toNum(existingInsumo.currentStock) : 0;
       const qty = toNum(item.quantity);
-      const stockAfter = round2(stockBefore + qty);
+      const stockAfter = (item.unit==='Porción'?roundPortion:round2)(stockBefore + qty);
 
       await tx.kardexMovement.create({
         data: {
@@ -167,7 +168,7 @@ export async function createPurchase(input: CreatePurchaseInput, actor?: Operati
         const newTotalStock = oldStock + toNum(item.quantity);
         const weightedCost =
           oldStock > 0 && newTotalStock > 0
-            ? round2((totalOldCost + totalNewCost) / newTotalStock)
+            ? (existingInsumo.unit==='Porción'?roundPortion:round2)((totalOldCost + totalNewCost) / newTotalStock)
             : effectiveUnitCost;
 
         await tx.insumo.update({
@@ -344,7 +345,7 @@ export async function regularizePurchase(
       for (const item of input.items!) {
         const insumo = await tx.insumo.findUniqueOrThrow({ where: { id: item.insumoId! } });
         const stockBefore = toNum(insumo.currentStock);
-        const stockAfter = round2(stockBefore + item.quantity);
+        const stockAfter = (item.unit==='Porción'?roundPortion:round2)(stockBefore + item.quantity);
         await tx.purchaseItem.create({ data: {
           id: randomUUID(), purchaseId: purchase.id, insumoId: item.insumoId,
           insumoName: item.insumoName, quantity: item.quantity, unit: item.unit,
@@ -360,7 +361,7 @@ export async function regularizePurchase(
         } });
         const newStock = stockBefore + item.quantity;
         const weightedCost = stockBefore > 0 && newStock > 0
-          ? round2((stockBefore * toNum(insumo.costPerUnit) + item.totalCost) / newStock)
+          ? (insumo.unit==='Porción'?roundPortion:round2)((stockBefore * toNum(insumo.costPerUnit) + item.totalCost) / newStock)
           : checkedPurchaseLine(item).netUnitCost;
         await tx.insumo.update({ where: { id: insumo.id }, data: {
           version: { increment: 1 }, currentStock: stockAfter, costPerUnit: weightedCost,
@@ -395,7 +396,7 @@ export async function regularizePurchase(
           const stock = toNum(insumo.currentStock);
           await tx.insumo.update({ where: { id: old.insumoId }, data: {
             version: { increment: 1 },
-            costPerUnit: stock > 0 ? round2(toNum(insumo.costPerUnit) + delta / stock) : round2(checkedPurchaseLine(item).netUnitCost),
+            costPerUnit: stock > 0 ? (insumo.unit==='Porción'?roundPortion:round2)(toNum(insumo.costPerUnit) + delta / stock) : (insumo.unit==='Porción'?roundPortion:round2)(checkedPurchaseLine(item).netUnitCost),
           } });
         }
       }
