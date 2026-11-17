@@ -9,3 +9,6 @@ server/.env*
 !server/.env.example
 *.log
 progreso/evidencias
+/deploy/client/app.env
+/deploy/client/initial-config.json
+/deploy/client/reports

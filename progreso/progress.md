@@ -1,3 +1,11 @@
+## 2026-11-17 — Preparación de actualización del cliente por porciones
+
+El usuario informó que sus pruebas locales parecen satisfactorias y solicitó preparar el proceso de actualización, dejando la instalación para una etapa posterior. Revisado el actualizador existente: exige commit exacto, respaldo y revisión de colas, comprueba roles y aplica migraciones sin inicializador; conciliaciones de stock y mesas permanecen separadas. Compose fuerza ambas opciones fiscales de prueba y envío beta a false. Pendiente validar el `.bat` en Windows y determinar versión y migraciones reales del cliente.
+
+Se agregó `deploy/client/ACTUALIZACION-PORCIONES.md` con identificación de versión, responsables, sincronización, respaldo y restauración en base separada, ensayo de migraciones, instalación supervisada, aceptación y recuperación. Se actualizó la lista de aceptación. `.dockerignore` excluye configuración privada y reportes del cliente del contexto de construcción. No se modificó la instalación ni la base del cliente.
+
+Repetidos lint, compilaciones y pruebas: 83 frontend, 90 servidor, 18 escenarios SQL/API/realtime de insumos, 33 de pedidos y suite de Transformaciones SQL/Chrome, con eliminación de bases temporales. Los fallos de auditoría en el log corresponden a pruebas de rollback. Se construyó imagen local `tayta-sabroso:preparacion-cliente` para linux/amd64 y se comprobó que contiene frontend, comprobador de roles y migración 0019. La publicación del commit final y las verificaciones de campo quedan pendientes; no se considera el cliente actualizado.
+
 ## 2026-11-14 — Transformaciones por porciones y rendimiento
 
 Implementado el contrato versión 3: fichas con consumo de referencia, porciones fraccionarias y equivalencia física por cada porción. La ejecución escala propuestas y permite corregir cantidades y equivalencias, con aviso antes de reemplazar ajustes. La merma automática puede editarse y restablecerse; el balance se valida sobre los totales normalizados mostrados y bloquea resultados incompatibles, exceso o diferencias. Se conserva la interfaz compacta en claro/oscuro.

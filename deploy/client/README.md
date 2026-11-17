@@ -26,7 +26,9 @@ Registre el SHA de la imagen, el commit de Git y la fecha de entrega. El servici
 
 ## Actualización supervisada de una instalación existente
 
-La entrega debe publicarse y validarse previamente con un commit completo. Desde PowerShell ejecute `& "RUTA_AL_REPOSITORIO\deploy\client\actualizar-cliente.bat" "COMMIT_COMPLETO_VALIDADO"`. El archivo exige `main` limpia, descarga con `--ff-only` y se detiene si el commit no coincide. Construye la imagen con etiqueta `release-<commit>`; registre y conserve/exporte la imagen anterior antes de construir. El script no crea ni verifica por sí mismo el respaldo, ni ejecuta el inicializador.
+Para esta entrega, siga la guía específica [Actualización por porciones](ACTUALIZACION-PORCIONES.md).
+
+La entrega debe publicarse y validarse previamente con un commit completo. La base funcional de porciones está en `9f1e780ef60e894286f8a7a42f75be78fcbeb737`; utilice el commit final de entrega que incorpore también esta guía, no una etiqueta móvil. En la máquina de preparación, confirme árbol limpio con `git status -sb`, registre `git rev-parse HEAD`, publique ese commit y confirme que la referencia remota lo contiene antes de la visita. Desde PowerShell ejecute `& "RUTA_AL_REPOSITORIO\deploy\client\actualizar-cliente.bat" "COMMIT_COMPLETO_VALIDADO"`. El archivo exige `main` limpia, descarga con `--ff-only` y se detiene si el commit no coincide. Construye la imagen con etiqueta `release-<commit>`; registre y conserve/exporte la imagen anterior antes de construir. El script no crea ni verifica por sí mismo el respaldo, ni ejecuta el inicializador.
 
 Antes de continuar, identifique la base y registre las migraciones pendientes. Sincronice y conserve las colas de todas las terminales; suspenda las escrituras y haga un respaldo final SQL con `COPY_ONLY, CHECKSUM`. Ejecute `RESTORE VERIFYONLY`, conserve una copia externa y restaure en **otra base**. Ejecute `DBCC CHECKDB` y pruebe allí las migraciones de la entrega. Compruebe la copia y registre evidencia antes de confirmar el respaldo en el actualizador. El procedimiento detallado de roles y recuperación está en [ROLES.md](ROLES.md).
 
@@ -35,6 +37,8 @@ El actualizador comprueba roles, muestra el estado de migraciones para revisión
 El valor `APP_VERSION=release-<commit>` se aplica al proceso del actualizador. Para posteriores comandos `docker compose` que creen o recreen contenedores, configure el mismo valor en el entorno o en `.env` de la instalación; sin él Compose usa `local`, que podría apuntar a otra imagen. Preserve la URL, los perfiles y almacenamiento de los navegadores, el secreto JWT y los volúmenes de Caddy. No cambie de origen para evitar perder acceso a colas locales.
 
 La configuración `compose.client.yml` impone `FISCAL_TEST_ENABLED=false` y `FISCAL_BETA_SEND_ENABLED=false` para el servicio de la aplicación, incluso si `app.env` contiene otros valores. Se aplican las migraciones pendientes en orden, incluidas las fiscales si corresponden, pero la facturación electrónica no se habilita. Verifique `/api/fiscal/status` con sesión autorizada, controles fiscales ausentes y cobros normales antes del piloto.
+
+Las fichas de modelos anteriores requieren conversión explícita antes de ejecutarse. Seleccione resultados nuevos en unidad Porción cuando corresponda; no cambie automáticamente unidades de insumos con stock, movimientos o recetas. Las ejecuciones históricas se conservan. Cada ejecución confirmada genera un ingreso independiente y registro de rendimiento; el reporte consolidado y la exportación siguen pendientes.
 
 Después de instalar, siga [ACEPTACION-PRUEBAS.md](ACEPTACION-PRUEBAS.md). Las transformaciones confirmadas modifican existencias y no tienen reversión ordinaria: use insumos identificados para pruebas. No dé por aprobado el piloto por el solo arranque de contenedores.
 

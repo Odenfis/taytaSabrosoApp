@@ -3,6 +3,8 @@
 Esta lista se completa en la instalación del cliente. Una prueba fallida en cobros, permisos, sincronización o stock detiene el piloto hasta su revisión. No borrar colas, reinicializar datos ni crear operaciones reales para disimular un fallo.
 
 - Fecha y responsable:
+- Equipos y responsables de respaldo, restauración e instalación:
+- Evidencia del ensayo de migraciones sobre copia restaurada:
 - Commit completo e imagen instalados:
 - Imagen y commit anteriores conservados:
 - Base identificada, migraciones pendientes y aplicadas:
@@ -21,3 +23,5 @@ Por cada caso registrar resultado, terminal, empresa, perfil e incidencia o evid
 7. Comprobar impresión física, restablecimiento y ausencia de acciones de facturación de prueba.
 
 Resultado final, incidentes pendientes y responsables de resolución:
+
+No habilitar el piloto hasta que se hayan registrado los resultados críticos y el responsable de la instalación los haya revisado.
